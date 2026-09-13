@@ -9,9 +9,9 @@ from conic.core.session import SessionScope
 class PluginSet:
     tool_classes: tuple[type, ...]
     backend: object
-    context_plugins: tuple[object, ...]
-    policy_plugins: tuple[object, ...]
-    summarizer: object
+    context_plugins: tuple[Callable[[], object], ...]
+    policy_plugins: tuple[Callable[[], object], ...]
+    summarizer: Callable[[], object]
     loop_factory: Callable[[object, list[dict], dict[str, type]], object]
 
 
@@ -30,11 +30,11 @@ class PluginManager:
             tool_cls(workspace_dir=row.workspace_dir).register(bus)
 
         self._plugin_set.backend.register(bus)
-        for ctx_plugin in self._plugin_set.context_plugins:
-            ctx_plugin.register(bus)
-        for policy in self._plugin_set.policy_plugins:
-            policy.register(bus)
-        self._plugin_set.summarizer.register(bus)
+        for ctx_plugin_factory in self._plugin_set.context_plugins:
+            ctx_plugin_factory().register(bus)
+        for policy_factory in self._plugin_set.policy_plugins:
+            policy_factory().register(bus)
+        self._plugin_set.summarizer().register(bus)
 
         tool_schemas = [cls.schema for cls in self._plugin_set.tool_classes]
         tool_payload_map = {

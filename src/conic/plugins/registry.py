@@ -24,14 +24,14 @@ def build_plugin_set(config: Config) -> PluginSet:
         tool_classes=(BashToolPlugin, ReadFileToolPlugin, WriteFileToolPlugin, EditFileToolPlugin),
         backend=OpenRouterBackendPlugin(api_key=config.openrouter_api_key, model=config.openrouter_model),
         context_plugins=(
-            SystemPromptPlugin(DEFAULT_SYSTEM_PROMPT),
-            TruncatorPlugin(keep_last_n=config.truncate_keep_last_n),
-            TokenBudgetPlugin(budget_tokens=config.context_token_budget),
+            lambda: SystemPromptPlugin(DEFAULT_SYSTEM_PROMPT),
+            lambda: TruncatorPlugin(keep_last_n=config.truncate_keep_last_n),
+            lambda: TokenBudgetPlugin(budget_tokens=config.context_token_budget),
         ),
         policy_plugins=(
-            PermissionPolicyPlugin(),
-            StepLimitPlugin(max_steps=config.max_steps_per_turn),
+            lambda: PermissionPolicyPlugin(),
+            lambda: StepLimitPlugin(max_steps=config.max_steps_per_turn),
         ),
-        summarizer=SummarizerPlugin(),
+        summarizer=lambda: SummarizerPlugin(),
         loop_factory=lambda handle, schemas, payload_map: ReactLoopPlugin(handle, schemas, payload_map),
     )

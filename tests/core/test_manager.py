@@ -83,9 +83,9 @@ def make_manager(tmp_path):
     plugin_set = PluginSet(
         tool_classes=(FakeToolPlugin,),
         backend=FakeBackend(),
-        context_plugins=(FakeContextPlugin(),),
-        policy_plugins=(FakePolicyPlugin(),),
-        summarizer=FakeSummarizer(),
+        context_plugins=(FakeContextPlugin,),
+        policy_plugins=(FakePolicyPlugin,),
+        summarizer=FakeSummarizer,
         loop_factory=lambda handle, schemas, payload_map: ReactLoopPlugin(handle, schemas, payload_map),
     )
     return storage, PluginManager(storage, plugin_set)
@@ -104,6 +104,43 @@ async def test_start_session_assembles_a_working_bus(tmp_path):
 
     assert channel_plugin.received == ["ack"]
     assert Path(scope.row.workspace_dir) == tmp_path / "workspace" / "discord" / "1"
+    storage.shutdown()
+
+
+def test_start_session_gives_each_session_fresh_context_policy_and_summarizer_instances(tmp_path):
+    """Context/policy plugins and the summarizer must be fresh per-session
+    instances (isolation), while the backend remains a genuine shared
+    singleton (it holds no per-session state)."""
+    storage, manager = make_manager(tmp_path)
+
+    scope1 = manager.start_session(
+        channel="discord", native_id="a", channel_plugin_factory=lambda: FakeChannelPlugin()
+    )
+    scope2 = manager.start_session(
+        channel="discord", native_id="b", channel_plugin_factory=lambda: FakeChannelPlugin()
+    )
+
+    # Context plugin handlers are registered on each bus's "before_model_call" chain;
+    # pull out the bound instances via the handler's __self__.
+    ctx1 = [handler.__self__ for _, handler in scope1.bus._chain["before_model_call"]]
+    ctx2 = [handler.__self__ for _, handler in scope2.bus._chain["before_model_call"]]
+    for inst1, inst2 in zip(ctx1, ctx2):
+        assert inst1 is not inst2
+
+    policy1 = [handler.__self__ for _, handler in scope1.bus._chain["step_start"]]
+    policy2 = [handler.__self__ for _, handler in scope2.bus._chain["step_start"]]
+    for inst1, inst2 in zip(policy1, policy2):
+        assert inst1 is not inst2
+
+    summarizer1 = scope1.bus._request["summarize"][0][1].__self__
+    summarizer2 = scope2.bus._request["summarize"][0][1].__self__
+    assert summarizer1 is not summarizer2
+
+    # The backend IS a genuine shared singleton across sessions.
+    backend1 = scope1.bus._request["model_request"][0][1].__self__
+    backend2 = scope2.bus._request["model_request"][0][1].__self__
+    assert backend1 is backend2
+
     storage.shutdown()
 
 
