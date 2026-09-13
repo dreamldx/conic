@@ -1,6 +1,25 @@
 from conic.plugins.tools.write_file import WriteFileCall, WriteFileToolPlugin
 
 
+async def test_writes_and_reads_back_non_ascii_utf8_content(tmp_path):
+    tool = WriteFileToolPlugin(workspace_dir=str(tmp_path))
+    result = await tool.execute(WriteFileCall(path="a.txt", content="你好 🎉"))
+    assert result.error is None
+    assert (tmp_path / "a.txt").read_text(encoding="utf-8") == "你好 🎉"
+
+
+async def test_write_reports_oserror_as_result_error(tmp_path, monkeypatch):
+    tool = WriteFileToolPlugin(workspace_dir=str(tmp_path))
+
+    def broken_write_text(self, *args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr("pathlib.Path.write_text", broken_write_text)
+    result = await tool.execute(WriteFileCall(path="a.txt", content="hello"))
+    assert result.error is not None
+    assert "disk full" in result.error
+
+
 async def test_creates_new_file(tmp_path):
     tool = WriteFileToolPlugin(workspace_dir=str(tmp_path))
     result = await tool.execute(WriteFileCall(path="a.txt", content="hello\nworld"))

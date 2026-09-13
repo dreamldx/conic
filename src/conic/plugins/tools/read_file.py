@@ -43,7 +43,10 @@ class ReadFileToolPlugin:
             return ToolCallResult(error=str(exc))
         if not resolved.is_file():
             return ToolCallResult(error=f"not a file: {call.path}")
-        lines = resolved.read_text(errors="replace").splitlines()
+        try:
+            lines = resolved.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError as exc:
+            return ToolCallResult(error=str(exc))
         selected = lines[call.offset : call.offset + call.limit]
         text = "\n".join(selected)
         if call.offset + call.limit < len(lines):

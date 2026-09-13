@@ -39,10 +39,15 @@ class WriteFileToolPlugin:
             resolved = resolve_within_workspace(self._workspace_dir, call.path)
         except WorkspaceEscapeError as exc:
             return ToolCallResult(error=str(exc))
-        existed = resolved.is_file()
-        old_line_count = len(resolved.read_text(errors="replace").splitlines()) if existed else 0
-        resolved.parent.mkdir(parents=True, exist_ok=True)
-        resolved.write_text(call.content)
+        try:
+            existed = resolved.is_file()
+            old_line_count = (
+                len(resolved.read_text(encoding="utf-8", errors="replace").splitlines()) if existed else 0
+            )
+            resolved.parent.mkdir(parents=True, exist_ok=True)
+            resolved.write_text(call.content, encoding="utf-8")
+        except OSError as exc:
+            return ToolCallResult(error=str(exc))
         new_line_count = len(call.content.splitlines())
         status = "overwritten" if existed else "created"
         return ToolCallResult(

@@ -43,11 +43,17 @@ class EditFileToolPlugin:
             return ToolCallResult(error=str(exc))
         if not resolved.is_file():
             return ToolCallResult(error=f"not a file: {call.path}")
-        text = resolved.read_text(errors="replace")
+        try:
+            text = resolved.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            return ToolCallResult(error=str(exc))
         count = text.count(call.old_text)
         if count == 0:
             return ToolCallResult(error="old_text not found in file")
         if count > 1:
             return ToolCallResult(error=f"old_text is not unique ({count} occurrences)")
-        resolved.write_text(text.replace(call.old_text, call.new_text, 1))
+        try:
+            resolved.write_text(text.replace(call.old_text, call.new_text, 1), encoding="utf-8")
+        except OSError as exc:
+            return ToolCallResult(error=str(exc))
         return ToolCallResult(output=f"replaced 1 occurrence in {call.path}")

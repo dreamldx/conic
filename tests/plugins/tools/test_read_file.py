@@ -1,6 +1,27 @@
 from conic.plugins.tools.read_file import ReadFileCall, ReadFileToolPlugin
 
 
+async def test_reads_non_ascii_utf8_content_correctly(tmp_path):
+    (tmp_path / "a.txt").write_text("你好 🎉", encoding="utf-8")
+    tool = ReadFileToolPlugin(workspace_dir=str(tmp_path))
+    result = await tool.execute(ReadFileCall(path="a.txt"))
+    assert result.error is None
+    assert result.output == "你好 🎉"
+
+
+async def test_read_reports_oserror_as_result_error(tmp_path, monkeypatch):
+    (tmp_path / "a.txt").write_text("hello")
+    tool = ReadFileToolPlugin(workspace_dir=str(tmp_path))
+
+    def broken_read_text(self, *args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr("pathlib.Path.read_text", broken_read_text)
+    result = await tool.execute(ReadFileCall(path="a.txt"))
+    assert result.error is not None
+    assert "disk full" in result.error
+
+
 async def test_reads_full_small_file(tmp_path):
     (tmp_path / "a.txt").write_text("line1\nline2\nline3")
     tool = ReadFileToolPlugin(workspace_dir=str(tmp_path))

@@ -1,6 +1,14 @@
 from conic.plugins.tools.edit_file import EditFileCall, EditFileToolPlugin
 
 
+async def test_edits_non_ascii_utf8_content_correctly(tmp_path):
+    (tmp_path / "a.txt").write_text("你好 world 🎉", encoding="utf-8")
+    tool = EditFileToolPlugin(workspace_dir=str(tmp_path))
+    result = await tool.execute(EditFileCall(path="a.txt", old_text="world", new_text="世界"))
+    assert result.error is None
+    assert (tmp_path / "a.txt").read_text(encoding="utf-8") == "你好 世界 🎉"
+
+
 async def test_replaces_unique_occurrence(tmp_path):
     (tmp_path / "a.txt").write_text("hello world")
     tool = EditFileToolPlugin(workspace_dir=str(tmp_path))
