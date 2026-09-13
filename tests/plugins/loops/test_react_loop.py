@@ -139,6 +139,64 @@ async def test_turn_end_emitted_after_final_assistant_message():
     assert order == ["assistant_message", "turn_end"]
 
 
+async def test_non_aborttturn_exception_from_model_request_is_reported_as_error():
+    """A plain Exception (e.g. an OpenRouter API error) raised while producing a
+    model response must be caught and reported as an `error` event, not crash
+    the process or propagate out of handle_user_input."""
+    handle = FakeStorageHandle()
+    bus = MessageBus()
+
+    async def failing_model_request(msg: ModelRequest) -> ModelResponse:
+        raise ValueError("openrouter blew up")
+
+    bus.on_request("model_request", failing_model_request)
+
+    loop = ReactLoopPlugin(
+        storage_handle=handle,
+        tool_schemas=[{"type": "function", "function": {"name": "bash"}}],
+        tool_payload_map={"bash": FakeToolCall},
+    )
+    loop.register(bus)
+
+    errors = []
+
+    async def on_error(msg: Error) -> None:
+        errors.append(msg.exc)
+
+    bus.on("error", on_error)
+
+    # Must not raise out of emit — the loop's own except Exception clause must catch it.
+    await bus.emit("user_input", UserInput(text="hello"))
+
+    assert len(errors) == 1
+    assert isinstance(errors[0], ValueError)
+    assert str(errors[0]) == "openrouter blew up"
+
+
+async def test_unknown_tool_name_does_not_corrupt_history_and_continues_next_step():
+    """If the model names a tool not present in the payload map (KeyError), the
+    tool_calls assistant message must still get a matching tool-role reply so
+    the persisted history stays structurally valid, and the loop must continue
+    to the next Step rather than crashing."""
+    handle = FakeStorageHandle()
+    tool_call = ToolCallSpec(id="call_1", name="not_a_real_tool", args={})
+    responses = [
+        ModelResponse(text=None, tool_calls=[tool_call], raw_message={"role": "assistant", "tool_calls": [1]}),
+        ModelResponse(text="done", tool_calls=[], raw_message={"role": "assistant"}),
+    ]
+    bus, loop = make_loop(handle, responses)
+
+    await bus.emit("user_input", UserInput(text="run unknown tool"))
+
+    tool_messages = [m for m in handle.messages if m.get("role") == "tool"]
+    assert len(tool_messages) == 1
+    assert tool_messages[0]["tool_call_id"] == "call_1"
+    assert tool_messages[0]["content"].startswith("Error: ")
+
+    # The loop must have continued to the second step and produced a final assistant message.
+    assert handle.messages[-1] == {"role": "assistant", "content": "done"}
+
+
 async def test_tool_call_id_preserved_when_hook_mutates_call_id():
     """Test that tool-role message uses original call.id even if before_tool_call hook mutates it."""
     handle = FakeStorageHandle()

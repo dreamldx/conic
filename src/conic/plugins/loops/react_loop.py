@@ -45,16 +45,22 @@ class ReactLoopPlugin:
                 self._storage.append_message(response.raw_message)
                 for call in response.tool_calls:
                     original_id = call.id
-                    call_ctx = await bus.emit("before_tool_call", ToolCall(call=call))
-                    payload_cls = self._tool_payload_map[call_ctx.call.name]
-                    payload = payload_cls(**call_ctx.call.args)
-                    result: ToolCallResult = await bus.request("tool_call", payload)
-                    result = await bus.emit("tool_result", result)
-                    content = result.output if result.error is None else f"Error: {result.error}"
+                    try:
+                        call_ctx = await bus.emit("before_tool_call", ToolCall(call=call))
+                        payload_cls = self._tool_payload_map[call_ctx.call.name]
+                        payload = payload_cls(**call_ctx.call.args)
+                        result: ToolCallResult = await bus.request("tool_call", payload)
+                        result = await bus.emit("tool_result", result)
+                        content = result.output if result.error is None else f"Error: {result.error}"
+                    except Exception as exc:
+                        content = f"Error: {exc}"
                     self._storage.append_message(
                         {"role": "tool", "tool_call_id": original_id, "content": content}
                     )
         except AbortTurn as exc:
+            await bus.emit("error", Error(exc=exc))
+            return
+        except Exception as exc:
             await bus.emit("error", Error(exc=exc))
             return
 
