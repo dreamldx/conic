@@ -1789,7 +1789,7 @@ def test_longer_content_yields_more_tokens():
 Create `tests/plugins/context/test_token_budget.py`:
 ```python
 from conic.core.bus import MessageBus
-from conic.core.messages import BeforeModelCall, SummarizeResult
+from conic.core.messages import BeforeModelCall, SummarizeRequest, SummarizeResult
 from conic.plugins.context.token_budget import TokenBudgetPlugin
 
 
@@ -1806,7 +1806,7 @@ async def test_requests_summary_when_over_budget():
     plugin = TokenBudgetPlugin(budget_tokens=1)
     bus = MessageBus()
 
-    async def fake_summarizer(req):
+    async def fake_summarizer(req: SummarizeRequest) -> SummarizeResult:
         return SummarizeResult(messages=[{"role": "system", "content": "summary"}])
 
     bus.on_request("summarize", fake_summarizer)
@@ -1821,7 +1821,7 @@ async def test_requests_summary_when_over_budget():
 Create `tests/plugins/context/test_summarizer.py`:
 ```python
 from conic.core.bus import MessageBus
-from conic.core.messages import ModelResponse, SummarizeRequest
+from conic.core.messages import ModelRequest, ModelResponse, SummarizeRequest
 from conic.plugins.context.summarizer import SummarizerPlugin
 
 
@@ -1829,7 +1829,7 @@ async def test_summarize_keeps_recent_messages_and_replaces_older_ones_with_summ
     plugin = SummarizerPlugin(keep_recent=1)
     bus = MessageBus()
 
-    async def fake_model_request(msg):
+    async def fake_model_request(msg: ModelRequest) -> ModelResponse:
         return ModelResponse(text="summary of earlier turns", tool_calls=[], raw_message={})
 
     bus.on_request("model_request", fake_model_request)
@@ -2071,7 +2071,8 @@ import pytest
 from conic.core.bus import MessageBus
 from conic.core.errors import AbortTurn
 from conic.core.messages import (
-    AssistantMessage, ModelRequest, ModelResponse, ToolCallResult, ToolCallSpec, UserInput,
+    AssistantMessage, Error, ModelRequest, ModelResponse, StepStart,
+    ToolCallResult, ToolCallSpec, TurnEnd, UserInput,
 )
 from conic.plugins.loops.react_loop import ReactLoopPlugin
 
@@ -2124,7 +2125,11 @@ async def test_single_step_turn_with_no_tool_calls_emits_assistant_message():
     bus, loop = make_loop(handle, responses)
 
     received = []
-    bus.on("assistant_message", lambda msg: received.append(msg.text) or None)
+
+    async def on_assistant_message(msg: AssistantMessage) -> None:
+        received.append(msg.text)
+
+    bus.on("assistant_message", on_assistant_message)
 
     await bus.emit("user_input", UserInput(text="hello"))
 
@@ -2143,7 +2148,11 @@ async def test_multi_step_turn_executes_tool_then_returns_final_answer():
     bus, loop = make_loop(handle, responses)
 
     steps = []
-    bus.on("step_start", lambda msg: steps.append(msg.step_index) or None)
+
+    async def on_step_start(msg: StepStart) -> None:
+        steps.append(msg.step_index)
+
+    bus.on("step_start", on_step_start)
 
     await bus.emit("user_input", UserInput(text="run ls"))
 
@@ -2157,13 +2166,17 @@ async def test_abort_turn_from_a_hook_emits_error_and_stops_the_loop():
     responses = [ModelResponse(text="unreachable", tool_calls=[], raw_message={})]
     bus, loop = make_loop(handle, responses)
 
-    async def always_abort(msg):
+    async def always_abort(msg: StepStart) -> None:
         raise AbortTurn("blocked by policy")
 
     bus.on("step_start", always_abort)
 
     errors = []
-    bus.on("error", lambda msg: errors.append(str(msg.exc)) or None)
+
+    async def on_error(msg: Error) -> None:
+        errors.append(str(msg.exc))
+
+    bus.on("error", on_error)
 
     await bus.emit("user_input", UserInput(text="hello"))
 
@@ -2177,8 +2190,15 @@ async def test_turn_end_emitted_after_final_assistant_message():
     bus, loop = make_loop(handle, responses)
 
     order = []
-    bus.on("assistant_message", lambda msg: order.append("assistant_message") or None)
-    bus.on("turn_end", lambda msg: order.append("turn_end") or None)
+
+    async def on_assistant_message(msg: AssistantMessage) -> None:
+        order.append("assistant_message")
+
+    async def on_turn_end(msg: TurnEnd) -> None:
+        order.append("turn_end")
+
+    bus.on("assistant_message", on_assistant_message)
+    bus.on("turn_end", on_turn_end)
 
     await bus.emit("user_input", UserInput(text="hello"))
 
@@ -2242,6 +2262,7 @@ class ReactLoopPlugin:
 
                 self._storage.append_message(response.raw_message)
                 for call in response.tool_calls:
+                    original_id = call.id
                     call_ctx = await bus.emit("before_tool_call", ToolCall(call=call))
                     payload_cls = self._tool_payload_map[call_ctx.call.name]
                     payload = payload_cls(**call_ctx.call.args)
@@ -2249,7 +2270,7 @@ class ReactLoopPlugin:
                     result = await bus.emit("tool_result", result)
                     content = result.output if result.error is None else f"Error: {result.error}"
                     self._storage.append_message(
-                        {"role": "tool", "tool_call_id": call_ctx.call.id, "content": content}
+                        {"role": "tool", "tool_call_id": original_id, "content": content}
                     )
         except AbortTurn as exc:
             await bus.emit("error", Error(exc=exc))
@@ -2290,6 +2311,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from conic.core.manager import PluginManager, PluginSet
+from conic.core.messages import (
+    AssistantMessage, BeforeModelCall, ModelRequest, ModelResponse,
+    StepStart, SummarizeRequest, SummarizeResult, ToolCallResult,
+)
 from conic.services.storage import StorageService
 
 
@@ -2308,8 +2333,7 @@ class FakeToolPlugin:
     def register(self, bus):
         bus.on_request("tool_call", self.execute)
 
-    async def execute(self, call: FakeCall):
-        from conic.core.messages import ToolCallResult
+    async def execute(self, call: FakeCall) -> ToolCallResult:
         return ToolCallResult(output=f"ran {call.command} in {self.workspace_dir}")
 
 
@@ -2317,8 +2341,7 @@ class FakeBackend:
     def register(self, bus):
         bus.on_request("model_request", self.complete)
 
-    async def complete(self, msg):
-        from conic.core.messages import ModelResponse
+    async def complete(self, msg: ModelRequest) -> ModelResponse:
         return ModelResponse(text="ack", tool_calls=[], raw_message={"role": "assistant"})
 
 
@@ -2326,7 +2349,7 @@ class FakeContextPlugin:
     def register(self, bus):
         bus.on("before_model_call", self.apply)
 
-    async def apply(self, ctx):
+    async def apply(self, ctx: BeforeModelCall) -> None:
         return None
 
 
@@ -2334,7 +2357,7 @@ class FakePolicyPlugin:
     def register(self, bus):
         bus.on("step_start", self.check)
 
-    async def check(self, msg):
+    async def check(self, msg: StepStart) -> None:
         return None
 
 
@@ -2342,8 +2365,7 @@ class FakeSummarizer:
     def register(self, bus):
         bus.on_request("summarize", self.summarize)
 
-    async def summarize(self, req):
-        from conic.core.messages import SummarizeResult
+    async def summarize(self, req: SummarizeRequest) -> SummarizeResult:
         return SummarizeResult(messages=req.messages)
 
 
@@ -2354,7 +2376,7 @@ class FakeChannelPlugin:
     def register(self, bus):
         bus.on("assistant_message", self.on_assistant_message)
 
-    async def on_assistant_message(self, msg):
+    async def on_assistant_message(self, msg: AssistantMessage) -> None:
         self.received.append(msg.text)
 
 
@@ -2936,7 +2958,11 @@ async def test_handle_message_routes_to_known_session():
 
     received = []
     from conic.core.messages import UserInput
-    scope.bus.on("user_input", lambda msg: received.append(msg.text) or None)
+
+    async def on_user_input(msg: UserInput) -> None:
+        received.append(msg.text)
+
+    scope.bus.on("user_input", on_user_input)
 
     await gateway.handle_message(thread_id=222, text="hello")
 
