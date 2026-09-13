@@ -16,6 +16,25 @@ async def test_keeps_only_last_n_non_system_messages():
     assert result.messages == [{"role": "user", "content": "3"}, {"role": "user", "content": "4"}]
 
 
+async def test_naive_cut_that_would_orphan_a_tool_reply_keeps_the_pair_together():
+    """A naive last-N cut landing between a tool_calls assistant message and
+    its tool reply must not produce an orphaned `role: "tool"` message."""
+    plugin = TruncatorPlugin(keep_last_n=2)
+    messages = [
+        {"role": "user", "content": "0"},
+        {"role": "assistant", "content": None, "tool_calls": [{"id": "c1"}]},
+        {"role": "tool", "tool_call_id": "c1", "content": "tool result"},
+        {"role": "user", "content": "3"},
+    ]
+    # Naive last-2 cut would take [tool(c1), user(3)] -- an orphaned tool reply.
+    result = await plugin.apply(BeforeModelCall(messages=messages, tools=[]))
+
+    kept = result.messages if result is not None else messages
+    for i, m in enumerate(kept):
+        if m.get("role") == "tool":
+            assert i > 0 and kept[i - 1].get("role") == "assistant" and kept[i - 1].get("tool_calls")
+
+
 async def test_always_keeps_system_messages():
     plugin = TruncatorPlugin(keep_last_n=1)
     messages = [

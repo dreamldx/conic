@@ -1,3 +1,4 @@
+from conic.core.messagealign import align_cut
 from conic.core.messages import ModelRequest, SummarizeRequest, SummarizeResult
 
 
@@ -13,8 +14,12 @@ class SummarizerPlugin:
     async def summarize(self, req: SummarizeRequest) -> SummarizeResult:
         system = [m for m in req.messages if m.get("role") == "system"]
         rest = [m for m in req.messages if m.get("role") != "system"]
-        to_summarize = rest[: -self._keep_recent] if self._keep_recent else rest
-        recent = rest[-self._keep_recent:] if self._keep_recent else []
+        if self._keep_recent:
+            cut_index = align_cut(rest, max(len(rest) - self._keep_recent, 0))
+        else:
+            cut_index = len(rest)
+        to_summarize = rest[:cut_index]
+        recent = rest[cut_index:]
 
         if not to_summarize:
             return SummarizeResult(messages=req.messages)
