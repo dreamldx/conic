@@ -66,19 +66,24 @@ class DiscordGateway:
 
     async def resume_active_sessions(self, fetch_thread: Callable[[str], Awaitable[object]]) -> None:
         for row in self._storage.active_sessions(channel="discord"):
-            thread = await fetch_thread(row.native_id)
-            scope = self._plugin_manager.start_session(
-                channel="discord",
-                native_id=row.native_id,
-                channel_plugin_factory=lambda t=thread: DiscordThreadPlugin(t),
-            )
+            try:
+                thread = await fetch_thread(row.native_id)
+                scope = self._plugin_manager.start_session(
+                    channel="discord",
+                    native_id=row.native_id,
+                    channel_plugin_factory=lambda t=thread: DiscordThreadPlugin(t),
+                )
+            except Exception:
+                self._storage.handle_for(row).set_status("ended")
+                continue
             self._sessions[int(row.native_id)] = scope
 
     async def handle_message(self, thread_id: int, text: str) -> None:
         scope = self._sessions.get(thread_id)
         if scope is None:
             return
-        await scope.bus.emit("user_input", UserInput(text=text))
+        async with scope.lock:
+            await scope.bus.emit("user_input", UserInput(text=text))
 
     async def handle_start_command(
         self, create_thread: Callable[[], Awaitable[object]], respond: Callable[[str], Awaitable[None]]

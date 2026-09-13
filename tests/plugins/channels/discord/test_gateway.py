@@ -51,6 +51,34 @@ async def test_resume_active_sessions_rebuilds_scope_for_each_active_row(tmp_pat
     storage.shutdown()
 
 
+async def test_resume_active_sessions_continues_past_a_dead_thread(tmp_path):
+    """One row whose thread fetch fails (e.g. deleted/inaccessible thread) must
+    not abort resumption of the other still-valid rows, and the failing row's
+    status must be set to 'ended' so it doesn't keep poisoning future restarts."""
+    storage = make_storage(tmp_path)
+    storage.get_or_create(channel="discord", native_id="111")
+    storage.get_or_create(channel="discord", native_id="222")
+    storage.get_or_create(channel="discord", native_id="333")
+    manager = FakePluginManagerRecorder()
+    gateway = DiscordGateway(bot_token="t", plugin_manager=manager, storage=storage)
+
+    async def flaky_fetch_thread(native_id: str):
+        if native_id == "222":
+            raise RuntimeError("thread deleted")
+        return object()
+
+    await gateway.resume_active_sessions(fetch_thread=flaky_fetch_thread)
+
+    assert sorted(manager.started) == [("discord", "111"), ("discord", "333")]
+    assert 111 in gateway._sessions
+    assert 333 in gateway._sessions
+    assert 222 not in gateway._sessions
+
+    reloaded = storage.get_or_create(channel="discord", native_id="222")
+    assert reloaded.status == "ended"
+    storage.shutdown()
+
+
 async def test_handle_message_routes_to_known_session():
     manager = FakePluginManagerRecorder()
     gateway = DiscordGateway(bot_token="t", plugin_manager=manager, storage=None)
@@ -68,6 +96,42 @@ async def test_handle_message_routes_to_known_session():
     await gateway.handle_message(thread_id=222, text="hello")
 
     assert received == ["hello"]
+
+
+async def test_handle_message_serializes_concurrent_messages_for_the_same_thread():
+    """Two concurrent handle_message calls for the same thread must not
+    interleave: the second turn must only start after the first's handler
+    has fully completed."""
+    import asyncio
+
+    manager = FakePluginManagerRecorder()
+    gateway = DiscordGateway(bot_token="t", plugin_manager=manager, storage=None)
+    scope = manager.start_session("discord", "222", lambda: object())
+    gateway._sessions[222] = scope
+
+    from conic.core.messages import UserInput
+
+    events = []
+
+    async def on_user_input(msg: UserInput) -> None:
+        events.append(("start", msg.text))
+        if msg.text == "first":
+            await asyncio.sleep(0.05)
+        events.append(("end", msg.text))
+
+    scope.bus.on("user_input", on_user_input)
+
+    await asyncio.gather(
+        gateway.handle_message(thread_id=222, text="first"),
+        gateway.handle_message(thread_id=222, text="second"),
+    )
+
+    assert events == [
+        ("start", "first"),
+        ("end", "first"),
+        ("start", "second"),
+        ("end", "second"),
+    ]
 
 
 async def test_handle_message_ignores_unknown_thread():
