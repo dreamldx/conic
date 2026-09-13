@@ -1,0 +1,17 @@
+from conic.core.messages import BeforeModelCall
+
+
+class TruncatorPlugin:
+    def __init__(self, keep_last_n: int):
+        self._keep_last_n = keep_last_n
+
+    def register(self, bus) -> None:
+        bus.on("before_model_call", self.apply)
+
+    async def apply(self, ctx: BeforeModelCall) -> BeforeModelCall | None:
+        non_system = [m for m in ctx.messages if m.get("role") != "system"]
+        if len(non_system) <= self._keep_last_n:
+            return None
+        system = [m for m in ctx.messages if m.get("role") == "system"]
+        kept = non_system[-self._keep_last_n:]
+        return BeforeModelCall(messages=[*system, *kept], tools=ctx.tools)
