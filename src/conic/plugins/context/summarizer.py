@@ -1,5 +1,6 @@
 from conic.core.messagealign import align_cut
 from conic.core.messages import ModelRequest, SummarizeRequest, SummarizeResult
+from conic.plugins import meta
 
 
 class SummarizerPlugin:
@@ -9,7 +10,7 @@ class SummarizerPlugin:
 
     def register(self, bus) -> None:
         self._bus = bus
-        bus.on_request("summarize", self.summarize)
+        bus.on_request(meta.SummarizeEvent, self.summarize)
 
     async def summarize(self, req: SummarizeRequest) -> SummarizeResult:
         system = [m for m in req.messages if m.get("role") == "system"]
@@ -32,6 +33,6 @@ class SummarizerPlugin:
             },
             {"role": "user", "content": transcript},
         ]
-        response = await self._bus.request("model_request", ModelRequest(messages=prompt, tools=[]))
+        response = await self._bus.request(meta.ModelRequestEvent, ModelRequest(messages=prompt, tools=[]))
         summary_message = {"role": "system", "content": f"[Earlier conversation summary]\n{response.text}"}
         return SummarizeResult(messages=[*system, summary_message, *recent])

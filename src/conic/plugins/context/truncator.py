@@ -1,5 +1,6 @@
 from conic.core.messagealign import align_cut
 from conic.core.messages import BeforeModelCall
+from conic.plugins import meta
 
 
 class TruncatorPlugin:
@@ -7,7 +8,7 @@ class TruncatorPlugin:
         self._keep_last_n = keep_last_n
 
     def register(self, bus) -> None:
-        bus.on("before_model_call", self.apply)
+        bus.on(meta.BeforeModelCallEvent, self.apply)
 
     async def apply(self, ctx: BeforeModelCall) -> BeforeModelCall | None:
         non_system = [m for m in ctx.messages if m.get("role") != "system"]

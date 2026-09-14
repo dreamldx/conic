@@ -2,6 +2,7 @@ from dataclasses import dataclass
 
 from conic.core.messages import ToolCallResult
 from conic.plugins.tools.base import WorkspaceEscapeError, resolve_within_workspace
+from conic.plugins import meta
 
 
 @dataclass
@@ -32,7 +33,7 @@ class WriteFileToolPlugin:
         self._workspace_dir = workspace_dir
 
     def register(self, bus) -> None:
-        bus.on_request("tool_call", self.execute)
+        bus.on_request(meta.ToolCallRequestEvent, self.execute)
 
     async def execute(self, call: WriteFileCall) -> ToolCallResult:
         try:

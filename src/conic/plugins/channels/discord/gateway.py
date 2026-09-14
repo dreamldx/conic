@@ -2,9 +2,11 @@ from typing import Awaitable, Callable
 
 import discord
 from discord import app_commands
+from loguru import logger
 
 from conic.core.messages import UserInput
 from conic.plugins.channels.discord.adapter import DiscordThreadPlugin
+from conic.plugins import meta
 
 
 class DiscordGateway:
@@ -24,10 +26,11 @@ class DiscordGateway:
 
     def _register_discord_wiring(self) -> None:
         @self._tree.command(name="agent_start", description="Start a new agent session in a thread")
-        async def agent_start(interaction: discord.Interaction) -> None:
+        @app_commands.describe(title="Thread title for the session")
+        async def agent_start(interaction: discord.Interaction, title: str = "agent-session") -> None:
             async def create_thread():
                 return await interaction.channel.create_thread(
-                    name="agent-session", type=discord.ChannelType.public_thread
+                    name=title, type=discord.ChannelType.public_thread
                 )
 
             async def respond(text: str) -> None:
@@ -45,7 +48,9 @@ class DiscordGateway:
 
         @self._client.event
         async def on_ready() -> None:
+            logger.info("discord gateway connected, syncing commands")
             await self._tree.sync()
+            logger.info("discord commands synced, resuming active sessions")
 
             async def fetch_thread(native_id: str):
                 return await self._client.fetch_channel(int(native_id))
@@ -65,7 +70,9 @@ class DiscordGateway:
         await self._client.close()
 
     async def resume_active_sessions(self, fetch_thread: Callable[[str], Awaitable[object]]) -> None:
-        for row in self._storage.active_sessions(channel="discord"):
+        active = self._storage.active_sessions(channel="discord")
+        logger.info("resuming {} active sessions", len(active))
+        for row in active:
             try:
                 thread = await fetch_thread(row.native_id)
                 scope = self._plugin_manager.start_session(
@@ -74,6 +81,7 @@ class DiscordGateway:
                     channel_plugin_factory=lambda t=thread: DiscordThreadPlugin(t),
                 )
             except Exception:
+                logger.warning("failed to resume session {} (thread deleted/missing)", row.session_key)
                 self._storage.handle_for(row).set_status("ended")
                 continue
             self._sessions[int(row.native_id)] = scope
@@ -83,12 +91,13 @@ class DiscordGateway:
         if scope is None:
             return
         async with scope.lock:
-            await scope.bus.emit("user_input", UserInput(text=text))
+            await scope.bus.emit(meta.UserInputEvent, UserInput(text=text))
 
     async def handle_start_command(
         self, create_thread: Callable[[], Awaitable[object]], respond: Callable[[str], Awaitable[None]]
     ) -> None:
         thread = await create_thread()
+        logger.info("starting new session in thread {}", thread.id)
         scope = self._plugin_manager.start_session(
             channel="discord",
             native_id=str(thread.id),
@@ -100,6 +109,8 @@ class DiscordGateway:
     async def handle_stop_command(self, thread_id: int, archive: Callable[[], Awaitable[None]]) -> None:
         scope = self._sessions.pop(thread_id, None)
         if scope is None:
+            logger.warning("stop command for unknown thread {}", thread_id)
             return
+        logger.info("stopping session in thread {}", thread_id)
         self._plugin_manager.stop_session(scope)
         await archive()

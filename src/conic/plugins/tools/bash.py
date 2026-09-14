@@ -1,7 +1,10 @@
 import asyncio
 from dataclasses import dataclass
 
+from loguru import logger
+
 from conic.core.messages import ToolCallResult
+from conic.plugins import meta
 
 
 @dataclass
@@ -32,9 +35,10 @@ class BashToolPlugin:
         self._max_output_bytes = max_output_bytes
 
     def register(self, bus) -> None:
-        bus.on_request("tool_call", self.execute)
+        bus.on_request(meta.ToolCallRequestEvent, self.execute)
 
     async def execute(self, call: BashCall) -> ToolCallResult:
+        logger.debug("bash: {}", call.command[:100])
         try:
             proc = await asyncio.create_subprocess_shell(
                 call.command,
