@@ -10,8 +10,8 @@ def test_load_config_applies_defaults():
     assert config.discord_bot_token == "d-token"
     assert config.openrouter_api_key == "or-key"
     assert config.openrouter_model == "anthropic/claude-sonnet-4.5"
-    assert config.workspace_root == "./workspace"
-    assert config.duckdb_path == "./data/conic.duckdb"
+    assert config.workspace_root.endswith("workspace")
+    assert config.duckdb_path.endswith("conic.duckdb")
     assert config.log_level == "INFO"
     assert config.max_steps_per_turn == 25
     assert config.context_token_budget == 50000

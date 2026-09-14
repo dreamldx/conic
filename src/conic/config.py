@@ -1,4 +1,6 @@
-from pydantic import Field, ValidationError
+from pathlib import Path
+
+from pydantic import Field, ValidationError, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -9,15 +11,25 @@ class ConfigError(Exception):
 class Config(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
+    project_root: str = Field(default=str(Path.cwd()), alias="PROJECT_ROOT")
     discord_bot_token: str = Field(alias="DISCORD_BOT_TOKEN")
     openrouter_api_key: str = Field(alias="OPENROUTER_API_KEY")
     openrouter_model: str = Field(default="anthropic/claude-sonnet-4.5", alias="OPENROUTER_MODEL")
-    workspace_root: str = Field(default="./workspace", alias="WORKSPACE_ROOT")
-    duckdb_path: str = Field(default="./data/conic.duckdb", alias="DUCKDB_PATH")
+    workspace_root: str = Field(default="", alias="WORKSPACE_ROOT")
+    duckdb_path: str = Field(default="", alias="DUCKDB_PATH")
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
     max_steps_per_turn: int = Field(default=25, ge=1, alias="MAX_STEPS_PER_TURN")
     context_token_budget: int = Field(default=50000, ge=1, alias="CONTEXT_TOKEN_BUDGET")
     truncate_keep_last_n: int = Field(default=40, ge=1, alias="TRUNCATE_KEEP_LAST_N")
+
+    @model_validator(mode="after")
+    def _resolve_paths(self):
+        root = Path(self.project_root)
+        if not self.workspace_root:
+            object.__setattr__(self, "workspace_root", str(root / "workspace"))
+        if not self.duckdb_path:
+            object.__setattr__(self, "duckdb_path", str(root / "data" / "conic.duckdb"))
+        return self
 
 
 def _raise_config_error(exc: ValidationError) -> None:
