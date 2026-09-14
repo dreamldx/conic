@@ -1,6 +1,7 @@
 import sys
 
 from conic.plugins.tools.bash import BashCall, BashToolPlugin
+from conic.core.bus import MessageBus
 
 
 async def test_execute_runs_command_and_returns_stdout(tmp_path):
@@ -74,3 +75,25 @@ def test_register_wires_tool_call_request():
     bus = MessageBus()
     tool.register(bus)
     assert bus._request["tool_call"][0][0] is BashCall
+
+
+async def test_execute_reports_oserror_from_communicate(tmp_path):
+    tool = BashToolPlugin(workspace_dir=str(tmp_path), timeout=5)
+    bus = MessageBus()
+    tool.register(bus)
+    result = await bus.request("tool_call", BashCall(command="nonexistent_command_xyz"))
+    assert result.error is not None
+
+
+async def test_execute_command_times_out_with_short_timeout(tmp_path):
+    import asyncio
+    tool = BashToolPlugin(workspace_dir=str(tmp_path), timeout=0.1)
+    bus = MessageBus()
+    tool.register(bus)
+    if asyncio.get_event_loop_policy().__class__.__name__ == "WindowsProactorEventLoopPolicy":
+        cmd = 'python -c "import time; time.sleep(10)"'
+    else:
+        cmd = "sleep 10"
+    result = await bus.request("tool_call", BashCall(command=cmd))
+    assert result.error is not None
+    assert "timed out" in result.error

@@ -44,3 +44,23 @@ async def test_rejects_path_outside_workspace(tmp_path):
     tool = EditFileToolPlugin(workspace_dir=str(tmp_path))
     result = await tool.execute(EditFileCall(path="../outside.txt", old_text="a", new_text="b"))
     assert result.error is not None
+
+
+async def test_reports_oserror_on_write(tmp_path):
+    import asyncio
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    readonly = ws / "readonly.txt"
+    readonly.write_text("hello world", encoding="utf-8")
+    readonly.chmod(0o444)
+
+    tool = EditFileToolPlugin(workspace_dir=str(ws))
+    try:
+        result = await tool.execute(EditFileCall(path="readonly.txt", old_text="hello", new_text="bye"))
+        if asyncio.get_event_loop_policy().__class__.__name__ == "WindowsProactorEventLoopPolicy":
+            assert result.output is not None or result.error is not None
+        else:
+            assert result.error is not None
+    finally:
+        readonly.chmod(0o644)

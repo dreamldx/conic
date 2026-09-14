@@ -38,3 +38,12 @@ def test_load_config_raises_when_discord_token_missing():
 def test_load_config_raises_when_openrouter_key_missing():
     with pytest.raises(ConfigError, match="OPENROUTER_API_KEY"):
         load_config({"DISCORD_BOT_TOKEN": "d-token"})
+
+
+def test_load_config_raises_on_invalid_field_type():
+    with pytest.raises(ConfigError):
+        load_config({
+            "DISCORD_BOT_TOKEN": "d",
+            "OPENROUTER_API_KEY": "k",
+            "MAX_STEPS_PER_TURN": "not_a_number",
+        })

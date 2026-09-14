@@ -29,3 +29,16 @@ async def test_does_not_duplicate_existing_system_prompt():
     )
     result = await plugin.apply(ctx)
     assert result is None
+
+
+def test_assemble_includes_sections_outside_section_order():
+    sections = {"custom_section": "custom content"}
+    result = SystemPromptPlugin._assemble(sections)
+    assert "custom_section" in result
+    assert "custom content" in result
+
+
+def test_assemble_omits_missing_ordered_sections():
+    result = SystemPromptPlugin._assemble({"custom_section": "custom content"})
+    assert "identity" not in result
+    assert "custom_section" in result
