@@ -1,19 +1,30 @@
+from conic.core.bus import MessageBus
 from conic.core.messages import BeforeModelCall
+from conic.plugins.context.sections.identity import IdentitySectionPlugin
 from conic.plugins.context.system_prompt import SystemPromptPlugin
 
 
+def make_plugin():
+    bus = MessageBus()
+    plugin = SystemPromptPlugin([IdentitySectionPlugin()])
+    plugin.register(bus)
+    return plugin, bus
+
+
 async def test_injects_system_prompt_when_missing():
-    plugin = SystemPromptPlugin(prompt="You are Conic.")
+    plugin, _bus = make_plugin()
     ctx = BeforeModelCall(messages=[{"role": "user", "content": "hi"}], tools=[])
     result = await plugin.apply(ctx)
-    assert result.messages[0] == {"role": "system", "content": "You are Conic."}
+    assert result is not None
+    assert result.messages[0]["role"] == "system"
+    assert "coding agent" in result.messages[0]["content"]
     assert result.messages[1] == {"role": "user", "content": "hi"}
 
 
 async def test_does_not_duplicate_existing_system_prompt():
-    plugin = SystemPromptPlugin(prompt="You are Conic.")
+    plugin, _bus = make_plugin()
     ctx = BeforeModelCall(
-        messages=[{"role": "system", "content": "You are Conic."}, {"role": "user", "content": "hi"}],
+        messages=[{"role": "system", "content": "already present"}, {"role": "user", "content": "hi"}],
         tools=[],
     )
     result = await plugin.apply(ctx)

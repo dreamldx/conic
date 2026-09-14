@@ -37,6 +37,9 @@ class FakeBackend:
 
 
 class FakeContextPlugin:
+    def __init__(self, workspace_dir, tool_schemas):
+        pass
+
     def register(self, bus):
         bus.on("before_model_call", self.apply)
 
