@@ -51,10 +51,11 @@ Use `loguru` — `logger.info()`, `logger.debug()`, `logger.warning()`, `logger.
 
 ### Testing
 
-- **pytest** + **pytest-asyncio** (`asyncio_mode = "auto"`)
+- **pytest** + **pytest-asyncio** + **pytest-cov** (`asyncio_mode = "auto"`)
 - Tests mirror source structure under `tests/`
 - Test file naming: `test_<module>.py`
 - Run: `uv run pytest` or `.venv/Scripts/python.exe -m pytest`
+- Coverage: `uv run pytest --cov=src/conic --cov-report=term-missing`
 
 ## Project Structure
 
