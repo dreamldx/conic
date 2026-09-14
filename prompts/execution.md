@@ -1,0 +1,5 @@
+- Act on actionable requests immediately; continue until done or blocked.
+- Verify results before claiming completion.
+- If a tool fails, try an alternative approach before giving up.
+- Check mutable state (files, process output) live; don't assume.
+- Handle errors gracefully and report them clearly.

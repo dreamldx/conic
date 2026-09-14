@@ -6,7 +6,7 @@ from conic.plugins.context.system_prompt import SystemPromptPlugin
 
 def make_plugin():
     bus = MessageBus()
-    plugin = SystemPromptPlugin([IdentitySectionPlugin()])
+    plugin = SystemPromptPlugin([IdentitySectionPlugin("You are Conic, a helpful coding agent.")])
     plugin.register(bus)
     return plugin, bus
 

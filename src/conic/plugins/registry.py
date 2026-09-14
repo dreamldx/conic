@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from conic.config import Config
 from conic.core.manager import PluginSet
 from conic.plugins.backends.openrouter import OpenRouterBackendPlugin
@@ -18,6 +20,19 @@ from conic.plugins.tools.edit_file import EditFileToolPlugin
 from conic.plugins.tools.read_file import ReadFileToolPlugin
 from conic.plugins.tools.write_file import WriteFileToolPlugin
 
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
+_PROMPTS_DIR = _PROJECT_ROOT / "prompts"
+
+
+def _load_prompts() -> dict[str, str]:
+    prompts: dict[str, str] = {}
+    for md_file in _PROMPTS_DIR.glob("*.md"):
+        prompts[md_file.stem] = md_file.read_text(encoding="utf-8").strip()
+    return prompts
+
+
+_PROMPTS = _load_prompts()
+
 
 def build_plugin_set(config: Config) -> PluginSet:
     return PluginSet(
@@ -25,11 +40,11 @@ def build_plugin_set(config: Config) -> PluginSet:
         backend=OpenRouterBackendPlugin(api_key=config.openrouter_api_key, model=config.openrouter_model),
         context_plugins=(
             lambda ws, schemas: SystemPromptPlugin([
-                IdentitySectionPlugin(),
+                IdentitySectionPlugin(_PROMPTS.get("identity", "")),
                 ToolingSectionPlugin(schemas),
                 WorkspaceSectionPlugin(ws),
                 RuntimeSectionPlugin(config.openrouter_model),
-                ExecutionBiasSectionPlugin(),
+                ExecutionBiasSectionPlugin(_PROMPTS.get("execution", "")),
             ]),
             lambda ws, schemas: TruncatorPlugin(keep_last_n=config.truncate_keep_last_n),
             lambda ws, schemas: TokenBudgetPlugin(budget_tokens=config.context_token_budget),

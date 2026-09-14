@@ -6,11 +6,12 @@ from conic.plugins.context.sections.tooling import ToolingSectionPlugin
 async def test_execution_section_adds_guidelines():
     from conic.plugins.context.sections.execution import ExecutionBiasSectionPlugin
     bus = MessageBus()
-    plugin = ExecutionBiasSectionPlugin()
+    plugin = ExecutionBiasSectionPlugin("Act on actionable requests.")
     plugin.register(bus)
     msg = BuildSystemPrompt(sections={})
     result = await bus.emit("build_system_prompt", msg)
     assert "execution" in result.sections
+    assert "actionable" in result.sections["execution"]
 
 
 async def test_runtime_section_includes_model_and_platform():
