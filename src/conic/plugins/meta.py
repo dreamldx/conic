@@ -1,6 +1,6 @@
 """All bus topic names, organized by emitting plugin."""
 
-# ── Plugin: DiscordGateway (channels/discord/gateway.py) ──────────────────
+# ── Plugin: DiscordGateway (conic/discord/gateway.py) ────────────────────
 # emitted when a non-bot message arrives in a monitored Discord thread
 UserInputEvent = "user_input"
 
@@ -39,3 +39,7 @@ SummarizeEvent = "summarize"
 # ── Plugin: SystemPromptPlugin ────────────────────────────────────────────
 # dispatched internally to collect prompt sections from all plugins
 BuildSystemPromptEvent = "build_system_prompt"
+
+# ── Plugin: DiscordGateway ────────────────────────────────────────────────
+# emitted when the session is stopped, adapter should stop sending
+SessionStopEvent = "session_stop"

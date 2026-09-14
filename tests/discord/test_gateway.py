@@ -1,4 +1,4 @@
-from conic.plugins.channels.discord.gateway import DiscordGateway
+from conic.discord.gateway import DiscordGateway
 from conic.services.storage import StorageService
 
 

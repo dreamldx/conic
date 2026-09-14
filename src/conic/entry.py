@@ -5,7 +5,7 @@ from loguru import logger
 
 from conic.config import load_config
 from conic.core.manager import PluginManager
-from conic.plugins.channels.discord.gateway import DiscordGateway
+from conic.discord.gateway import DiscordGateway
 from conic.plugins.registry import build_plugin_set
 from conic.services.storage import StorageService
 

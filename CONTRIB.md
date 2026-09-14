@@ -62,6 +62,7 @@ Use `loguru` — `logger.info()`, `logger.debug()`, `logger.warning()`, `logger.
 ```
 src/conic/
   core/           # MessageBus, SessionScope, PluginManager, messages
+  discord/        # Discord gateway + adapter
   plugins/
     tools/        # bash, read_file, write_file, edit_file
     backends/     # OpenRouter API adapter
@@ -69,7 +70,6 @@ src/conic/
       sections/   # per-section prompt contributors
     loops/        # ReAct execution loop
     policy/       # permission, step limit
-    channels/     # Discord gateway + adapter
     meta.py       # bus topic name constants
     registry.py   # plugin wiring
   services/       # DuckDB storage, SQL queries, data models
@@ -77,6 +77,7 @@ src/conic/
   entry.py        # application entry point
 tests/
   core/
+  discord/
   plugins/
   services/
 ```

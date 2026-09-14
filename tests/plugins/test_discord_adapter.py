@@ -1,7 +1,7 @@
 from conic.core.bus import MessageBus
 from conic.core.messages import AssistantMessage, Error
 from conic.plugins import meta
-from conic.plugins.channels.discord.adapter import DiscordThreadPlugin
+from conic.plugins.discord_adapter import DiscordThreadPlugin
 
 
 class FakeThread:

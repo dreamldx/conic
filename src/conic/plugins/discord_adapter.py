@@ -12,12 +12,18 @@ class DiscordThreadPlugin:
     def __init__(self, thread):
         self._thread = thread
         self._typing_task: asyncio.Task | None = None
+        self._stopped = False
 
     def register(self, bus) -> None:
+        bus.on(meta.SessionStopEvent, self.on_session_stop)
         bus.on(meta.TurnStartEvent, self.on_turn_start)
         bus.on(meta.TurnEndEvent, self.on_turn_end)
         bus.on(meta.ErrorEvent, self.on_error)
         bus.on(meta.AssistantMessageEvent, self.on_assistant_message)
+
+    async def on_session_stop(self, _msg: TurnEnd) -> None:
+        self._stopped = True
+        self._stop_typing()
 
     async def on_turn_start(self, _msg: TurnStart) -> None:
         if self._typing_task is not None and not self._typing_task.done():
@@ -49,5 +55,7 @@ class DiscordThreadPlugin:
             pass
 
     async def _send(self, text: str) -> None:
+        if self._stopped:
+            return
         for i in range(0, len(text), DISCORD_MESSAGE_LIMIT):
             await self._thread.send(text[i: i + DISCORD_MESSAGE_LIMIT])

@@ -4,8 +4,8 @@ import discord
 from discord import app_commands
 from loguru import logger
 
-from conic.core.messages import UserInput
-from conic.plugins.channels.discord.adapter import DiscordThreadPlugin
+from conic.core.messages import TurnEnd, UserInput
+from conic.plugins.discord_adapter import DiscordThreadPlugin
 from conic.plugins import meta
 
 
@@ -112,5 +112,6 @@ class DiscordGateway:
             logger.warning("stop command for unknown thread {}", thread_id)
             return
         logger.info("stopping session in thread {}", thread_id)
+        await scope.bus.emit(meta.SessionStopEvent, TurnEnd())
         self._plugin_manager.stop_session(scope)
         await archive()
