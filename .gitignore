@@ -6,19 +6,14 @@ dist/
 wheels/
 *.egg-info
 
-# Virtual environments
-.venv
-
-# IDE metadata
-.idea/
-
-# Subagent-driven-development scratch workspace
-.superpowers/
+# Dot-directories
+.*/
 
 # Secrets
 .env
 .env.*
 
-# Runtime state (per config.py defaults: DUCKDB_PATH=./data/conic.duckdb, WORKSPACE_ROOT=./workspace)
+# Runtime state
 data/
 workspace/
+identifier.db
