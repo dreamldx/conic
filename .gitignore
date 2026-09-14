@@ -14,3 +14,11 @@ wheels/
 
 # Subagent-driven-development scratch workspace
 .superpowers/
+
+# Secrets
+.env
+.env.*
+
+# Runtime state (per config.py defaults: DUCKDB_PATH=./data/conic.duckdb, WORKSPACE_ROOT=./workspace)
+data/
+workspace/

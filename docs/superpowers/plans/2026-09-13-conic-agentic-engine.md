@@ -3250,31 +3250,37 @@ This task has no automated steps — `discord.py` and OpenRouter cannot be drive
 
 Set `DISCORD_BOT_TOKEN` and `OPENROUTER_API_KEY` (e.g. in a local `.env` loaded by your shell, or exported directly). Confirm `.env`-style secrets files are covered by `.gitignore`.
 
-- [ ] **Step 2: Start the bot**
+- [ ] **Step 2: Configure the Discord application**
+
+In the [Discord Developer Portal](https://discord.com/developers/applications), open the bot application and:
+  - Under **Bot**, enable the **Message Content Intent** (a privileged intent). `DiscordGateway` sets `intents.message_content = True`; without this enabled in the portal, `client.start()` raises `PrivilegedIntentsRequired` and the bot never boots.
+  - Under **OAuth2 → URL Generator** (or your existing invite link), ensure the bot's permissions/scopes include: creating public threads, managing threads (required so `/agent_stop` can archive/lock the thread), and sending messages in threads. Re-invite the bot to the test server if you change its permissions.
+
+- [ ] **Step 3: Start the bot**
 
 Run: `uv run python main.py`
 Expected: process starts, logs in, no exceptions; slash commands sync.
 
-- [ ] **Step 3: Start a session**
+- [ ] **Step 4: Start a session**
 
 In the Discord test server, run `/agent_start` in a channel. Expected: a new thread is created and the bot confirms with an ephemeral message.
 
-- [ ] **Step 4: Exercise the tool loop**
+- [ ] **Step 5: Exercise the tool loop**
 
 In the new thread, ask the bot to run a shell command and read/write a file (e.g. "list the files in your workspace, then create a file named notes.txt with the text 'hello'"). Expected: the bot's reply reflects a multi-step tool loop (bash + write_file), and `notes.txt` exists under `<WORKSPACE_ROOT>/discord/<thread_id>/`.
 
-- [ ] **Step 5: Verify workspace sandboxing**
+- [ ] **Step 6: Verify workspace sandboxing**
 
 Ask the bot to read a file outside its workspace (e.g. "read the file at ../../../etc/passwd"). Expected: the bot reports a tool error, not a crash, and no data from outside the workspace is returned.
 
-- [ ] **Step 6: Verify restart resumption**
+- [ ] **Step 7: Verify restart resumption**
 
 Stop the process (Ctrl+C) without running `/agent_stop`, restart it (`uv run python main.py`), then send another message in the same thread. Expected: the bot responds with awareness of the earlier conversation (loaded from DuckDB), without needing another `/agent_start`.
 
-- [ ] **Step 7: Stop the session**
+- [ ] **Step 8: Stop the session**
 
 Run `/agent_stop` in the thread. Expected: confirmation message, thread gets archived/locked, and a restart afterward does **not** resume that thread.
 
-- [ ] **Step 8: Record results**
+- [ ] **Step 9: Record results**
 
-Note any deviations from the expected behavior above as follow-up bugs; do not mark v1 complete until all seven checks pass.
+Note any deviations from the expected behavior above as follow-up bugs; do not mark v1 complete until all eight checks pass.
