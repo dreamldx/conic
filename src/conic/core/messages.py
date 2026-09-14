@@ -77,3 +77,8 @@ class SummarizeRequest:
 @dataclass
 class SummarizeResult:
     messages: list[dict]
+
+
+@dataclass
+class BuildSystemPrompt:
+    sections: dict[str, str]

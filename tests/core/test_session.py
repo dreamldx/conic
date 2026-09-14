@@ -4,11 +4,11 @@ from datetime import datetime, timezone
 from conic.core.bus import MessageBus
 from conic.core.gateway import Gateway
 from conic.core.session import SessionScope
-from conic.services.storage import SessionRow
+from conic.services.models import Session
 
 
 def make_row(native_id="1"):
-    return SessionRow(
+    return Session(
         session_key=f"discord:{native_id}", channel="discord", native_id=native_id,
         workspace_dir="/tmp/ws", model="m", status="active",
         created_at=datetime.now(timezone.utc),

@@ -10,12 +10,12 @@ class FakePluginManagerRecorder:
     def start_session(self, channel, native_id, channel_plugin_factory):
         from conic.core.bus import MessageBus
         from conic.core.session import SessionScope
-        from conic.services.storage import SessionRow
+        from conic.services.models import Session
         from datetime import datetime, timezone
 
         self.started.append((channel, native_id))
         channel_plugin_factory()  # exercise the closure like the real PluginManager does
-        row = SessionRow(
+        row = Session(
             session_key=f"{channel}:{native_id}", channel=channel, native_id=native_id,
             workspace_dir="/tmp", model="m", status="active", created_at=datetime.now(timezone.utc),
         )
