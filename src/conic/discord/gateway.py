@@ -5,7 +5,7 @@ from discord import app_commands
 from loguru import logger
 
 from conic.core.messages import TurnEnd, UserInput
-from conic.plugins.discord_adapter import DiscordThreadPlugin
+from conic.plugins.channels.discord import DiscordThreadPlugin
 from conic.plugins import meta
 
 
