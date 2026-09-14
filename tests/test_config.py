@@ -1,4 +1,5 @@
 import pytest
+from pydantic import ValidationError
 
 from conic.config import Config, ConfigError, load_config
 
@@ -6,16 +7,15 @@ from conic.config import Config, ConfigError, load_config
 def test_load_config_applies_defaults():
     env = {"DISCORD_BOT_TOKEN": "d-token", "OPENROUTER_API_KEY": "or-key"}
     config = load_config(env)
-    assert config == Config(
-        discord_bot_token="d-token",
-        openrouter_api_key="or-key",
-        openrouter_model="anthropic/claude-sonnet-4.5",
-        workspace_root="./workspace",
-        duckdb_path="./data/conic.duckdb",
-        max_steps_per_turn=25,
-        context_token_budget=50000,
-        truncate_keep_last_n=40,
-    )
+    assert config.discord_bot_token == "d-token"
+    assert config.openrouter_api_key == "or-key"
+    assert config.openrouter_model == "anthropic/claude-sonnet-4.5"
+    assert config.workspace_root == "./workspace"
+    assert config.duckdb_path == "./data/conic.duckdb"
+    assert config.log_level == "INFO"
+    assert config.max_steps_per_turn == 25
+    assert config.context_token_budget == 50000
+    assert config.truncate_keep_last_n == 40
 
 
 def test_load_config_reads_overrides():

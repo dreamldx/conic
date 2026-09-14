@@ -15,9 +15,9 @@ from conic.plugins.tools.write_file import WriteFileToolPlugin
 
 def make_config():
     return Config(
-        discord_bot_token="d", openrouter_api_key="k", openrouter_model="test-model",
-        workspace_root="./workspace", duckdb_path="./data/conic.duckdb",
-        max_steps_per_turn=7, context_token_budget=123, truncate_keep_last_n=9,
+        DISCORD_BOT_TOKEN="d", OPENROUTER_API_KEY="k", OPENROUTER_MODEL="test-model",
+        WORKSPACE_ROOT="./workspace", DUCKDB_PATH="./data/conic.duckdb",
+        LOG_LEVEL="DEBUG", MAX_STEPS_PER_TURN=7, CONTEXT_TOKEN_BUDGET=123, TRUNCATE_KEEP_LAST_N=9,
     )
 
 
@@ -36,7 +36,7 @@ def test_build_plugin_set_wires_backend_with_configured_model():
 
 def test_build_plugin_set_wires_context_chain_with_configured_values():
     plugin_set = build_plugin_set(make_config())
-    instances = [factory() for factory in plugin_set.context_plugins]
+    instances = [factory("/tmp/ws", []) for factory in plugin_set.context_plugins]
     kinds = [type(p) for p in instances]
     assert kinds == [SystemPromptPlugin, TruncatorPlugin, TokenBudgetPlugin]
     truncator = instances[1]
@@ -62,7 +62,7 @@ def test_build_plugin_set_wires_summarizer():
 def test_build_plugin_set_context_and_policy_factories_produce_fresh_instances():
     plugin_set = build_plugin_set(make_config())
     for factory in plugin_set.context_plugins:
-        assert factory() is not factory()
+        assert factory("/tmp/ws", []) is not factory("/tmp/ws", [])
     for factory in plugin_set.policy_plugins:
         assert factory() is not factory()
     assert plugin_set.summarizer() is not plugin_set.summarizer()

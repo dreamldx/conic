@@ -1,4 +1,4 @@
-from main import build_app
+from conic.entry import build_app
 
 
 def test_build_app_wires_storage_and_gateway_without_connecting(tmp_path):
