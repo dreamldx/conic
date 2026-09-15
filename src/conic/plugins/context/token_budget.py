@@ -1,4 +1,4 @@
-from conic.core.messages import BeforeModelCall, SummarizeRequest
+from conic.core.messages import BeforeModelCall, BeforeSummarize, SummarizeDone, SummarizeFailed, SummarizeRequest
 from conic.core.tokencount import estimate_tokens
 from conic.plugins import meta
 
@@ -15,7 +15,14 @@ class TokenBudgetPlugin:
     async def apply(self, ctx: BeforeModelCall) -> BeforeModelCall | None:
         if estimate_tokens(ctx.messages) <= self._budget_tokens:
             return None
-        result = await self._bus.request(
-            meta.SummarizeEvent, SummarizeRequest(messages=ctx.messages, budget_tokens=self._budget_tokens)
-        )
+        request = SummarizeRequest(messages=ctx.messages, budget_tokens=self._budget_tokens)
+        before = await self._bus.emit(meta.BeforeSummarizeEvent, BeforeSummarize(request=request))
+        if before.cancelled:
+            return None
+        try:
+            result = await self._bus.request(meta.SummarizeEvent, before.request)
+        except Exception as exc:
+            await self._bus.emit(meta.SummarizeFailedEvent, SummarizeFailed(exc=exc))
+            raise
+        await self._bus.emit(meta.SummarizeDoneEvent, SummarizeDone(result=result))
         return BeforeModelCall(messages=result.messages, tools=ctx.tools)

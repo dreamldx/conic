@@ -98,11 +98,28 @@ class Error:
 class SummarizeRequest:
     messages: list[dict]
     budget_tokens: int
+    instructions: str | None = None
 
 
 @dataclass
 class SummarizeResult:
     messages: list[dict]
+
+
+@dataclass
+class BeforeSummarize:
+    request: SummarizeRequest
+    cancelled: bool = False
+
+
+@dataclass
+class SummarizeDone:
+    result: SummarizeResult
+
+
+@dataclass
+class SummarizeFailed:
+    exc: Exception
 
 
 @dataclass

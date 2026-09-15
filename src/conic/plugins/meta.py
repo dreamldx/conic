@@ -46,8 +46,14 @@ TurnEndEvent = "turn_end"
 ToolCallRequestEvent = "tool_call"
 
 # ── Plugin: SummarizerPlugin / TokenBudgetPlugin ──────────────────────────
+# emitted before SummarizeEvent; hooks may customize instructions or cancel
+BeforeSummarizeEvent = "before_summarize"
 # dispatched when context exceeds token budget; returned as summary result
 SummarizeEvent = "summarize"
+# emitted after a successful summarize, carrying the SummarizeResult
+SummarizeDoneEvent = "summarize_done"
+# emitted when summarize raises, before the exception propagates
+SummarizeFailedEvent = "summarize_failed"
 
 # ── Plugin: SystemPromptPlugin ────────────────────────────────────────────
 # dispatched internally to collect prompt sections from all plugins

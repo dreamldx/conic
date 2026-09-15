@@ -26,11 +26,11 @@ class SummarizerPlugin:
             return SummarizeResult(messages=req.messages)
 
         transcript = "\n".join(f"{m.get('role')}: {m.get('content')}" for m in to_summarize)
+        instructions = req.instructions or (
+            "Summarize the following conversation history concisely, preserving key facts and decisions."
+        )
         prompt = [
-            {
-                "role": "system",
-                "content": "Summarize the following conversation history concisely, preserving key facts and decisions.",
-            },
+            {"role": "system", "content": instructions},
             {"role": "user", "content": transcript},
         ]
         response = await self._bus.request(meta.ModelRequestEvent, ModelRequest(messages=prompt, tools=[]))

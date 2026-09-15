@@ -63,3 +63,27 @@ async def test_summarize_returns_input_unchanged_when_nothing_to_summarize():
     messages = [{"role": "user", "content": "only one"}]
     result = await plugin.summarize(SummarizeRequest(messages=messages, budget_tokens=1))
     assert result.messages == messages
+
+
+async def test_summarize_uses_custom_instructions_when_provided():
+    plugin = SummarizerPlugin(keep_recent=1)
+    bus = MessageBus()
+
+    captured_prompts = []
+
+    async def fake_model_request(msg: ModelRequest):
+        captured_prompts.append(msg.messages)
+        return ModelResponse(text="summary", tool_calls=[], raw_message={})
+
+    bus.on_request("model_request", fake_model_request)
+    plugin.register(bus)
+
+    messages = [
+        {"role": "user", "content": "old"},
+        {"role": "user", "content": "recent"},
+    ]
+    await plugin.summarize(
+        SummarizeRequest(messages=messages, budget_tokens=1, instructions="focus on decisions only")
+    )
+
+    assert captured_prompts[0][0] == {"role": "system", "content": "focus on decisions only"}
