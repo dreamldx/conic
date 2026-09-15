@@ -18,6 +18,7 @@ Required:
 
 | Variable | Description |
 |---|---|
+| `PROJECT_ROOT` | Absolute path to the repo/install root (where `prompts/` lives, and `WORKSPACE_ROOT`/`DUCKDB_PATH` default relative to it). |
 | `DISCORD_BOT_TOKEN` | Discord bot token. |
 | `OPENROUTER_API_KEY` | OpenRouter API key. |
 

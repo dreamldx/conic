@@ -79,6 +79,37 @@ async def test_resume_active_sessions_continues_past_a_dead_thread(tmp_path):
     storage.shutdown()
 
 
+async def test_resume_active_sessions_does_not_mark_ended_when_thread_exists_but_construction_fails(tmp_path):
+    """If the thread still exists and fetch succeeds, but start_session itself
+    raises (e.g. a plugin factory bug, bad workspace path, transient storage
+    error), the session must not be misreported as a dead/deleted thread and
+    permanently retired — only the fetch_thread failure path may do that."""
+    storage = make_storage(tmp_path)
+    storage.get_or_create(channel="discord", native_id="111")
+    storage.get_or_create(channel="discord", native_id="222")
+
+    class FailingPluginManager(FakePluginManagerRecorder):
+        def start_session(self, channel, native_id, channel_plugin_factory):
+            if native_id == "222":
+                raise RuntimeError("plugin factory bug")
+            return super().start_session(channel, native_id, channel_plugin_factory)
+
+    manager = FailingPluginManager()
+    gateway = DiscordGateway(bot_token="t", plugin_manager=manager, storage=storage)
+
+    async def fake_fetch_thread(native_id: str):
+        return object()
+
+    await gateway.resume_active_sessions(fetch_thread=fake_fetch_thread)
+
+    assert 111 in gateway._sessions
+    assert 222 not in gateway._sessions
+
+    reloaded = storage.get_or_create(channel="discord", native_id="222")
+    assert reloaded.status == "active"
+    storage.shutdown()
+
+
 async def test_handle_message_routes_to_known_session():
     manager = FakePluginManagerRecorder()
     gateway = DiscordGateway(bot_token="t", plugin_manager=manager, storage=None)
@@ -178,6 +209,39 @@ async def test_handle_stop_command_removes_session_and_calls_stop_session():
     assert 444 not in gateway._sessions
     assert manager.stopped == [scope]
     assert archived == [True]
+
+
+async def test_handle_stop_command_waits_for_an_in_flight_turn_to_finish():
+    """/agent_stop must not archive/stop the session while a turn triggered by
+    handle_message is still running under the same scope.lock — it must wait
+    for the lock instead of racing the in-flight turn."""
+    import asyncio
+
+    manager = FakePluginManagerRecorder()
+    gateway = DiscordGateway(bot_token="t", plugin_manager=manager, storage=None)
+    scope = manager.start_session("discord", "444", lambda: object())
+    gateway._sessions[444] = scope
+
+    from conic.core.messages import UserInput
+
+    events = []
+
+    async def on_user_input(msg: UserInput) -> None:
+        events.append("turn_start")
+        await asyncio.sleep(0.05)
+        events.append("turn_end")
+
+    scope.bus.on("user_input", on_user_input)
+
+    async def fake_archive():
+        events.append("archived")
+
+    await asyncio.gather(
+        gateway.handle_message(thread_id=444, text="hello"),
+        gateway.handle_stop_command(thread_id=444, archive=fake_archive),
+    )
+
+    assert events == ["turn_start", "turn_end", "archived"]
 
 
 async def test_handle_stop_command_on_unknown_thread_is_a_noop():

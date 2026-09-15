@@ -118,6 +118,38 @@ async def test_abort_turn_from_a_hook_emits_error_and_stops_the_loop():
     assert not any(m.get("role") == "assistant" for m in handle.messages)
 
 
+async def test_abort_turn_from_before_tool_call_hook_stops_the_turn():
+    """AbortTurn raised inside the per-tool-call try (e.g. a permission-policy
+    denial on before_tool_call) must propagate to the outer handler and abort
+    the turn cleanly, not get caught by the generic `except Exception` and
+    turned into a tool-result error that lets the loop continue."""
+    handle = FakeStorageHandle()
+    tool_call = ToolCallSpec(id="call_1", name="bash", args={"command": "rm -rf /"})
+    responses = [
+        ModelResponse(text=None, tool_calls=[tool_call], raw_message={"role": "assistant", "tool_calls": [1]}),
+        ModelResponse(text="unreachable", tool_calls=[], raw_message={}),
+    ]
+    bus, loop = make_loop(handle, responses)
+
+    async def deny(tc: ToolCall) -> ToolCall:
+        raise AbortTurn("denied by policy")
+
+    bus.on("before_tool_call", deny)
+
+    errors = []
+
+    async def on_error(msg: Error) -> None:
+        errors.append(str(msg.exc))
+
+    bus.on("error", on_error)
+
+    await bus.emit("user_input", UserInput(text="run rm -rf /"))
+
+    assert errors == ["denied by policy"]
+    assert not any(m.get("role") == "tool" for m in handle.messages)
+    assert not any(m.get("content") == "unreachable" for m in handle.messages)
+
+
 async def test_turn_end_emitted_after_final_assistant_message():
     handle = FakeStorageHandle()
     responses = [ModelResponse(text="hi", tool_calls=[], raw_message={})]

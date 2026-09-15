@@ -50,6 +50,8 @@ class ReactLoopPlugin:
                         result: ToolCallResult = await bus.request(meta.ToolCallRequestEvent, payload)
                         result = await bus.emit(meta.ToolCallResultEvent, result)
                         content = result.output if result.error is None else f"Error: {result.error}"
+                    except AbortTurn:
+                        raise
                     except Exception as exc:
                         logger.warning("tool call failed name={} error={}", call.name, exc)
                         content = f"Error: {exc}"

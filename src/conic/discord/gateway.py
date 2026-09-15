@@ -75,14 +75,18 @@ class DiscordGateway:
         for row in active:
             try:
                 thread = await fetch_thread(row.native_id)
+            except Exception:
+                logger.warning("failed to resume session {} (thread deleted/missing)", row.session_key)
+                self._storage.handle_for(row).set_status("ended")
+                continue
+            try:
                 scope = self._plugin_manager.start_session(
                     channel="discord",
                     native_id=row.native_id,
                     channel_plugin_factory=lambda t=thread: DiscordThreadPlugin(t),
                 )
             except Exception:
-                logger.warning("failed to resume session {} (thread deleted/missing)", row.session_key)
-                self._storage.handle_for(row).set_status("ended")
+                logger.exception("failed to construct session {} despite thread existing", row.session_key)
                 continue
             self._sessions[int(row.native_id)] = scope
 
@@ -112,6 +116,7 @@ class DiscordGateway:
             logger.warning("stop command for unknown thread {}", thread_id)
             return
         logger.info("stopping session in thread {}", thread_id)
-        await scope.bus.emit(meta.SessionStopEvent, TurnEnd())
-        self._plugin_manager.stop_session(scope)
+        async with scope.lock:
+            await scope.bus.emit(meta.SessionStopEvent, TurnEnd())
+            self._plugin_manager.stop_session(scope)
         await archive()

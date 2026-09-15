@@ -15,6 +15,7 @@ from conic.plugins.tools.write_file import WriteFileToolPlugin
 
 def make_config():
     return Config(
+        PROJECT_ROOT="/tmp",
         DISCORD_BOT_TOKEN="d", OPENROUTER_API_KEY="k", OPENROUTER_MODEL="test-model",
         WORKSPACE_ROOT="./workspace", DUCKDB_PATH="./data/conic.duckdb",
         LOG_LEVEL="DEBUG", MAX_STEPS_PER_TURN=7, CONTEXT_TOKEN_BUDGET=123, TRUNCATE_KEEP_LAST_N=9,

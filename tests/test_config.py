@@ -5,7 +5,7 @@ from conic.config import Config, ConfigError, load_config
 
 
 def test_load_config_applies_defaults():
-    env = {"DISCORD_BOT_TOKEN": "d-token", "OPENROUTER_API_KEY": "or-key"}
+    env = {"PROJECT_ROOT": "/tmp/conic", "DISCORD_BOT_TOKEN": "d-token", "OPENROUTER_API_KEY": "or-key"}
     config = load_config(env)
     assert config.discord_bot_token == "d-token"
     assert config.openrouter_api_key == "or-key"
@@ -20,6 +20,7 @@ def test_load_config_applies_defaults():
 
 def test_load_config_reads_overrides():
     env = {
+        "PROJECT_ROOT": "/tmp/conic",
         "DISCORD_BOT_TOKEN": "d-token",
         "OPENROUTER_API_KEY": "or-key",
         "OPENROUTER_MODEL": "openai/gpt-4o",
@@ -30,19 +31,25 @@ def test_load_config_reads_overrides():
     assert config.max_steps_per_turn == 10
 
 
+def test_load_config_raises_when_project_root_missing():
+    with pytest.raises(ConfigError, match="PROJECT_ROOT"):
+        load_config({"DISCORD_BOT_TOKEN": "d-token", "OPENROUTER_API_KEY": "or-key"})
+
+
 def test_load_config_raises_when_discord_token_missing():
     with pytest.raises(ConfigError, match="DISCORD_BOT_TOKEN"):
-        load_config({"OPENROUTER_API_KEY": "or-key"})
+        load_config({"PROJECT_ROOT": "/tmp/conic", "OPENROUTER_API_KEY": "or-key"})
 
 
 def test_load_config_raises_when_openrouter_key_missing():
     with pytest.raises(ConfigError, match="OPENROUTER_API_KEY"):
-        load_config({"DISCORD_BOT_TOKEN": "d-token"})
+        load_config({"PROJECT_ROOT": "/tmp/conic", "DISCORD_BOT_TOKEN": "d-token"})
 
 
 def test_load_config_raises_on_invalid_field_type():
     with pytest.raises(ConfigError):
         load_config({
+            "PROJECT_ROOT": "/tmp/conic",
             "DISCORD_BOT_TOKEN": "d",
             "OPENROUTER_API_KEY": "k",
             "MAX_STEPS_PER_TURN": "not_a_number",

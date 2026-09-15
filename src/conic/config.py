@@ -11,7 +11,7 @@ class ConfigError(Exception):
 class Config(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
-    project_root: str = Field(default=str(Path.cwd()), alias="PROJECT_ROOT")
+    project_root: str = Field(alias="PROJECT_ROOT")
     discord_bot_token: str = Field(alias="DISCORD_BOT_TOKEN")
     openrouter_api_key: str = Field(alias="OPENROUTER_API_KEY")
     openrouter_model: str = Field(default="anthropic/claude-sonnet-4.5", alias="OPENROUTER_MODEL")
