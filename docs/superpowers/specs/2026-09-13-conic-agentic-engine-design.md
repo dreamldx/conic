@@ -83,6 +83,8 @@ plugin_manager.start_session(
 )
 ```
 
+`PluginManager.start_session()` 内部按固定顺序把插件挂到新建的 `MessageBus` 上：4 个 ToolPlugin（各自绑定 `workspace_dir`）→ BackendPlugin → context 插件链（system_prompt → truncator → token_budget）→ policy 插件（permission → step_limit）→ SummarizerPlugin → ReactLoopPlugin → channel 插件。`PluginSet.backend` 是**单个共享实例**（不是工厂），因为它无会话状态（只持有 API client 和 model 名），直接在每个会话的 bus 上重复 `register()`；其余插件都以工厂闭包形式传入，确保每会话独立实例。`SessionScope` 额外持有一把 `asyncio.Lock`：`DiscordGateway.handle_message()` 在 `async with scope.lock` 内才 `emit(UserInputEvent, ...)`，避免同一线程内并发消息互相打断同一个 Turn；`handle_stop_command()`（`agent_stop` 命令）同样在 pop 掉路由表条目后用同一把锁包住 `emit(SessionStopEvent) + stop_session()`，确保它会等一个正在跑的 Turn 释放锁之后才停止/归档会话，而不是与之竞态。
+
 ### 5.1 进程启动与会话恢复流程
 
 `Gateway` 通用接口（放在 `core/gateway.py`）：
@@ -131,43 +133,78 @@ class Gateway(Protocol):
 | runtime | `RuntimeSectionPlugin` | 平台、模型等运行时信息 |
 | execution | `ExecutionBiasSectionPlugin` | `prompts/execution.md`（启动时加载进内存） |
 
-任何插件都可以 hook `BuildSystemPromptEvent` 注入自定义 section。`SystemPromptPlugin._assemble()` 按 `SECTION_ORDER` 拼接为最终系统消息。
+任何插件都可以 hook `BuildSystemPromptEvent` 注入自定义 section。`SystemPromptPlugin._assemble()` 按 `SECTION_ORDER` 拼接为最终系统消息；不在 `SECTION_ORDER` 里的 section（未来插件新增的）会追加在已知 section 之后，不会丢失。
+
+`registry.py` 里的 `_load_prompts()` 并不是只认 `identity.md`/`execution.md` 两个硬编码文件名，而是遍历 `prompts/*.md` 下所有文件，以文件名（去掉 `.md`）为 key 存进字典；`build_plugin_set()` 目前只取 `identity`/`execution` 两个 key 使用，往 `prompts/` 下新增 `.md` 文件不会自动被消费，需要相应 section 插件去 `prompts.get(...)`。
 
 ## 8. 各插件详细设计
 
 ### 8.1 LoopPlugin — ReactLoopPlugin
 唯一订阅 `user_input` 的编排者，持有本会话的 `storage_handle`，驱动整个 Turn/Step 流程。
 
+- 构造时除 `tool_schemas` 外还持有 `tool_payload_map: dict[str, type]`——工具的 `llm_name` → 该工具 `execute()` 参数类型（由 `PluginManager` 用 `infer_payload_type` 从签名自动推断），用于把模型返回的 `ToolCallSpec.args`（dict）转换成对应工具的 dataclass payload，再走 `bus.request(ToolCallRequestEvent, payload)`。
+- 系统提示词不落库：每个 Step 都从 `storage.load_history()` 取纯对话历史（不含 system），再交给 `BeforeModelCallEvent` 链（`SystemPromptPlugin` 会重新拼一份 system 消息临时前置），因此 system prompt 内容可以随 workspace/runtime 等运行时信息逐 Step 刷新，但不会污染持久化历史。
+- 单次工具调用若在 `ToolCallEvent`/`ToolCallRequestEvent`/`ToolCallResultEvent` 任一环节抛出普通异常，Loop 会捕获并把 `f"Error: {exc}"` 作为该 `tool_call_id` 的回复内容写回历史（保留原始 `call.id`，不中断整个 Turn）；`AbortTurn` 是这个局部 catch 的显式例外——即使在这三个环节里抛出（例如 `PermissionPolicyPlugin` 在 `before_tool_call` 里拒绝一次调用），也会先被 `except AbortTurn: raise` 放行，穿透到外层，和 `StepLimitPlugin` 那种在 `StepStartEvent` 抛出的 `AbortTurn` 一样，终止整个 Turn 并发 `ErrorEvent`。
+
 ### 8.2 BackendPlugin — OpenRouterBackendPlugin
 唯一应答 `model_request`，用 openai SDK 调用 OpenRouter API。
 
 ### 8.3 ToolPlugin（4 个）
-每个工具构造时绑定本会话 `workspace_dir`，任何解析后越出该目录的路径直接拒绝：
-- `BashToolPlugin`：子进程执行，超时（默认 60s），输出截断
-- `ReadFileToolPlugin`：支持 offset/limit
-- `WriteFileToolPlugin` / `EditFileToolPlugin`
+每个工具构造时绑定本会话 `workspace_dir`，任何解析后越出该目录的路径直接拒绝。路径校验逻辑集中在 `plugins/tools/base.py`：`resolve_within_workspace(workspace_dir, path)` 把相对路径解析到 `workspace_dir` 下并 `.resolve()`，若结果不在 workspace 内则 `raise WorkspaceEscapeError`；四个文件类工具都复用这一个函数，不各自实现越权检查。
+
+- `BashToolPlugin`：`asyncio.create_subprocess_shell` 在 `workspace_dir` 下执行，默认超时 60s（`asyncio.TimeoutError` 时 kill 进程），stdout/stderr 合并后按字节截断（默认 20000 字节，超出附加 `...[truncated]`），非零退出码作为 `error` 返回
+- `ReadFileToolPlugin`：`offset`/`limit`（默认 0 / 2000 行）按行切片，超出部分返回时附加总行数提示
+- `WriteFileToolPlugin`：创建/覆盖文件，返回结果里报告新旧行数和 created/overwritten 状态
+- `EditFileToolPlugin`：要求 `old_text` 在文件中**精确出现一次**，否则报错（未找到 / 不唯一），成功后只替换第一处匹配
 
 ### 8.4 DiscordGateway（Core Service，实现 `Gateway` Protocol）
 进程级 discord.py 连接持有者，维护 `{thread_id: SessionScope}` 路由表。在 `conic/discord/gateway.py`。
 
 ### 8.5 DiscordThreadPlugin（Plugin）
-每会话一份，订阅 `AssistantMessageEvent`/`ErrorEvent`/`TurnStartEvent`/`TurnEndEvent`/`SessionStopEvent`。TurnStart 时启动 typing indicator（每 8s 刷新，60s 超时），TurnEnd/Error/SessionStop 时停止。在 `conic/plugins/channels/discord.py`。
+每会话一份，订阅 `AssistantMessageEvent`/`ErrorEvent`/`TurnStartEvent`/`StepStartEvent`/`TurnEndEvent`/`SessionStopEvent`。TurnStart/StepStart 时启动或续接 typing indicator（`TYPING_INTERVAL=8s` 刷新一次 `thread.typing()`，`TYPING_TIMEOUT=20s` 兜底超时自动停止单段任务），TurnEnd/Error/SessionStop 时停止。由于单段任务有 20s 上限，多 Step 的长 Turn 靠每个 `StepStartEvent` 重新拉起一个新任务（若旧任务已超时结束）来续接，避免指示器在 Turn 中途消失。在 `conic/plugins/channels/discord.py`。
+
+- `SessionStopEvent`（`agent_stop` 命令触发）会把内部 `_stopped` 标记置位；之后任何 `AssistantMessageEvent`/`ErrorEvent` 都会被 `_send()` 直接忽略——防止会话已停止（thread 即将被 archive/lock）后模型仍在跑最后一个 Step 时把消息发进已关闭的线程。
+- `_send()` 按 `DISCORD_MESSAGE_LIMIT=2000` 字符切片分段发送，应对 Discord 单条消息长度限制。
 
 ### 8.6 PolicyPlugin
 - `PermissionPolicyPlugin`：v1 全部放行
 - `StepLimitPlugin`：超过 `MAX_STEPS_PER_TURN` 时 `raise AbortTurn`
 
 ### 8.7 Context 插件链
-- `SystemPromptPlugin`：emit `BuildSystemPromptEvent` 收集 sections 并组装系统消息
-- `TruncatorPlugin`：按消息数滑动窗口截断
-- `TokenBudgetPlugin`：统计 token 数，超预算时触发摘要
+- `SystemPromptPlugin`：emit `BuildSystemPromptEvent` 收集 sections 并组装系统消息；仅当 `ctx.messages[0]` 还不是 `system` 角色时才前置（防御性判断，正常流程下每个 Step 都会重新拼一份）
+- `TruncatorPlugin`：非 system 消息数超过 `keep_last_n`（默认 40）时，从尾部保留最近 N 条，system 消息始终保留
+- `TokenBudgetPlugin`：用 `core/tokencount.estimate_tokens`（`总字符数 // 4`的粗略估算，不依赖 tokenizer）统计 token 数，超预算时通过 `SummarizeEvent` 触发摘要
+
+Truncator 和 Summarizer 的裁切点都要经过 `core/messagealign.align_cut(messages, cut_index)`：如果提议的裁切点落在一条 `role: "tool"` 消息上（即会把某个 `tool_calls` 消息和它对应的工具回复截断成孤儿），就把裁切点持续前移，直到落在完整的 assistant+tool回复 消息组之前，保证任何被保留的 `tool` 消息都能在保留区间内找到它所回复的 assistant 消息。
 
 ### 8.8 SummarizerPlugin
-仅在 TokenBudgetPlugin 判断超限时才被调用，用模型把旧历史压缩为摘要。
+仅在 TokenBudgetPlugin 判断超限时通过 `SummarizeEvent`（request/response）被调用：
+1. 从待压缩上下文里分离出 system 消息和其余消息；用 `align_cut` 找到"保留最近 `keep_recent`（默认 5）条、且不孤立 tool 回复"的裁切点
+2. 把裁切点之前的历史拼成纯文本 transcript，通过 `bus.request(ModelRequestEvent, ...)`（复用同一个 backend）请求模型生成摘要——即摘要生成本身也是一次模型调用，走的是同一条 `model_request` 总线通道
+3. 把摘要包装成新的 `{"role": "system", "content": "[Earlier conversation summary]\n..."}` 消息，与原 system 消息、最近保留的消息一起返回，替换原始的 `ctx.messages`（这次替换只影响本次模型调用的 payload，不写回持久化历史，因此下一 Step 若历史仍超预算会重新触发摘要）
 
 ## 9. StorageService（Core Service）
 
-DuckDB schema 保持简单。SQL 语句集中在 `src/conic/services/queries.py` 中，每句包装为返回 `(sql, params)` 的函数。数据模型使用 pydantic `Session`/`Message` 类型（`src/conic/services/models.py`）。
+DuckDB schema 保持简单，两张表：
+
+```sql
+CREATE TABLE sessions (
+    session_key VARCHAR PRIMARY KEY,   -- "{channel}:{native_id}"，如 "discord:123456"
+    channel VARCHAR, native_id VARCHAR, workspace_dir VARCHAR,
+    model VARCHAR, status VARCHAR,     -- status: "active" | "ended"
+    created_at VARCHAR
+)
+CREATE TABLE messages (
+    session_key VARCHAR, seq INTEGER,  -- 每会话独立递增（MAX(seq)+1），不用自增列
+    role VARCHAR, content VARCHAR,     -- content 是整条消息序列化后的 JSON（含 tool_calls/tool_call_id 等原始字段，不是纯文本）
+    created_at VARCHAR,
+    PRIMARY KEY (session_key, seq)
+)
+```
+
+SQL 语句集中在 `src/conic/services/queries.py` 中，每句包装为返回 `(sql, params)` 的函数。数据模型使用 pydantic `Session`/`Message` 类型（`src/conic/services/models.py`）。
+
+`StorageService`（进程级单例，持有 DuckDB 连接）与 `SessionHandle`（`storage.handle_for(row)` 返回，仅包装 `session_key` + 连接引用）职责分离：前者管理会话行的创建/恢复/状态流转（`get_or_create`/`active_sessions`/`set_status`），后者是 `ReactLoopPlugin` 直接持有、每次读写历史消息时使用的窄接口（`append_message`/`load_history`），Loop 不直接接触 `StorageService` 或原始连接。`get_or_create()` 首次创建会话时会按 `{workspace_root}/{channel}/{native_id}` 派生并 `mkdir` 出 workspace 目录，写入 `workspace_dir` 字段供后续该会话所有 ToolPlugin 复用。
 
 ## 10. 配置项
 
@@ -177,10 +214,10 @@ DuckDB schema 保持简单。SQL 语句集中在 `src/conic/services/queries.py`
 |---|---|---|
 | `DISCORD_BOT_TOKEN` | 无（必填） | Discord bot token |
 | `OPENROUTER_API_KEY` | 无（必填） | OpenRouter API key |
+| `PROJECT_ROOT` | 无（必填） | 项目根目录，绝对路径。main.py 启动时会自动设为 `__file__` 所在目录；走 `conic` 控制台脚本入口时不会自动设置，必须显式提供（环境变量或 `.env`）——不做 `__file__`/cwd/`pyproject.toml` 猜测，因为那在打包/frozen 的 Release 场景下无法工作，会静默解析到错误目录 |
 | `OPENROUTER_MODEL` | `anthropic/claude-sonnet-4.5` | 默认模型 |
 | `WORKSPACE_ROOT` | `{PROJECT_ROOT}/workspace` | 工作区根目录 |
 | `DUCKDB_PATH` | `{PROJECT_ROOT}/data/conic.duckdb` | 持久化文件路径 |
-| `PROJECT_ROOT` | `Path.cwd()` | 项目根目录（main.py 启动时设为 `__file__` 所在目录） |
 | `LOG_LEVEL` | `INFO` | loguru 日志级别 |
 | `MAX_STEPS_PER_TURN` | `25` | 单轮最大 Step 数 |
 | `CONTEXT_TOKEN_BUDGET` | `50000` | 触发摘要压缩的 token 阈值 |
@@ -191,8 +228,9 @@ DuckDB schema 保持简单。SQL 语句集中在 `src/conic/services/queries.py`
 ## 11. 目录结构
 
 ```
-conic/
+conic/                     # 项目根（main.py 与 pyproject.toml 同级，不在 src 下）
   main.py                # 入口：设置 PROJECT_ROOT 环境变量，调用 main()
+  pyproject.toml         # console_script: conic = "conic.entry:main"
   prompts/
     identity.md           # 系统提示词 identity section
     execution.md          # 系统提示词 execution section
@@ -203,21 +241,23 @@ conic/
       gateway.py          # DiscordGateway (Core Service)
     core/
       bus.py              # MessageBus
-      manager.py          # PluginManager
+      manager.py          # PluginManager, PluginSet
       gateway.py          # Gateway Protocol
-      session.py          # SessionScope
+      session.py          # SessionScope（含 per-session asyncio.Lock）
       messages.py         # 所有消息 dataclass
-      errors.py           # AbortTurn、NoResponderError 等
-      messagealign.py     # 截断对齐（防止 orphan tool replies）
-      tokencount.py       # Token 估算
+      errors.py           # AbortTurn、NoResponderError、DuplicateResponderError
+      messagealign.py     # align_cut：截断对齐，防止 orphan tool replies
+      tokencount.py       # estimate_tokens：字符数 // 4 的粗略估算
     plugins/
       meta.py             # 总线 topic 名称常量 (*Event)
-      registry.py         # 插件注册表，加载 prompts
+      registry.py         # build_plugin_set()：组装 PluginSet，泛化加载 prompts/*.md
       channels/
         discord.py        # DiscordThreadPlugin (Plugin)
       loops/react_loop.py
       backends/openrouter.py
-      tools/{bash,read_file,write_file,edit_file}.py
+      tools/
+        base.py           # resolve_within_workspace / WorkspaceEscapeError（4 个工具共用）
+        bash.py / read_file.py / write_file.py / edit_file.py
       context/
         system_prompt.py  # 组装系统提示词
         truncator.py
@@ -231,21 +271,20 @@ conic/
           execution.py
       policy/{permission,step_limit}.py
     services/
-      storage.py          # StorageService (DuckDB)
+      storage.py          # StorageService + SessionHandle (DuckDB)
       queries.py          # SQL 语句函数
       models.py           # Session/Message pydantic 模型
-  tests/
+  tests/                  # 结构与 src/conic 镜像，另含 test_config.py、test_main.py
     core/
     discord/
-    plugins/channels/
-    plugins/context/
-    plugins/tools/
+    plugins/{backends,channels,context,loops,policy,tools}/
+    plugins/test_registry.py
     services/
 ```
 
 ## 12. 日志
 
-使用 `loguru`，级别通过 `LOG_LEVEL` 环境变量控制（默认 `INFO`）。`main.py` 的 `build_app()` 中统一配置 `logger.remove()` + `logger.add(sys.stderr)`。各模块通过 `from loguru import logger` 获取全局 logger。
+使用 `loguru`，级别通过 `LOG_LEVEL` 环境变量控制（默认 `INFO`）。`entry.py` 的 `build_app()` 中统一配置 `logger.remove()` + `logger.add(sys.stderr)`。各模块通过 `from loguru import logger` 获取全局 logger。
 
 ## 13. 错误处理
 
