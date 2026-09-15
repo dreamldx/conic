@@ -7,6 +7,16 @@ class UserInput:
 
 
 @dataclass
+class SessionStart:
+    reason: str
+
+
+@dataclass
+class SessionEnd:
+    reason: str
+
+
+@dataclass
 class TurnStart:
     pass
 

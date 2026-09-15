@@ -1,5 +1,6 @@
 from conic.discord.gateway import DiscordGateway
 from conic.services.storage import StorageService
+from conic.plugins import meta
 
 
 class FakePluginManagerRecorder:
@@ -23,6 +24,38 @@ class FakePluginManagerRecorder:
 
     def stop_session(self, scope):
         self.stopped.append(scope)
+
+
+class FakePluginManagerFixedScope:
+    """Ignores channel_plugin_factory and always returns a pre-built scope,
+    so a test can attach bus listeners *before* calling the gateway method —
+    gateway emits session_start internally and returns before the test would
+    otherwise get a chance to subscribe."""
+
+    def __init__(self, scope):
+        self._scope = scope
+        self.stopped: list[object] = []
+
+    def start_session(self, channel, native_id, channel_plugin_factory):
+        channel_plugin_factory()
+        return self._scope
+
+    def stop_session(self, scope):
+        self.stopped.append(scope)
+
+
+def make_fixed_scope(native_id="333"):
+    from conic.core.bus import MessageBus
+    from conic.core.session import SessionScope
+    from conic.services.models import Session
+    from datetime import datetime, timezone
+
+    bus = MessageBus()
+    row = Session(
+        session_key=f"discord:{native_id}", channel="discord", native_id=native_id,
+        workspace_dir="/tmp", model="m", status="active", created_at=datetime.now(timezone.utc),
+    )
+    return bus, SessionScope(bus=bus, row=row)
 
 
 def make_storage(tmp_path):
@@ -108,6 +141,82 @@ async def test_resume_active_sessions_does_not_mark_ended_when_thread_exists_but
     reloaded = storage.get_or_create(channel="discord", native_id="222")
     assert reloaded.status == "active"
     storage.shutdown()
+
+
+async def test_handle_start_command_emits_session_start_with_reason_new():
+    from conic.core.messages import SessionStart
+
+    bus, scope = make_fixed_scope()
+    starts = []
+
+    async def on_session_start(msg: SessionStart) -> None:
+        starts.append(msg.reason)
+
+    bus.on(meta.SessionStartEvent, on_session_start)
+
+    manager = FakePluginManagerFixedScope(scope)
+    gateway = DiscordGateway(bot_token="t", plugin_manager=manager, storage=None)
+
+    async def fake_create_thread():
+        class FakeThread:
+            id = 333
+        return FakeThread()
+
+    async def fake_respond(text: str):
+        pass
+
+    await gateway.handle_start_command(create_thread=fake_create_thread, respond=fake_respond)
+
+    assert starts == ["new"]
+
+
+async def test_resume_active_sessions_emits_session_start_with_reason_resume(tmp_path):
+    from conic.core.messages import SessionStart
+
+    storage = make_storage(tmp_path)
+    storage.get_or_create(channel="discord", native_id="111")
+
+    bus, scope = make_fixed_scope(native_id="111")
+    starts = []
+
+    async def on_session_start(msg: SessionStart) -> None:
+        starts.append(msg.reason)
+
+    bus.on(meta.SessionStartEvent, on_session_start)
+
+    manager = FakePluginManagerFixedScope(scope)
+    gateway = DiscordGateway(bot_token="t", plugin_manager=manager, storage=storage)
+
+    async def fake_fetch_thread(native_id: str):
+        return object()
+
+    await gateway.resume_active_sessions(fetch_thread=fake_fetch_thread)
+
+    assert starts == ["resume"]
+    storage.shutdown()
+
+
+async def test_handle_stop_command_emits_session_end_with_reason_user_stop():
+    from conic.core.messages import SessionEnd
+
+    manager = FakePluginManagerRecorder()
+    gateway = DiscordGateway(bot_token="t", plugin_manager=manager, storage=None)
+    scope = manager.start_session("discord", "444", lambda: object())
+    gateway._sessions[444] = scope
+
+    ends = []
+
+    async def on_session_end(msg: SessionEnd) -> None:
+        ends.append(msg.reason)
+
+    scope.bus.on(meta.SessionEndEvent, on_session_end)
+
+    async def fake_archive():
+        pass
+
+    await gateway.handle_stop_command(thread_id=444, archive=fake_archive)
+
+    assert ends == ["user_stop"]
 
 
 async def test_handle_message_routes_to_known_session():

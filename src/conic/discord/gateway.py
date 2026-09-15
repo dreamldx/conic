@@ -4,7 +4,7 @@ import discord
 from discord import app_commands
 from loguru import logger
 
-from conic.core.messages import TurnEnd, UserInput
+from conic.core.messages import SessionEnd, SessionStart, TurnEnd, UserInput
 from conic.plugins.channels.discord import DiscordThreadPlugin
 from conic.plugins import meta
 
@@ -85,6 +85,7 @@ class DiscordGateway:
                     native_id=row.native_id,
                     channel_plugin_factory=lambda t=thread: DiscordThreadPlugin(t),
                 )
+                await scope.bus.emit(meta.SessionStartEvent, SessionStart(reason="resume"))
             except Exception:
                 logger.exception("failed to construct session {} despite thread existing", row.session_key)
                 continue
@@ -107,6 +108,7 @@ class DiscordGateway:
             native_id=str(thread.id),
             channel_plugin_factory=lambda: DiscordThreadPlugin(thread),
         )
+        await scope.bus.emit(meta.SessionStartEvent, SessionStart(reason="new"))
         self._sessions[thread.id] = scope
         await respond(f"Started session in thread {thread.id}")
 
@@ -118,5 +120,6 @@ class DiscordGateway:
         logger.info("stopping session in thread {}", thread_id)
         async with scope.lock:
             await scope.bus.emit(meta.SessionStopEvent, TurnEnd())
+            await scope.bus.emit(meta.SessionEndEvent, SessionEnd(reason="user_stop"))
             self._plugin_manager.stop_session(scope)
         await archive()

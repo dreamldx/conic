@@ -3,6 +3,11 @@
 # ── Plugin: DiscordGateway (conic/discord/gateway.py) ────────────────────
 # emitted when a non-bot message arrives in a monitored Discord thread
 UserInputEvent = "user_input"
+# emitted once per session, right after PluginManager.start_session wires
+# up its bus (reason: "new" or "resume")
+SessionStartEvent = "session_start"
+# emitted once per session when it is deliberately ended (reason: "user_stop")
+SessionEndEvent = "session_end"
 
 # ── Plugin: ReactLoopPlugin (loops/react_loop.py) ──────────────────────────
 # The main orchestrator drives the full ReAct cycle per user turn.
