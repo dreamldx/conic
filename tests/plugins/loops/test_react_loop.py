@@ -5,8 +5,9 @@ import pytest
 from conic.core.bus import MessageBus
 from conic.core.errors import AbortTurn
 from conic.core.messages import (
-    AssistantMessage, Error, ModelRequest, ModelResponse, StepStart,
-    ToolCall, ToolCallResult, ToolCallSpec, TurnEnd, UserInput,
+    AssistantMessage, Error, ModelRequest, ModelResponse, StepEnd, StepStart,
+    ToolCall, ToolCallResult, ToolCallSpec, ToolExecutionEnd, ToolExecutionStart,
+    TurnEnd, UserInput,
 )
 from conic.plugins.loops.react_loop import ReactLoopPlugin
 
@@ -93,6 +94,107 @@ async def test_multi_step_turn_executes_tool_then_returns_final_answer():
     assert steps == [0, 1]
     tool_messages = [m for m in handle.messages if m.get("role") == "tool"]
     assert tool_messages == [{"role": "tool", "tool_call_id": "call_1", "content": "ran ls"}]
+
+
+async def test_step_end_emitted_with_matching_step_index_on_final_step():
+    handle = FakeStorageHandle()
+    responses = [ModelResponse(text="hi there", tool_calls=[], raw_message={"role": "assistant"})]
+    bus, loop = make_loop(handle, responses)
+
+    ends = []
+
+    async def on_step_end(msg: StepEnd) -> None:
+        ends.append(msg.step_index)
+
+    bus.on("step_end", on_step_end)
+
+    await bus.emit("user_input", UserInput(text="hello"))
+
+    assert ends == [0]
+
+
+async def test_step_end_emitted_once_per_step_with_matching_index():
+    handle = FakeStorageHandle()
+    tool_call = ToolCallSpec(id="call_1", name="bash", args={"command": "ls"})
+    responses = [
+        ModelResponse(text=None, tool_calls=[tool_call], raw_message={"role": "assistant", "tool_calls": [1]}),
+        ModelResponse(text="done", tool_calls=[], raw_message={"role": "assistant"}),
+    ]
+    bus, loop = make_loop(handle, responses)
+
+    ends = []
+
+    async def on_step_end(msg: StepEnd) -> None:
+        ends.append(msg.step_index)
+
+    bus.on("step_end", on_step_end)
+
+    await bus.emit("user_input", UserInput(text="run ls"))
+
+    assert ends == [0, 1]
+
+
+async def test_tool_execution_start_and_end_bracket_the_actual_tool_dispatch():
+    handle = FakeStorageHandle()
+    tool_call = ToolCallSpec(id="call_1", name="bash", args={"command": "ls"})
+    responses = [
+        ModelResponse(text=None, tool_calls=[tool_call], raw_message={"role": "assistant", "tool_calls": [1]}),
+        ModelResponse(text="done", tool_calls=[], raw_message={"role": "assistant"}),
+    ]
+    bus, loop = make_loop(handle, responses)
+
+    order = []
+
+    async def on_before_tool_call(msg: ToolCall) -> None:
+        order.append("before_tool_call")
+
+    async def on_execution_start(msg: ToolExecutionStart) -> None:
+        order.append("tool_execution_start")
+        assert msg.call.name == "bash"
+
+    async def on_execution_end(msg: ToolExecutionEnd) -> None:
+        order.append("tool_execution_end")
+        assert msg.call.name == "bash"
+        assert msg.result.output == "ran ls"
+
+    async def on_tool_result(msg: ToolCallResult) -> None:
+        order.append("tool_result")
+
+    bus.on("before_tool_call", on_before_tool_call)
+    bus.on("tool_execution_start", on_execution_start)
+    bus.on("tool_execution_end", on_execution_end)
+    bus.on("tool_result", on_tool_result)
+
+    await bus.emit("user_input", UserInput(text="run ls"))
+
+    assert order == ["before_tool_call", "tool_execution_start", "tool_execution_end", "tool_result"]
+
+
+async def test_tool_execution_end_carries_raw_result_before_tool_result_mutation():
+    handle = FakeStorageHandle()
+    tool_call = ToolCallSpec(id="call_1", name="bash", args={"command": "ls"})
+    responses = [
+        ModelResponse(text=None, tool_calls=[tool_call], raw_message={"role": "assistant", "tool_calls": [1]}),
+        ModelResponse(text="done", tool_calls=[], raw_message={"role": "assistant"}),
+    ]
+    bus, loop = make_loop(handle, responses)
+
+    captured = []
+
+    async def on_execution_end(msg: ToolExecutionEnd) -> None:
+        captured.append(msg.result.output)
+
+    async def mutate_result(msg: ToolCallResult) -> ToolCallResult:
+        return ToolCallResult(output="mutated", error=None)
+
+    bus.on("tool_execution_end", on_execution_end)
+    bus.on("tool_result", mutate_result)
+
+    await bus.emit("user_input", UserInput(text="run ls"))
+
+    assert captured == ["ran ls"]
+    tool_messages = [m for m in handle.messages if m.get("role") == "tool"]
+    assert tool_messages[0]["content"] == "mutated"
 
 
 async def test_abort_turn_from_a_hook_emits_error_and_stops_the_loop():

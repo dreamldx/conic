@@ -16,6 +16,8 @@ SessionEndEvent = "session_end"
 TurnStartEvent = "turn_start"
 # emitted at the start of each step within a turn
 StepStartEvent = "step_start"
+# emitted at the end of each step within a turn (mirrors StepStartEvent)
+StepEndEvent = "step_end"
 # emitted before each LLM call, carries messages + tool schemas
 BeforeModelCallEvent = "before_model_call"
 # dispatched as a request to the backend for LLM completion
@@ -24,6 +26,12 @@ ModelRequestEvent = "model_request"
 ModelResponseEvent = "model_response"
 # emitted before each tool execution for policy inspection
 ToolCallEvent = "before_tool_call"
+# emitted right before a tool actually executes, after before_tool_call
+# policy checks have run (distinguishes "allowed" from "actually running")
+ToolExecutionStartEvent = "tool_execution_start"
+# emitted right after a tool finishes executing, carrying the raw result
+# before the tool_result observation/mutation chain runs
+ToolExecutionEndEvent = "tool_execution_end"
 # received from tool plugin, re-emitted for observation
 ToolCallResultEvent = "tool_result"
 # emitted when the LLM produces a final text-only response

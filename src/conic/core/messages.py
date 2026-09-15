@@ -32,6 +32,11 @@ class StepStart:
 
 
 @dataclass
+class StepEnd:
+    step_index: int
+
+
+@dataclass
 class BeforeModelCall:
     messages: list[dict]
     tools: list[dict]
@@ -66,6 +71,17 @@ class ToolCall:
 class ToolCallResult:
     output: str | None = None
     error: str | None = None
+
+
+@dataclass
+class ToolExecutionStart:
+    call: ToolCallSpec
+
+
+@dataclass
+class ToolExecutionEnd:
+    call: ToolCallSpec
+    result: ToolCallResult
 
 
 @dataclass
