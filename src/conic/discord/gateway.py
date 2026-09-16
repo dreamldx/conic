@@ -4,7 +4,7 @@ import discord
 from discord import app_commands
 from loguru import logger
 
-from conic.core.messages import SessionEnd, SessionStart, TurnEnd, UserInput
+from conic.core.messages import Input, SessionEnd, SessionStart, TurnEnd, UserInput
 from conic.plugins.channels.discord import DiscordThreadPlugin
 from conic.plugins import meta
 
@@ -96,7 +96,10 @@ class DiscordGateway:
         if scope is None:
             return
         async with scope.lock:
-            await scope.bus.emit(meta.UserInputEvent, UserInput(text=text))
+            ctx = await scope.bus.emit(meta.InputEvent, Input(text=text))
+            if ctx.handled:
+                return
+            await scope.bus.emit(meta.UserInputEvent, UserInput(text=ctx.text))
 
     async def handle_start_command(
         self, create_thread: Callable[[], Awaitable[object]], respond: Callable[[str], Awaitable[None]]

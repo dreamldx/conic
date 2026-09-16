@@ -7,6 +7,12 @@ class UserInput:
 
 
 @dataclass
+class Input:
+    text: str
+    handled: bool = False
+
+
+@dataclass
 class SessionStart:
     reason: str
 

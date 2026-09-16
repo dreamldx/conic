@@ -362,3 +362,53 @@ async def test_handle_stop_command_on_unknown_thread_is_a_noop():
 
     await gateway.handle_stop_command(thread_id=555, archive=fake_archive)  # must not raise
     assert manager.stopped == []
+
+
+async def test_handle_message_input_hook_can_transform_text_before_user_input():
+    from conic.core.messages import Input, UserInput
+
+    manager = FakePluginManagerRecorder()
+    gateway = DiscordGateway(bot_token="t", plugin_manager=manager, storage=None)
+    scope = manager.start_session("discord", "222", lambda: object())
+    gateway._sessions[222] = scope
+
+    async def upcase(msg: Input) -> Input:
+        return Input(text=msg.text.upper())
+
+    received = []
+
+    async def on_user_input(msg: UserInput) -> None:
+        received.append(msg.text)
+
+    scope.bus.on(meta.InputEvent, upcase)
+    scope.bus.on(meta.UserInputEvent, on_user_input)
+
+    await gateway.handle_message(thread_id=222, text="hello")
+
+    assert received == ["HELLO"]
+
+
+async def test_handle_message_input_hook_can_mark_handled_and_short_circuit():
+    from conic.core.messages import Input, UserInput
+
+    manager = FakePluginManagerRecorder()
+    gateway = DiscordGateway(bot_token="t", plugin_manager=manager, storage=None)
+    scope = manager.start_session("discord", "222", lambda: object())
+    gateway._sessions[222] = scope
+
+    async def handle_command(msg: Input) -> Input:
+        if msg.text == "!status":
+            return Input(text=msg.text, handled=True)
+        return msg
+
+    received = []
+
+    async def on_user_input(msg: UserInput) -> None:
+        received.append(msg.text)
+
+    scope.bus.on(meta.InputEvent, handle_command)
+    scope.bus.on(meta.UserInputEvent, on_user_input)
+
+    await gateway.handle_message(thread_id=222, text="!status")
+
+    assert received == []

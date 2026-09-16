@@ -3,6 +3,9 @@
 # ── Plugin: DiscordGateway (conic/discord/gateway.py) ────────────────────
 # emitted when a non-bot message arrives in a monitored Discord thread
 UserInputEvent = "user_input"
+# emitted right before UserInputEvent, so hooks can transform the text or
+# mark it handled to keep it from reaching the session's loop entirely
+InputEvent = "input"
 # emitted once per session, right after PluginManager.start_session wires
 # up its bus (reason: "new" or "resume")
 SessionStartEvent = "session_start"
