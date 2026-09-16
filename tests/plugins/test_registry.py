@@ -31,8 +31,17 @@ def test_build_plugin_set_wires_the_four_v1_tools():
 
 def test_build_plugin_set_wires_backend_with_configured_model():
     plugin_set = build_plugin_set(make_config())
-    assert isinstance(plugin_set.backend, OpenRouterBackendPlugin)
-    assert plugin_set.backend.model == "test-model"
+    backend = plugin_set.backend()
+    assert isinstance(backend, OpenRouterBackendPlugin)
+    assert backend.model == "test-model"
+
+
+def test_build_plugin_set_backend_factory_produces_fresh_instances_sharing_one_client():
+    plugin_set = build_plugin_set(make_config())
+    backend1 = plugin_set.backend()
+    backend2 = plugin_set.backend()
+    assert backend1 is not backend2
+    assert backend1._client is backend2._client
 
 
 def test_build_plugin_set_wires_context_chain_with_configured_values():

@@ -83,7 +83,7 @@ plugin_manager.start_session(
 )
 ```
 
-`PluginManager.start_session()` 内部按固定顺序把插件挂到新建的 `MessageBus` 上：4 个 ToolPlugin（各自绑定 `workspace_dir`）→ BackendPlugin → context 插件链（system_prompt → truncator → token_budget）→ policy 插件（permission → step_limit）→ SummarizerPlugin → ReactLoopPlugin → channel 插件。`PluginSet.backend` 是**单个共享实例**（不是工厂），因为它无会话状态（只持有 API client 和 model 名），直接在每个会话的 bus 上重复 `register()`；其余插件都以工厂闭包形式传入，确保每会话独立实例。`SessionScope` 额外持有一把 `asyncio.Lock`：`DiscordGateway.handle_message()` 在 `async with scope.lock` 内才 `emit(UserInputEvent, ...)`，避免同一线程内并发消息互相打断同一个 Turn；`handle_stop_command()`（`agent_stop` 命令）同样在 pop 掉路由表条目后用同一把锁包住 `emit(SessionStopEvent) + stop_session()`，确保它会等一个正在跑的 Turn 释放锁之后才停止/归档会话，而不是与之竞态。
+`PluginManager.start_session()` 内部按固定顺序把插件挂到新建的 `MessageBus` 上：4 个 ToolPlugin（各自绑定 `workspace_dir`）→ BackendPlugin → context 插件链（system_prompt → truncator → token_budget）→ policy 插件（permission → step_limit）→ SummarizerPlugin → ReactLoopPlugin → channel 插件。`PluginSet.backend` 和其余插件一样也是**工厂闭包**，确保每会话独立实例——`OpenRouterBackendPlugin.register()` 会捕获本会话的 `bus`（流式分支要用它 emit `MessageDeltaUpdateEvent`），如果跨会话共享同一个实例，后一个会话的 `register()` 会覆盖前一个会话捕获的 `bus`，导致流式 token 错发到别的会话/线程（曾经的真实 bug，已修复）。`registry.py` 里这个工厂闭包共享同一个 `AsyncOpenAI` 连接实例，只是插件对象本身（连同它捕获的 `bus`）各会话独立，避免为每个会话重复建立 HTTP 连接。`SessionScope` 额外持有一把 `asyncio.Lock`：`DiscordGateway.handle_message()` 在 `async with scope.lock` 内才 `emit(UserInputEvent, ...)`，避免同一线程内并发消息互相打断同一个 Turn；`handle_stop_command()`（`agent_stop` 命令）同样在 pop 掉路由表条目后用同一把锁包住 `emit(SessionStopEvent) + stop_session()`，确保它会等一个正在跑的 Turn 释放锁之后才停止/归档会话，而不是与之竞态。
 
 ### 5.1 进程启动与会话恢复流程
 
@@ -170,7 +170,7 @@ class Gateway(Protocol):
 - **`stream_updates=True`（`ReactLoopPlugin` 每次真正驱动 Turn 的模型调用都会用到）**：改为 `stream=True` 调用 OpenAI SDK，边迭代 chunk 边组装：
   - 每个 chunk 的 `delta.content` 只要非空，就追加进 `content_parts` 并 `bus.emit(MessageDeltaUpdateEvent, MessageDeltaUpdate(text_delta=delta.content))`；工具调用参数的 JSON 片段（`delta.tool_calls[i].function.arguments`）**不会**触发这个事件，用户看不到原始参数流。
   - `tool_calls` 的增量按 `index` 累加进 `dict[int, dict]`（`id`/`name` 只在各自 index 的首个 chunk 出现一次，`arguments` 是要靠 index 拼接的 JSON 字符串片段），收尾按 index 排序、`json.loads` 解析出最终 `ToolCallSpec` 列表；某个工具调用全程没有 `arguments` 片段时用 `{}` 兜底，避免 `json.loads("")` 抛异常。
-  - 组装出的 `raw_message` dict 形状必须和非流式分支的 `message.model_dump()` 完全一致（因为会原样存进历史、原样回放给模型）：`tool_calls` 字段是 `[{"id":.., "type": "function", "function": {"name":.., "arguments": json.dumps(tc.args)}}] or None`——注意这里要把 `ToolCallSpec.args`（解析后的 dict，方便 Loop 直接构造工具 payload）重新 `json.dumps` 回字符串，两种表示是反着来的。
+  - 组装出的 `raw_message` dict 只重建了 `role`/`content`/`tool_calls` 这个**兼容子集**，足以支撑会话历史回放，但并不需要（也做不到）和非流式分支的 `message.model_dump()` 逐字节一致——非流式分支的 `model_dump()` 会带上 provider 返回的所有字段（例如 `refusal`、`reasoning` 等 provider 专属字段），流式分支不会重建这些。`tool_calls` 字段是 `[{"id":.., "type": "function", "function": {"name":.., "arguments": json.dumps(tc.args)}}] or None`——注意这里要把 `ToolCallSpec.args`（解析后的 dict，方便 Loop 直接构造工具 payload）重新 `json.dumps` 回字符串，两种表示是反着来的。
 
 ### 8.3 ToolPlugin（4 个）
 每个工具构造时绑定本会话 `workspace_dir`，任何解析后越出该目录的路径直接拒绝。路径校验逻辑集中在 `plugins/tools/base.py`：`resolve_within_workspace(workspace_dir, path)` 把相对路径解析到 `workspace_dir` 下并 `.resolve()`，若结果不在 workspace 内则 `raise WorkspaceEscapeError`；四个文件类工具都复用这一个函数，不各自实现越权检查。

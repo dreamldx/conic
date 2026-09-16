@@ -188,3 +188,42 @@ async def test_streaming_complete_defaults_empty_arguments_to_empty_dict():
     result = await backend.complete(ModelRequest(messages=[], tools=[], stream_updates=True))
 
     assert result.tool_calls[0].args == {}
+
+
+async def test_streaming_complete_skips_chunks_with_no_choices():
+    chunks = [
+        SimpleNamespace(choices=[]),
+        make_chunk(make_delta(content="ok")),
+    ]
+    client = FakeClient(FakeStreamingCompletions(chunks))
+    backend = OpenRouterBackendPlugin(api_key="k", model="m", client=client)
+    bus = MessageBus()
+    backend.register(bus)
+
+    result = await backend.complete(ModelRequest(messages=[], tools=[], stream_updates=True))
+
+    assert result.text == "ok"
+
+
+async def test_streaming_deltas_only_reach_the_registering_bus_not_other_sessions():
+    chunks = [make_chunk(make_delta(content="secret"))]
+    client = FakeClient(FakeStreamingCompletions(chunks))
+
+    backend_a = OpenRouterBackendPlugin(api_key="k", model="m", client=client)
+    bus_a = MessageBus()
+    backend_a.register(bus_a)
+
+    backend_b = OpenRouterBackendPlugin(api_key="k", model="m", client=client)
+    bus_b = MessageBus()
+    backend_b.register(bus_b)
+
+    received_on_b = []
+
+    async def on_delta(msg: MessageDeltaUpdate) -> None:
+        received_on_b.append(msg.text_delta)
+
+    bus_b.on(meta.MessageDeltaUpdateEvent, on_delta)
+
+    await backend_a.complete(ModelRequest(messages=[], tools=[], stream_updates=True))
+
+    assert received_on_b == []

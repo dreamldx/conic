@@ -57,6 +57,8 @@ class OpenRouterBackendPlugin:
         content_parts: list[str] = []
         tool_call_acc: dict[int, dict] = {}
         async for chunk in stream:
+            if not chunk.choices:
+                continue
             delta = chunk.choices[0].delta
             if delta.content:
                 content_parts.append(delta.content)

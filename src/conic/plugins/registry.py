@@ -1,5 +1,7 @@
 from pathlib import Path
 
+from openai import AsyncOpenAI
+
 from conic.config import Config
 from conic.core.manager import PluginSet
 from conic.plugins.backends.openrouter import OpenRouterBackendPlugin
@@ -31,9 +33,12 @@ def _load_prompts(prompts_dir: Path) -> dict[str, str]:
 
 def build_plugin_set(config: Config) -> PluginSet:
     prompts = _load_prompts(Path(config.project_root) / "prompts")
+    shared_client = AsyncOpenAI(base_url="https://openrouter.ai/api/v1", api_key=config.openrouter_api_key)
     return PluginSet(
         tool_classes=(BashToolPlugin, ReadFileToolPlugin, WriteFileToolPlugin, EditFileToolPlugin),
-        backend=OpenRouterBackendPlugin(api_key=config.openrouter_api_key, model=config.openrouter_model),
+        backend=lambda: OpenRouterBackendPlugin(
+            api_key=config.openrouter_api_key, model=config.openrouter_model, client=shared_client,
+        ),
         context_plugins=(
             lambda ws, schemas: SystemPromptPlugin([
                 IdentitySectionPlugin(prompts.get("identity", "")),

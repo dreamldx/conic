@@ -14,8 +14,12 @@ class FakeMessage:
     def __init__(self, content: str):
         self.content = content
         self.edits: list[str] = []
+        self.fail_next_edits = 0
 
     async def edit(self, content: str) -> None:
+        if self.fail_next_edits > 0:
+            self.fail_next_edits -= 1
+            raise RuntimeError("simulated discord edit failure")
         self.content = content
         self.edits.append(content)
 
@@ -249,6 +253,51 @@ async def test_streaming_preview_truncates_to_the_last_2000_chars():
     assert len(last_edit) == 2000
     assert last_edit.startswith("…")
     assert last_edit.endswith("a" * 1999)
+
+
+async def test_apply_edit_swallows_a_live_preview_edit_failure():
+    thread = FakeThread()
+    plugin = DiscordThreadPlugin(thread)
+    bus = MessageBus()
+    plugin.register(bus)
+
+    await bus.emit(meta.TurnStartEvent, TurnStart())
+    placeholder = thread.messages[0]
+    placeholder.fail_next_edits = 1
+
+    await bus.emit(meta.MessageDeltaUpdateEvent, MessageDeltaUpdate(text_delta="Hel"))  # must not raise
+
+    assert placeholder.edits == []
+
+
+async def test_finalize_falls_back_to_sending_a_new_message_when_the_edit_fails():
+    thread = FakeThread()
+    plugin = DiscordThreadPlugin(thread)
+    bus = MessageBus()
+    plugin.register(bus)
+
+    await bus.emit(meta.TurnStartEvent, TurnStart())
+    placeholder = thread.messages[0]
+    placeholder.fail_next_edits = 1
+
+    await bus.emit(meta.AssistantMessageEvent, AssistantMessage(text="the final answer"))
+
+    assert placeholder.edits == []
+    assert thread.sent[-1] == "the final answer"
+
+
+async def test_finalize_substitutes_a_placeholder_for_empty_assistant_text():
+    thread = FakeThread()
+    plugin = DiscordThreadPlugin(thread)
+    bus = MessageBus()
+    plugin.register(bus)
+
+    await bus.emit(meta.TurnStartEvent, TurnStart())
+    placeholder = thread.messages[0]
+
+    await bus.emit(meta.AssistantMessageEvent, AssistantMessage(text=""))
+
+    assert placeholder.edits[-1] == "(empty response)"
 
 
 async def test_chunks_messages_longer_than_discord_limit():

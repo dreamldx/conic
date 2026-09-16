@@ -29,6 +29,9 @@ class FakeToolPlugin:
 
 
 class FakeBackend:
+    def __init__(self, shared_client):
+        self.shared_client = shared_client
+
     def register(self, bus):
         bus.on_request("model_request", self.complete)
 
@@ -83,9 +86,10 @@ def make_manager(tmp_path):
         default_model="test-model",
     )
     storage.startup()
+    shared_client = object()
     plugin_set = PluginSet(
         tool_classes=(FakeToolPlugin,),
-        backend=FakeBackend(),
+        backend=lambda: FakeBackend(shared_client),
         context_plugins=(FakeContextPlugin,),
         policy_plugins=(FakePolicyPlugin,),
         summarizer=FakeSummarizer,
@@ -110,10 +114,16 @@ async def test_start_session_assembles_a_working_bus(tmp_path):
     storage.shutdown()
 
 
-def test_start_session_gives_each_session_fresh_context_policy_and_summarizer_instances(tmp_path):
-    """Context/policy plugins and the summarizer must be fresh per-session
-    instances (isolation), while the backend remains a genuine shared
-    singleton (it holds no per-session state)."""
+def test_start_session_gives_each_session_fresh_plugin_instances_including_backend(tmp_path):
+    """Context/policy plugins, the summarizer, AND the backend must all be
+    fresh per-session instances (isolation) -- a plugin that captures its
+    session's bus in register() (like OpenRouterBackendPlugin does, to emit
+    streaming deltas) breaks silently if the same instance is shared across
+    sessions, since the captured bus would end up wired to whichever session
+    registered last. The backend factory shares one underlying resource
+    (e.g. an HTTP client) across those per-session instances, matching how
+    OpenRouterBackendPlugin shares one AsyncOpenAI client via its `client`
+    constructor parameter."""
     storage, manager = make_manager(tmp_path)
 
     scope1 = manager.start_session(
@@ -139,10 +149,14 @@ def test_start_session_gives_each_session_fresh_context_policy_and_summarizer_in
     summarizer2 = scope2.bus._request["summarize"][0][1].__self__
     assert summarizer1 is not summarizer2
 
-    # The backend IS a genuine shared singleton across sessions.
+    # The backend must be a FRESH instance per session too -- it captures its
+    # session's bus in register() to emit streaming deltas onto the right
+    # thread, and that breaks if the instance is shared (see Finding 1).
     backend1 = scope1.bus._request["model_request"][0][1].__self__
     backend2 = scope2.bus._request["model_request"][0][1].__self__
-    assert backend1 is backend2
+    assert backend1 is not backend2
+    # But the underlying shared resource (HTTP client) IS shared across them.
+    assert backend1.shared_client is backend2.shared_client
 
     storage.shutdown()
 

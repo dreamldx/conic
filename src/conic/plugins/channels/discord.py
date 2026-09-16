@@ -2,6 +2,8 @@ import asyncio
 import time
 from typing import Callable
 
+from loguru import logger
+
 from conic.types.messages import (
     AssistantMessage, Error, MessageDeltaUpdate, MessageUpdate, StepStart, TurnStart, TurnEnd,
 )
@@ -77,7 +79,10 @@ class DiscordThreadPlugin:
         content = self._buffer
         if len(content) > DISCORD_MESSAGE_LIMIT:
             content = "…" + content[-(DISCORD_MESSAGE_LIMIT - 1):]
-        await self._status_message.edit(content=content)
+        try:
+            await self._status_message.edit(content=content)
+        except Exception as exc:
+            logger.warning("failed to live-update responsive message: {}", exc)
 
     async def on_turn_end(self, _msg: TurnEnd) -> None:
         self._stop_typing()
@@ -92,8 +97,15 @@ class DiscordThreadPlugin:
     async def _finalize(self, text: str) -> None:
         if self._stopped:
             return
+        text = text or "(empty response)"
         if self._status_message is not None:
-            await self._status_message.edit(content=text[:DISCORD_MESSAGE_LIMIT])
+            try:
+                await self._status_message.edit(content=text[:DISCORD_MESSAGE_LIMIT])
+            except Exception as exc:
+                logger.warning(
+                    "failed to edit responsive message into final text, sending a new message: {}", exc
+                )
+                await self._send(text[:DISCORD_MESSAGE_LIMIT])
             await self._send(text[DISCORD_MESSAGE_LIMIT:])
         else:
             await self._send(text)
