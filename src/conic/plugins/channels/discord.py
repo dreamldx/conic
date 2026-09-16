@@ -1,23 +1,36 @@
 import asyncio
+import time
+from typing import Callable
 
-from conic.types.messages import AssistantMessage, Error, StepStart, TurnStart, TurnEnd
+from conic.types.messages import (
+    AssistantMessage, Error, MessageDeltaUpdate, MessageUpdate, StepStart, TurnStart, TurnEnd,
+)
 from conic.plugins import meta
 
 DISCORD_MESSAGE_LIMIT = 2000
 TYPING_INTERVAL = 8
 TYPING_TIMEOUT = 20
+STREAM_EDIT_INTERVAL = 1.0
+THINKING_TEXT = "🤔 思考中…"
 
 
 class DiscordThreadPlugin:
-    def __init__(self, thread):
+    def __init__(self, thread, clock: Callable[[], float] = time.monotonic):
         self._thread = thread
+        self._clock = clock
         self._typing_task: asyncio.Task | None = None
         self._stopped = False
+        self._status_message = None
+        self._buffer = ""
+        self._awaiting_first_delta = False
+        self._last_edit_time = float("-inf")
 
     def register(self, bus) -> None:
         bus.on(meta.SessionStopEvent, self.on_session_stop)
         bus.on(meta.TurnStartEvent, self.on_turn_start)
         bus.on(meta.StepStartEvent, self.on_step_start)
+        bus.on(meta.MessageUpdateEvent, self.on_message_update)
+        bus.on(meta.MessageDeltaUpdateEvent, self.on_message_delta_update)
         bus.on(meta.TurnEndEvent, self.on_turn_end)
         bus.on(meta.ErrorEvent, self.on_error)
         bus.on(meta.AssistantMessageEvent, self.on_assistant_message)
@@ -28,6 +41,10 @@ class DiscordThreadPlugin:
 
     async def on_turn_start(self, _msg: TurnStart) -> None:
         self._ensure_typing()
+        self._buffer = THINKING_TEXT
+        self._awaiting_first_delta = True
+        self._last_edit_time = float("-inf")
+        self._status_message = await self._thread.send(self._buffer)
 
     async def on_step_start(self, _msg: StepStart) -> None:
         self._ensure_typing()
@@ -37,15 +54,50 @@ class DiscordThreadPlugin:
             return
         self._typing_task = asyncio.create_task(self._keep_typing())
 
+    async def on_message_update(self, msg: MessageUpdate) -> None:
+        self._buffer = msg.text
+        self._awaiting_first_delta = True
+        await self._apply_edit(force=True)
+
+    async def on_message_delta_update(self, msg: MessageDeltaUpdate) -> None:
+        force = self._awaiting_first_delta
+        if self._awaiting_first_delta:
+            self._buffer = ""
+            self._awaiting_first_delta = False
+        self._buffer += msg.text_delta
+        await self._apply_edit(force=force)
+
+    async def _apply_edit(self, force: bool) -> None:
+        if self._status_message is None or self._stopped:
+            return
+        now = self._clock()
+        if not force and (now - self._last_edit_time) < STREAM_EDIT_INTERVAL:
+            return
+        self._last_edit_time = now
+        content = self._buffer
+        if len(content) > DISCORD_MESSAGE_LIMIT:
+            content = "…" + content[-(DISCORD_MESSAGE_LIMIT - 1):]
+        await self._status_message.edit(content=content)
+
     async def on_turn_end(self, _msg: TurnEnd) -> None:
         self._stop_typing()
 
     async def on_error(self, msg: Error) -> None:
         self._stop_typing()
-        await self._send(f"⚠️ {msg.exc}")
+        await self._finalize(f"⚠️ {msg.exc}")
 
     async def on_assistant_message(self, msg: AssistantMessage) -> None:
-        await self._send(msg.text)
+        await self._finalize(msg.text)
+
+    async def _finalize(self, text: str) -> None:
+        if self._stopped:
+            return
+        if self._status_message is not None:
+            await self._status_message.edit(content=text[:DISCORD_MESSAGE_LIMIT])
+            await self._send(text[DISCORD_MESSAGE_LIMIT:])
+        else:
+            await self._send(text)
+        self._status_message = None
 
     def _stop_typing(self) -> None:
         if self._typing_task is not None and not self._typing_task.done():
