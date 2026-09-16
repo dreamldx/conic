@@ -16,6 +16,7 @@ def test_load_config_applies_defaults():
     assert config.max_steps_per_turn == 25
     assert config.context_token_budget == 50000
     assert config.truncate_keep_last_n == 40
+    assert config.bash_timeout == 60.0
 
 
 def test_load_config_reads_overrides():
@@ -25,10 +26,12 @@ def test_load_config_reads_overrides():
         "OPENROUTER_API_KEY": "or-key",
         "OPENROUTER_MODEL": "openai/gpt-4o",
         "MAX_STEPS_PER_TURN": "10",
+        "BASH_TIMEOUT": "15",
     }
     config = load_config(env)
     assert config.openrouter_model == "openai/gpt-4o"
     assert config.max_steps_per_turn == 10
+    assert config.bash_timeout == 15.0
 
 
 def test_load_config_raises_when_project_root_missing():

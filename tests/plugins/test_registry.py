@@ -19,14 +19,24 @@ def make_config():
         DISCORD_BOT_TOKEN="d", OPENROUTER_API_KEY="k", OPENROUTER_MODEL="test-model",
         WORKSPACE_ROOT="./workspace", DUCKDB_PATH="./data/conic.duckdb",
         LOG_LEVEL="DEBUG", MAX_STEPS_PER_TURN=7, CONTEXT_TOKEN_BUDGET=123, TRUNCATE_KEEP_LAST_N=9,
+        BASH_TIMEOUT=42,
     )
 
 
 def test_build_plugin_set_wires_the_four_v1_tools():
     plugin_set = build_plugin_set(make_config())
-    assert plugin_set.tool_classes == (
-        BashToolPlugin, ReadFileToolPlugin, WriteFileToolPlugin, EditFileToolPlugin,
-    )
+    assert issubclass(plugin_set.tool_classes[0], BashToolPlugin)
+    assert plugin_set.tool_classes[1:] == (ReadFileToolPlugin, WriteFileToolPlugin, EditFileToolPlugin)
+
+
+def test_build_plugin_set_wires_bash_tool_with_configured_timeout():
+    plugin_set = build_plugin_set(make_config())
+    bash_cls = plugin_set.tool_classes[0]
+    assert bash_cls.llm_name == "bash"
+    assert bash_cls.schema == BashToolPlugin.schema
+
+    bash_tool = bash_cls(workspace_dir="/tmp/ws")
+    assert bash_tool._timeout == 42
 
 
 def test_build_plugin_set_wires_backend_with_configured_model():

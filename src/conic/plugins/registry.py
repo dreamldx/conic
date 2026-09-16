@@ -34,8 +34,13 @@ def _load_prompts(prompts_dir: Path) -> dict[str, str]:
 def build_plugin_set(config: Config) -> PluginSet:
     prompts = _load_prompts(Path(config.project_root) / "prompts")
     shared_client = AsyncOpenAI(base_url="https://openrouter.ai/api/v1", api_key=config.openrouter_api_key)
+
+    class ConfiguredBashToolPlugin(BashToolPlugin):
+        def __init__(self, workspace_dir: str):
+            super().__init__(workspace_dir=workspace_dir, timeout=config.bash_timeout)
+
     return PluginSet(
-        tool_classes=(BashToolPlugin, ReadFileToolPlugin, WriteFileToolPlugin, EditFileToolPlugin),
+        tool_classes=(ConfiguredBashToolPlugin, ReadFileToolPlugin, WriteFileToolPlugin, EditFileToolPlugin),
         backend=lambda: OpenRouterBackendPlugin(
             api_key=config.openrouter_api_key, model=config.openrouter_model, client=shared_client,
         ),

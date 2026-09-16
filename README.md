@@ -32,6 +32,7 @@ Optional (defaults shown):
 | `MAX_STEPS_PER_TURN` | `25` | Max Steps (model calls) allowed within a single Turn before it's aborted. |
 | `CONTEXT_TOKEN_BUDGET` | `50000` | Token threshold that triggers history summarization. |
 | `TRUNCATE_KEEP_LAST_N` | `40` | Number of most recent messages the truncator keeps. |
+| `BASH_TIMEOUT` | `60` | Seconds before a running `bash` command is killed and reported as an error. |
 
 ## Running it
 

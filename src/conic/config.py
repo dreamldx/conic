@@ -21,6 +21,7 @@ class Config(BaseSettings):
     max_steps_per_turn: int = Field(default=25, ge=1, alias="MAX_STEPS_PER_TURN")
     context_token_budget: int = Field(default=50000, ge=1, alias="CONTEXT_TOKEN_BUDGET")
     truncate_keep_last_n: int = Field(default=40, ge=1, alias="TRUNCATE_KEEP_LAST_N")
+    bash_timeout: float = Field(default=60.0, ge=1, alias="BASH_TIMEOUT")
 
     @model_validator(mode="after")
     def _resolve_paths(self):
