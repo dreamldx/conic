@@ -9,7 +9,13 @@ InputEvent = "input"
 # emitted once per session, right after PluginManager.start_session wires
 # up its bus (reason: "new" or "resume")
 SessionStartEvent = "session_start"
-# emitted once per session when it is deliberately ended (reason: "user_stop")
+# emitted first when a session is stopped (agent_stop): tells the channel
+# plugin to mute itself so no further messages reach the (soon-archived) thread
+SessionStopEvent = "session_stop"
+# emitted right after SessionStopEvent, once per session, when it is
+# deliberately ended (reason: "user_stop") — the public lifecycle
+# notification plugins should hook for cleanup, as opposed to SessionStopEvent
+# above, which is channel-plugin-internal
 SessionEndEvent = "session_end"
 
 # ── Plugin: ReactLoopPlugin (loops/react_loop.py) ──────────────────────────
@@ -61,7 +67,3 @@ SummarizeFailedEvent = "summarize_failed"
 # ── Plugin: SystemPromptPlugin ────────────────────────────────────────────
 # dispatched internally to collect prompt sections from all plugins
 BuildSystemPromptEvent = "build_system_prompt"
-
-# ── Plugin: DiscordGateway ────────────────────────────────────────────────
-# emitted when the session is stopped, adapter should stop sending
-SessionStopEvent = "session_stop"
