@@ -21,10 +21,27 @@ Conic 是 Python 的 Discord-thread agent 引擎,两者形态不同,部分差异
   且插件在 `build_plugin_set()` 中静态硬编码,无动态发现/加载机制。
 - **扩展系统**:Pi 的扩展可挂 30+ 生命周期事件(详见下文事件对比);Conic 的 MessageBus
   事件拓扑与之相似(这是两者架构上最接近的地方),但缺 provider 层和 input 层拦截点,
-  且没有第三方扩展的加载入口。
+  且没有第三方扩展的加载入口。✅ **小幅补强**:`MessageBus.emit()` 在某个已注册
+  handler 的 `isinstance(payload, payload_cls)` 检查不通过、被跳过时,现在会打一条
+  `logger.info("chain interrupted: ...")`——同一 topic 挂多种 payload 类型本是设计内
+  的正常情况,但如果链上某个 handler"手滑"返回了跟约定不一致的类型,后面的同类型
+  handler 会被静默跳过而不报错,这条日志给这类隐蔽 bug 一个可观测的信号(排查
+  "handler 返回值把 payload 换了个类型"这类问题时有用,不算功能性差距的弥补)。
 - **Skills**:Pi 有完整的 SKILL.md 渐进式加载体系(全局 / 项目 / npm 包多来源发现);Conic 无。
 - **Prompt 模板 / 自定义命令**:Pi 支持用户自定义 prompt 模板和斜杠命令;Conic 只有
-  `/agent_start`、`/agent_stop` 两个固定 Discord 命令。
+  `/agent_start`、`/agent_stop` 两个固定 Discord 命令,面向用户的自定义模板/命令
+  仍是空白。✅ **但引擎内部的动态 prompt 模板系统已实现**(不是 Pi 这种面向用户的
+  自定义能力,是给插件用的变量注入机制):`prompts/*.md` 与各 section 插件可以写
+  Jinja2 占位符,按 `global`(进程级,`model`/`platform`/`timezone`,一次性算好,
+  `SystemPromptPlugin` 缓存渲染结果、全 session 只渲染一次)/`session`(会话级,
+  `workspace_dir`/`tokens_used`/`turn_count`,`ReactLoopPlugin` 持有并逐 Turn 更新,
+  每个 Turn 结束都写回 `sessions.variables` 列持久化,会话恢复时读回)/`turn`
+  (每 Turn 新建,`now`/`step_count`)三层作用域命名空间取值(`{{ global.model }}`
+  等)。动态部分(`BuildDynamicPromptEvent` 收集,目前只有 `turn.now`/`step_count`/
+  `session.tokens_used`/`turn_count` 四项)不混进 system 消息(避免打断 provider
+  端的 prompt 前缀缓存),而是拼进发给模型的最后一条消息的 `content` 里,并用
+  `<context_state>` 之类的 XML 标签包裹,避免和真实 tool 输出混淆。详见
+  `docs/superpowers/specs/2026-09-13-conic-agentic-engine-design.md` §7.1。
 
 ## 会话管理(差距最大的一块)
 
@@ -41,6 +58,11 @@ Conic 有 DuckDB 持久化 + 重启恢复 + 摘要压缩;Pi 在此之上还有:
 Conic 的历史是线性 append-only:无分支、无导出、无重试/回退某一轮的能力。
 (持久化格式详情:Pi 用追加式 JSONL 事件日志,一切状态变化——消息、压缩、模型切换、
 扩展状态——都是日志 entry,重放即还原;Conic 用 DuckDB 两张表按 `seq` 线性存消息。)
+✅ **会话级元数据(非对话历史)现在也会持久化**:`sessions` 表新增 `variables`
+列(JSON),`session` 作用域的模板变量(`tokens_used`/`turn_count`)每个 Turn
+结束都写回、会话恢复时读回,不再随进程重启清零——这不是 Pi 那种"整条历史可
+分支/回退"的无损压缩,只是给"这个会话总共聊了几轮、耗了多少 token"这类累计
+计数器补上了跨重启的持久性。
 
 ## 安全与隔离
 
@@ -76,19 +98,26 @@ Conic 的历史是线性 append-only:无分支、无导出、无重试/回退某
 4. **多后端抽象兑现** — 至少直连 Anthropic/OpenAI,支持运行时切换模型;
 5. **会话分支/重试** — bus 事件模型已支持,存储层给 `messages` 加 `parent_id` 即可起步
    (即 Pi 会话格式 v1→v2 走过的路径)。
+6. **真实 token usage 接回预算判断** — `OpenRouterBackendPlugin` 已经从
+   `response.usage`/流式最后一个 chunk 拿到真实用量,但目前只喂给
+   `session.tokens_used`(供 prompt 模板展示,见"模型层"对比);`TokenBudgetPlugin.apply()`
+   判断是否触发摘要仍然只看 `estimate_tokens`(chars//4 粗估),两条数据没打通。
+   数据源已经有了,剩下的是把预算检查从估算换成真实累计用量(或至少用真实值
+   校准估算系数),详见"上下文压缩对比"一节的对比表和改进优先级第 4 条。
 
 主题、TUI、keybindings、HF 会话分享属于 Pi 终端形态专属,不算 Conic 的真实缺失。
 
 ---
 
-# 生命周期事件对比
+# ✅生命周期事件对比
 
 对比 Pi 扩展系统的生命周期事件(`packages/coding-agent/docs/extensions.md`)
 与 Conic 的总线事件(`src/conic/plugins/meta.py`)。
 
-Pi 约有 35 个生命周期事件;Conic 目前有 26 个总线主题(原 15 个 + 本文档第二节
+Pi 约有 35 个生命周期事件;Conic 目前有 27 个总线主题(原 15 个 + 本文档第二节
 1/2/4/5 项落地新增的 9 个 + 第 3 节流式输出落地新增的 `MessageUpdateEvent`/
-`MessageDeltaUpdateEvent` 2 个)。本节记录已对齐的部分、Conic 缺失的事件,以及
+`MessageDeltaUpdateEvent` 2 个 + 动态 prompt 模板系统新增的 `BuildDynamicPromptEvent`
+1 个)。本节记录已对齐的部分、Conic 缺失的事件,以及
 不适用于 Conic 形态(Discord bot,非终端 TUI)的事件。
 
 ## 一、已对齐(Conic 已有等价物)
@@ -408,7 +437,7 @@ Turn 依次执行。消息不丢,但**运行中无法插话**——agent 跑偏�
 |---|---|---|
 | 触发条件 | `contextTokens > 窗口 − reserve(16384)`,按模型窗口动态计算,可按模型覆盖 | 固定阈值 `CONTEXT_TOKEN_BUDGET=50000`,与实际模型窗口无关 |
 | 检查位置 | 三处:tool 结果回填后、请求前、新输入前 | 一处:`before_model_call` |
-| token 计数 | 用 provider 返回的真实用量校准 | `chars//4` 粗估(对中文严重低估) |
+| token 计数 | 用 provider 返回的真实用量校准 | 触发摘要的**预算检查**仍是 `chars//4` 粗估(对中文严重低估),未改;`OpenRouterBackendPlugin` 现在**会**从 `response.usage`/流式最后一个 chunk 拿真实 usage,但只用来累加 `session.tokens_used`(展示/模板用途),还没接回 `TokenBudgetPlugin` 的预算判断——是否触发摘要依然看 chars//4 的估算 |
 | 保留策略 | 最近 `keepRecentTokens=20000` **token** | 最近 `keep_recent=5` **条消息**——一条超长 bash 输出就能让保留部分超预算 |
 | 切点对齐 | 不切开 tool call/result 组;单 turn 超预算时劈开生成双摘要再合并 | `align_cut` 同样不拆 tool 组(已对齐);无劈 turn 处理 |
 | 摘要提示词 | 结构化模板:Goal / Constraints / Progress / Key Decisions / Next Steps / Critical Context + `<read-files>` `<modified-files>` | 一句 "Summarize the following conversation history concisely" |
@@ -439,12 +468,14 @@ Pi 没有这个问题——压缩是单一管线。建议把两者合并:Truncat
    处理改动,成本极低;
 3. **keep 按 token 而非按条数**,并理顺 Truncator 与 Summarizer 的关系
    (合并为单一压缩管线);
-4. **token 估算校准** — 用 OpenRouter 响应里的真实 usage 反馈校准,
-   替代 chars//4。
+4. **token 估算校准** — `OpenRouterBackendPlugin` 已经在拿真实 usage(见上表,
+   累加进 `session.tokens_used`),但 `TokenBudgetPlugin.apply()` 判断是否超预算
+   仍用 `estimate_tokens`(chars//4),两者没打通;把已有的真实 usage 接回预算
+   判断本身(而不是仅用于展示),是这条剩下的工作量。
 
 ---
 
-# Discord 显示逻辑改进(表格与代码块)
+# ✅ Discord 显示逻辑改进(表格与代码块)
 
 **现状(响应式消息流式输出落地后更新)**:本节描述的 `render_tables`/
 `chunk_message` 转换**仍未实现**。已经落地的是一个更轻量的临时缓解——

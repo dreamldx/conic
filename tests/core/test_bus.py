@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 
 import pytest
+from loguru import logger
 
 from conic.core.bus import MessageBus, infer_payload_type
 from conic.types.errors import DuplicateResponderError, NoResponderError
@@ -133,3 +134,47 @@ async def test_request_raises_when_no_responder_matches():
     bus = MessageBus()
     with pytest.raises(NoResponderError):
         await bus.request("ask", Ping(n=1))
+
+
+async def test_emit_logs_info_when_a_handler_is_skipped_for_type_mismatch():
+    bus = MessageBus()
+
+    async def on_ping(msg: Ping):
+        return None
+
+    async def on_pong(msg: Pong):
+        return None
+
+    bus.on("event", on_ping)
+    bus.on("event", on_pong)
+
+    logged = []
+    sink_id = logger.add(lambda msg: logged.append(msg.record["message"]), level="INFO")
+    try:
+        await bus.emit("event", Ping(n=1))
+    finally:
+        logger.remove(sink_id)
+
+    assert len(logged) == 1
+    assert "chain interrupted" in logged[0]
+    assert "event" in logged[0]
+    assert "Pong" in logged[0]
+    assert "Ping" in logged[0]
+
+
+async def test_emit_does_not_log_when_all_handlers_match():
+    bus = MessageBus()
+
+    async def on_ping(msg: Ping):
+        return None
+
+    bus.on("event", on_ping)
+
+    logged = []
+    sink_id = logger.add(lambda msg: logged.append(msg.record["message"]), level="INFO")
+    try:
+        await bus.emit("event", Ping(n=1))
+    finally:
+        logger.remove(sink_id)
+
+    assert logged == []

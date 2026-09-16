@@ -106,6 +106,27 @@ async def test_summarize_done_emitted_with_result_on_success():
     assert done == [summary_result]
 
 
+async def test_forwards_variables_when_summarizing():
+    """ExtraPromptPlugin (registered after TokenBudgetPlugin in the
+    BeforeModelCallEvent chain) reads ctx.variables to render its trailing
+    message -- if TokenBudgetPlugin drops variables when it summarizes,
+    that render crashes with a Jinja2 UndefinedError for the missing scope."""
+    plugin = TokenBudgetPlugin(budget_tokens=1)
+    bus = MessageBus()
+
+    async def fake_summarizer(req: SummarizeRequest):
+        return SummarizeResult(messages=[{"role": "system", "content": "summary"}])
+
+    bus.on_request("summarize", fake_summarizer)
+    plugin.register(bus)
+
+    variables = {"global": {}, "session": {}, "turn": {"now": "T1"}}
+    ctx = BeforeModelCall(messages=[{"role": "user", "content": "hi " * 100}], tools=[], variables=variables)
+    result = await plugin.apply(ctx)
+
+    assert result.variables == variables
+
+
 async def test_summarize_failed_emitted_and_reraised_on_error():
     plugin = TokenBudgetPlugin(budget_tokens=1)
     bus = MessageBus()

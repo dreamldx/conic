@@ -25,4 +25,4 @@ class TokenBudgetPlugin:
             await self._bus.emit(meta.SummarizeFailedEvent, SummarizeFailed(exc=exc))
             raise
         await self._bus.emit(meta.SummarizeDoneEvent, SummarizeDone(result=result))
-        return BeforeModelCall(messages=result.messages, tools=ctx.tools)
+        return BeforeModelCall(messages=result.messages, tools=ctx.tools, variables=ctx.variables)

@@ -3,13 +3,14 @@ from jinja2 import Template
 from conic.types.messages import BeforeModelCall, BuildSystemPrompt
 from conic.plugins import meta
 
-SECTION_ORDER = ["identity", "tooling", "workspace", "extra", "execution"]
+SECTION_ORDER = ["identity", "tooling", "workspace", "runtime", "execution"]
 
 
 class SystemPromptPlugin:
     def __init__(self, section_plugins: list):
         self._section_plugins = section_plugins
         self._bus = None
+        self._cached_content: str | None = None
 
     def register(self, bus) -> None:
         self._bus = bus
@@ -21,13 +22,15 @@ class SystemPromptPlugin:
         if ctx.messages and ctx.messages[0].get("role") == "system":
             return None
 
-        sections_msg = await self._bus.emit(
-            meta.BuildSystemPromptEvent, BuildSystemPrompt(sections={})
-        )
-        system_text = self._assemble(sections_msg.sections)
-        system_text = Template(system_text).render(**ctx.variables)
+        if self._cached_content is None:
+            sections_msg = await self._bus.emit(
+                meta.BuildSystemPromptEvent, BuildSystemPrompt(sections={})
+            )
+            system_text = self._assemble(sections_msg.sections)
+            self._cached_content = Template(system_text).render(**ctx.variables)
+
         return BeforeModelCall(
-            messages=[{"role": "system", "content": system_text}, *ctx.messages],
+            messages=[{"role": "system", "content": self._cached_content}, *ctx.messages],
             tools=ctx.tools,
             variables=ctx.variables,
         )

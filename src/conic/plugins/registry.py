@@ -7,9 +7,11 @@ from openai import AsyncOpenAI
 from conic.config import Config
 from conic.core.manager import PluginSet
 from conic.plugins.backends.openrouter import OpenRouterBackendPlugin
+from conic.plugins.context.extra_prompt import ExtraPromptPlugin
+from conic.plugins.context.sections.dynamic_state import DynamicStateSectionPlugin
 from conic.plugins.context.sections.execution import ExecutionBiasSectionPlugin
-from conic.plugins.context.sections.extra import ExtraPromptPlugin
 from conic.plugins.context.sections.identity import IdentitySectionPlugin
+from conic.plugins.context.sections.runtime import RuntimeSectionPlugin
 from conic.plugins.context.sections.tooling import ToolingSectionPlugin
 from conic.plugins.context.sections.workspace import WorkspaceSectionPlugin
 from conic.plugins.context.summarizer import SummarizerPlugin
@@ -60,11 +62,14 @@ def build_plugin_set(config: Config, global_variables: dict | None = None) -> Pl
                 IdentitySectionPlugin(prompts.get("identity", "")),
                 ToolingSectionPlugin(schemas),
                 WorkspaceSectionPlugin(ws),
-                ExtraPromptPlugin(),
+                RuntimeSectionPlugin(),
                 ExecutionBiasSectionPlugin(prompts.get("execution", "")),
             ]),
             lambda ws, schemas: TruncatorPlugin(keep_last_n=config.truncate_keep_last_n),
             lambda ws, schemas: TokenBudgetPlugin(budget_tokens=config.context_token_budget),
+            lambda ws, schemas: ExtraPromptPlugin([
+                DynamicStateSectionPlugin()
+            ]),
         ),
         policy_plugins=(
             lambda: PermissionPolicyPlugin(),

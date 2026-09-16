@@ -68,6 +68,12 @@ SummarizeFailedEvent = "summarize_failed"
 # dispatched internally to collect prompt sections from all plugins
 BuildSystemPromptEvent = "build_system_prompt"
 
+# ── Plugin: ExtraPromptPlugin ──────────────────────────────────────────────
+# dispatched on every BeforeModelCallEvent to collect session/turn-scoped
+# prompt sections that change every Step, appended as a trailing message
+# instead of the cached, session-stable system message (see BuildSystemPromptEvent)
+BuildDynamicPromptEvent = "build_dynamic_prompt"
+
 # ── Plugin: ReactLoopPlugin / OpenRouterBackendPlugin ─────────────────────
 # emitted by ReactLoopPlugin to wholesale-replace the current live status
 # text (e.g. "thinking", a tool-status line)

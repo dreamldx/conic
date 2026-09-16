@@ -14,21 +14,22 @@ async def test_execution_section_adds_guidelines():
     assert "actionable" in result.sections["execution"]
 
 
-async def test_extra_prompt_section_contributes_jinja_placeholders_for_all_scopes():
-    from conic.plugins.context.sections.extra import ExtraPromptPlugin
+async def test_runtime_section_contributes_global_only_jinja_placeholders():
+    from conic.plugins.context.sections.runtime import RuntimeSectionPlugin
     bus = MessageBus()
-    plugin = ExtraPromptPlugin()
+    plugin = RuntimeSectionPlugin()
     plugin.register(bus)
     msg = BuildSystemPrompt(sections={})
     result = await bus.emit("build_system_prompt", msg)
-    assert "extra" in result.sections
-    assert "{{ global.model }}" in result.sections["extra"]
-    assert "{{ global.platform }}" in result.sections["extra"]
-    assert "{{ global.timezone }}" in result.sections["extra"]
-    assert "{{ turn.now }}" in result.sections["extra"]
-    assert "{{ turn.step_count }}" in result.sections["extra"]
-    assert "{{ session.tokens_used }}" in result.sections["extra"]
-    assert "{{ session.turn_count }}" in result.sections["extra"]
+    assert "runtime" in result.sections
+    assert "{{ global.model }}" in result.sections["runtime"]
+    assert "{{ global.platform }}" in result.sections["runtime"]
+    assert "{{ global.timezone }}" in result.sections["runtime"]
+    # Only global-scope placeholders belong here: this section is rendered once
+    # and cached by SystemPromptPlugin, so it must not reference session/turn
+    # values that change every Step.
+    assert "session." not in result.sections["runtime"]
+    assert "turn." not in result.sections["runtime"]
 
 
 async def test_tooling_section_lists_tool_schemas():

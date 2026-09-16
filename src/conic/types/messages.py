@@ -151,3 +151,8 @@ class SummarizeFailed:
 @dataclass
 class BuildSystemPrompt:
     sections: dict[str, str]
+
+
+@dataclass
+class BuildDynamicPrompt:
+    sections: dict[str, str]

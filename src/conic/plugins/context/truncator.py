@@ -17,4 +17,4 @@ class TruncatorPlugin:
         system = [m for m in ctx.messages if m.get("role") == "system"]
         cut_index = align_cut(non_system, len(non_system) - self._keep_last_n)
         kept = non_system[cut_index:]
-        return BeforeModelCall(messages=[*system, *kept], tools=ctx.tools)
+        return BeforeModelCall(messages=[*system, *kept], tools=ctx.tools, variables=ctx.variables)

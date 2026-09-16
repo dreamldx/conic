@@ -1,5 +1,6 @@
 from conic.config import Config
 from conic.plugins.backends.openrouter import OpenRouterBackendPlugin
+from conic.plugins.context.extra_prompt import ExtraPromptPlugin
 from conic.plugins.context.summarizer import SummarizerPlugin
 from conic.plugins.context.system_prompt import SystemPromptPlugin
 from conic.plugins.context.token_budget import TokenBudgetPlugin
@@ -59,7 +60,9 @@ def test_build_plugin_set_wires_context_chain_with_configured_values():
     plugin_set = build_plugin_set(make_config())
     instances = [factory("/tmp/ws", []) for factory in plugin_set.context_plugins]
     kinds = [type(p) for p in instances]
-    assert kinds == [TurnVariableUpdaterPlugin, SystemPromptPlugin, TruncatorPlugin, TokenBudgetPlugin]
+    assert kinds == [
+        TurnVariableUpdaterPlugin, SystemPromptPlugin, TruncatorPlugin, TokenBudgetPlugin, ExtraPromptPlugin,
+    ]
     truncator = instances[2]
     assert truncator._keep_last_n == 9
     token_budget = instances[3]

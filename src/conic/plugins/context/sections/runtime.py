@@ -2,19 +2,15 @@ from conic.types.messages import BuildSystemPrompt
 from conic.plugins import meta
 
 
-class ExtraPromptPlugin:
+class RuntimeSectionPlugin:
     def register(self, bus) -> None:
         bus.on(meta.BuildSystemPromptEvent, self.contribute)
 
     async def contribute(self, msg: BuildSystemPrompt) -> BuildSystemPrompt:
-        msg.sections["extra"] = (
+        msg.sections["runtime"] = (
             "Platform: {{ global.platform }}\n"
             "Shell: PowerShell 5.1\n"
             "Model: {{ global.model }}\n"
-            "Timezone: {{ global.timezone }}\n"
-            "Current time: {{ turn.now }}\n"
-            "Current step: {{ turn.step_count }}\n"
-            "Tokens used: {{ session.tokens_used }}\n"
-            "Turns so far this session: {{ session.turn_count }}"
+            "Timezone: {{ global.timezone }}"
         )
         return msg

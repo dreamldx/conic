@@ -45,3 +45,15 @@ async def test_always_keeps_system_messages():
     ]
     result = await plugin.apply(BeforeModelCall(messages=messages, tools=[]))
     assert result.messages == [{"role": "system", "content": "sys"}, {"role": "user", "content": "2"}]
+
+
+async def test_forwards_variables_when_truncating():
+    """ExtraPromptPlugin (registered after TruncatorPlugin in the
+    BeforeModelCallEvent chain) reads ctx.variables to render its trailing
+    message -- if TruncatorPlugin drops variables when it actually truncates,
+    that render crashes with a Jinja2 UndefinedError for the missing scope."""
+    plugin = TruncatorPlugin(keep_last_n=2)
+    messages = [{"role": "user", "content": str(i)} for i in range(5)]
+    variables = {"global": {}, "session": {}, "turn": {"now": "T1"}}
+    result = await plugin.apply(BeforeModelCall(messages=messages, tools=[], variables=variables))
+    assert result.variables == variables

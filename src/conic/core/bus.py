@@ -1,6 +1,8 @@
 import inspect
 from typing import Any, Callable, get_type_hints
 
+from loguru import logger
+
 from conic.types.errors import DuplicateResponderError, NoResponderError
 
 
@@ -25,6 +27,12 @@ class MessageBus:
                 result = await handler(payload)
                 if result is not None:
                     payload = result
+            else:
+                logger.info(
+                    "chain interrupted: topic={} handler={} expected={} got={}",
+                    type_name, getattr(handler, "__qualname__", repr(handler)),
+                    payload_cls.__name__, type(payload).__name__,
+                )
         return payload
 
     def on_request(self, type_name: str, handler: Callable) -> None:

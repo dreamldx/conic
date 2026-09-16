@@ -69,3 +69,32 @@ async def test_forwards_variables_on_returned_before_model_call():
     ctx = BeforeModelCall(messages=[{"role": "user", "content": "hi"}], tools=[], variables=variables)
     result = await plugin.apply(ctx)
     assert result.variables == variables
+
+
+async def test_system_content_is_rendered_once_and_cached_across_calls():
+    """The system message must only be rendered on the first apply() call --
+    later Steps (with different turn/session variables, e.g. a different
+    turn.now) must reuse the exact same cached content, so the system
+    message stays a stable prefix across the whole session (for provider-side
+    prompt caching) instead of changing on every Step."""
+    bus = MessageBus()
+    plugin = SystemPromptPlugin([IdentitySectionPlugin("Model: {{ global.model }}, time: {{ turn.now }}.")])
+    plugin.register(bus)
+
+    ctx1 = BeforeModelCall(
+        messages=[{"role": "user", "content": "hi"}],
+        tools=[],
+        variables={"global": {"model": "gpt-test"}, "session": {}, "turn": {"now": "T1"}},
+    )
+    result1 = await plugin.apply(ctx1)
+
+    ctx2 = BeforeModelCall(
+        messages=[{"role": "user", "content": "hi"}, {"role": "assistant", "content": "ok"}],
+        tools=[],
+        variables={"global": {"model": "gpt-test"}, "session": {}, "turn": {"now": "T2"}},
+    )
+    result2 = await plugin.apply(ctx2)
+
+    assert result1.messages[0]["content"] == result2.messages[0]["content"]
+    assert "T1" in result2.messages[0]["content"]
+    assert "T2" not in result2.messages[0]["content"]
