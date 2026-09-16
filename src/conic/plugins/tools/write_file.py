@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 
-from conic.types.messages import ToolCallResult
+from conic.types.messages import BuildSystemPrompt, ToolCallResult
 from conic.plugins.tools.base import WorkspaceEscapeError, resolve_within_workspace
 from conic.plugins import meta
 
@@ -34,6 +34,14 @@ class WriteFileToolPlugin:
 
     def register(self, bus) -> None:
         bus.on_request(meta.ToolCallRequestEvent, self.execute)
+        bus.on(meta.BuildSystemPromptEvent, self.contribute_workspace_restriction)
+
+    async def contribute_workspace_restriction(self, msg: BuildSystemPrompt) -> BuildSystemPrompt:
+        msg.sections["write_file"] = (
+            f"write_file can only create or overwrite files inside this session's workspace "
+            f"directory ({self._workspace_dir}). Paths that resolve outside it are rejected."
+        )
+        return msg
 
     async def execute(self, call: WriteFileCall) -> ToolCallResult:
         try:

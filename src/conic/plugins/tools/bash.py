@@ -44,7 +44,10 @@ class BashToolPlugin:
             "and reports it as a timeout error. Do not run long-running, blocking, or "
             "interactive commands (dev servers, watch mode, `tail -f`, waiting for user "
             "input, long `sleep`s) -- they will simply time out. Prefer commands that "
-            "complete quickly and return their result directly."
+            "complete quickly and return their result directly.\n"
+            f"Commands start in this session's workspace directory ({self._workspace_dir}). "
+            "Stay inside it: don't `cd` out, and don't reference absolute paths that point "
+            "elsewhere on the filesystem."
         )
         return msg
 

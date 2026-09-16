@@ -1,4 +1,6 @@
+from conic.core.bus import MessageBus
 from conic.plugins.tools.edit_file import EditFileCall, EditFileToolPlugin
+from conic.types.messages import BuildSystemPrompt
 
 
 async def test_edits_non_ascii_utf8_content_correctly(tmp_path):
@@ -44,6 +46,17 @@ async def test_rejects_path_outside_workspace(tmp_path):
     tool = EditFileToolPlugin(workspace_dir=str(tmp_path))
     result = await tool.execute(EditFileCall(path="../outside.txt", old_text="a", new_text="b"))
     assert result.error is not None
+
+
+async def test_contributes_a_workspace_restriction_section_to_the_system_prompt(tmp_path):
+    tool = EditFileToolPlugin(workspace_dir=str(tmp_path))
+    bus = MessageBus()
+    tool.register(bus)
+
+    result = await bus.emit("build_system_prompt", BuildSystemPrompt(sections={}))
+
+    assert "edit_file" in result.sections
+    assert str(tmp_path) in result.sections["edit_file"]
 
 
 async def test_reports_oserror_on_write(tmp_path):

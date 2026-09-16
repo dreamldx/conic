@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 
-from conic.types.messages import ToolCallResult
+from conic.types.messages import BuildSystemPrompt, ToolCallResult
 from conic.plugins.tools.base import WorkspaceEscapeError, resolve_within_workspace
 from conic.plugins import meta
 
@@ -36,6 +36,14 @@ class ReadFileToolPlugin:
 
     def register(self, bus) -> None:
         bus.on_request(meta.ToolCallRequestEvent, self.execute)
+        bus.on(meta.BuildSystemPromptEvent, self.contribute_workspace_restriction)
+
+    async def contribute_workspace_restriction(self, msg: BuildSystemPrompt) -> BuildSystemPrompt:
+        msg.sections["read_file"] = (
+            f"read_file can only access paths inside this session's workspace directory "
+            f"({self._workspace_dir}). Paths that resolve outside it are rejected."
+        )
+        return msg
 
     async def execute(self, call: ReadFileCall) -> ToolCallResult:
         try:

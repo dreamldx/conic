@@ -1,4 +1,6 @@
+from conic.core.bus import MessageBus
 from conic.plugins.tools.write_file import WriteFileCall, WriteFileToolPlugin
+from conic.types.messages import BuildSystemPrompt
 
 
 async def test_writes_and_reads_back_non_ascii_utf8_content(tmp_path):
@@ -46,3 +48,14 @@ async def test_rejects_path_outside_workspace(tmp_path):
     tool = WriteFileToolPlugin(workspace_dir=str(tmp_path))
     result = await tool.execute(WriteFileCall(path="../outside.txt", content="x"))
     assert result.error is not None
+
+
+async def test_contributes_a_workspace_restriction_section_to_the_system_prompt(tmp_path):
+    tool = WriteFileToolPlugin(workspace_dir=str(tmp_path))
+    bus = MessageBus()
+    tool.register(bus)
+
+    result = await bus.emit("build_system_prompt", BuildSystemPrompt(sections={}))
+
+    assert "write_file" in result.sections
+    assert str(tmp_path) in result.sections["write_file"]

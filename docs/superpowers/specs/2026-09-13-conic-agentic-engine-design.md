@@ -144,7 +144,10 @@ class Gateway(Protocol):
 | runtime | `RuntimeSectionPlugin` | 平台、模型等运行时信息 |
 | execution | `ExecutionBiasSectionPlugin` | `prompts/execution.md`（启动时加载进内存） |
 | output | `DiscordThreadPlugin`（渠道插件） | 硬编码常量 `OUTPUT_REQUIREMENTS`（`plugins/channels/discord.py`） |
-| bash | `BashToolPlugin`（工具插件） | 动态拼接，携带当前会话的 `self._timeout`（`plugins/tools/bash.py`） |
+| bash | `BashToolPlugin`（工具插件） | 动态拼接，携带当前会话的 `self._timeout` 和 `self._workspace_dir`（`plugins/tools/bash.py`） |
+| read_file | `ReadFileToolPlugin`（工具插件） | 动态拼接，携带当前会话的 `self._workspace_dir`（`plugins/tools/read_file.py`） |
+| write_file | `WriteFileToolPlugin`（工具插件） | 动态拼接，携带当前会话的 `self._workspace_dir`（`plugins/tools/write_file.py`） |
+| edit_file | `EditFileToolPlugin`（工具插件） | 动态拼接，携带当前会话的 `self._workspace_dir`（`plugins/tools/edit_file.py`） |
 
 任何插件都可以 hook `BuildSystemPromptEvent` 注入自定义 section。`SystemPromptPlugin._assemble()` 按 `SECTION_ORDER` 拼接为最终系统消息；不在 `SECTION_ORDER` 里的 section（未来插件新增的）会追加在已知 section 之后，不会丢失——`output` 就是这样一个例子：由渠道插件（而不是 `context_plugins` 里的固定 section 插件）贡献，告诉模型当前输出渠道（Discord）的格式限制（不渲染 markdown 表格、标题只支持到 `###`）、流式渲染方式（同一条消息逐 token 编辑，不需要模型自己分段）、以及要求回复不超过单条消息字符数上限（2000）。这也是"渠道相关的输出要求应该由渠道插件自己声明，而不是写死在 core prompt 里"这一设计意图的落地。`bash` 是同一模式在工具侧的例子：`BashToolPlugin.register()` 同时 hook `ToolCallRequestEvent`（真正执行命令）和 `BuildSystemPromptEvent`（告诉模型"超过 `self._timeout` 秒的命令会被 kill 并报错，不要跑长期运行/阻塞/交互式命令"），把"这个工具有什么限制"和"工具本身怎么实现"放在同一个文件里维护，且提示词里的超时数字直接读 `self._timeout`，配置改了不会和提示词文字脱节。
 
@@ -177,7 +180,9 @@ class Gateway(Protocol):
 ### 8.3 ToolPlugin（4 个）
 每个工具构造时绑定本会话 `workspace_dir`，任何解析后越出该目录的路径直接拒绝。路径校验逻辑集中在 `plugins/tools/base.py`：`resolve_within_workspace(workspace_dir, path)` 把相对路径解析到 `workspace_dir` 下并 `.resolve()`，若结果不在 workspace 内则 `raise WorkspaceEscapeError`；四个文件类工具都复用这一个函数，不各自实现越权检查。
 
-- `BashToolPlugin`：`asyncio.create_subprocess_shell` 在 `workspace_dir` 下执行，超时（`BASH_TIMEOUT`，默认 60s）由 `asyncio.wait_for` 包裹 `proc.communicate()`；超时后 `proc.kill()` + `proc.wait()` 回收进程，返回 `ToolCallResult(error="command timed out after {timeout}s")`。超时值通过 `registry.py` 里定义的 `ConfiguredBashToolPlugin`（`BashToolPlugin` 的一个薄子类，`__init__` 只接 `workspace_dir` 以匹配 `PluginManager` 对所有 `tool_classes` 统一的 `tool_cls(workspace_dir=...)` 实例化方式，内部把 `config.bash_timeout` 转发给父类）从 `Config` 注入——`tool_classes` 里的类要同时支持"当类用"（`cls.schema`/`cls.llm_name`/`cls.execute` 静态访问）和"当工厂用"（绑定运行时配置），子类化是能同时满足两者的最小改法。stdout/stderr 合并后按字节截断（默认 20000 字节，超出附加 `...[truncated]`），非零退出码作为 `error` 返回。`register()` 还额外 hook `BuildSystemPromptEvent`，贡献 `bash` prompt section（见第 7 节），提醒模型不要跑长期运行/阻塞/交互式命令。
+四个工具的 `register()` 现在都额外 hook `BuildSystemPromptEvent`，各自贡献一段"我只能访问 `{workspace_dir}`"的 prompt section（见第 7 节表格），把代码层已经强制的越权拒绝也讲给模型听——目的是让模型一开始就不去尝试越权路径，而不是等工具报错才知道。三个文件工具（read/write/edit）的措辞可以是陈述句（"paths outside it are rejected"），因为 `resolve_within_workspace` 真的会拒绝；`BashToolPlugin` 的措辞是请求句（"stay inside it, don't cd out"），因为 bash 只是把 `cwd` 设到 `workspace_dir`，并没有在代码层阻止 `cd ..`/绝对路径逃逸——这段 prompt 是目前唯一的"软约束"，不是真正的沙箱，见 `docs/Improvement.md`"安全与隔离"一节。
+
+- `BashToolPlugin`：`asyncio.create_subprocess_shell` 在 `workspace_dir` 下执行，超时（`BASH_TIMEOUT`，默认 60s）由 `asyncio.wait_for` 包裹 `proc.communicate()`；超时后 `proc.kill()` + `proc.wait()` 回收进程，返回 `ToolCallResult(error="command timed out after {timeout}s")`。超时值通过 `registry.py` 里定义的 `ConfiguredBashToolPlugin`（`BashToolPlugin` 的一个薄子类，`__init__` 只接 `workspace_dir` 以匹配 `PluginManager` 对所有 `tool_classes` 统一的 `tool_cls(workspace_dir=...)` 实例化方式，内部把 `config.bash_timeout` 转发给父类）从 `Config` 注入——`tool_classes` 里的类要同时支持"当类用"（`cls.schema`/`cls.llm_name`/`cls.execute` 静态访问）和"当工厂用"（绑定运行时配置），子类化是能同时满足两者的最小改法。stdout/stderr 合并后按字节截断（默认 20000 字节，超出附加 `...[truncated]`），非零退出码作为 `error` 返回。
 - `ReadFileToolPlugin`：`offset`/`limit`（默认 0 / 2000 行）按行切片，超出部分返回时附加总行数提示
 - `WriteFileToolPlugin`：创建/覆盖文件，返回结果里报告新旧行数和 created/overwritten 状态
 - `EditFileToolPlugin`：要求 `old_text` 在文件中**精确出现一次**，否则报错（未找到 / 不唯一），成功后只替换第一处匹配

@@ -70,7 +70,7 @@ async def test_execute_handles_oserror_from_communicate(tmp_path, monkeypatch):
 
 
 async def test_contributes_a_bash_guidance_section_with_the_configured_timeout():
-    tool = BashToolPlugin(workspace_dir=".", timeout=42)
+    tool = BashToolPlugin(workspace_dir="/tmp/ws", timeout=42)
     bus = MessageBus()
     tool.register(bus)
 
@@ -79,6 +79,7 @@ async def test_contributes_a_bash_guidance_section_with_the_configured_timeout()
     assert "bash" in result.sections
     assert "42" in result.sections["bash"]
     assert "long-running" in result.sections["bash"]
+    assert "/tmp/ws" in result.sections["bash"]
 
 
 def test_register_wires_tool_call_request():
