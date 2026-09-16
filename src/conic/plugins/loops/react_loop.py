@@ -2,8 +2,8 @@ from loguru import logger
 
 from conic.types.errors import AbortTurn
 from conic.types.messages import (
-    AssistantMessage, BeforeModelCall, Error, ModelRequest, ModelResponse,
-    StepEnd, StepStart, ToolCall, ToolCallResult, ToolExecutionEnd,
+    AssistantMessage, BeforeModelCall, Error, MessageUpdate, ModelRequest, ModelResponse,
+    StepEnd, StepStart, ToolCall, ToolCallResult, ToolCallSpec, ToolExecutionEnd,
     ToolExecutionStart, TurnEnd, TurnStart, UserInput,
 )
 from conic.plugins import meta
@@ -20,6 +20,10 @@ class ReactLoopPlugin:
         self._bus = bus
         bus.on(meta.UserInputEvent, self.handle_user_input)
 
+    def _format_tool_status(self, call: ToolCallSpec) -> str:
+        args = ", ".join(f"{k}={v!r}" for k, v in call.args.items())
+        return f"🔧 {call.name}({args})"
+
     async def handle_user_input(self, msg: UserInput) -> None:
         bus = self._bus
         self._storage.append_message({"role": "user", "content": msg.text})
@@ -29,13 +33,15 @@ class ReactLoopPlugin:
             while True:
                 this_step = step_index
                 await bus.emit(meta.StepStartEvent, StepStart(step_index=this_step))
+                await bus.emit(meta.MessageUpdateEvent, MessageUpdate(text="🤔 思考中…"))
                 step_index += 1
                 history = self._storage.load_history()
                 ctx = await bus.emit(
                     meta.BeforeModelCallEvent, BeforeModelCall(messages=history, tools=self._tool_schemas)
                 )
                 response: ModelResponse = await bus.request(
-                    meta.ModelRequestEvent, ModelRequest(messages=ctx.messages, tools=ctx.tools)
+                    meta.ModelRequestEvent,
+                    ModelRequest(messages=ctx.messages, tools=ctx.tools, stream_updates=True),
                 )
                 response = await bus.emit(meta.ModelResponseEvent, response)
                 if not response.tool_calls:
@@ -51,6 +57,9 @@ class ReactLoopPlugin:
                         payload_cls = self._tool_payload_map[call_ctx.call.name]
                         payload = payload_cls(**call_ctx.call.args)
                         await bus.emit(meta.ToolExecutionStartEvent, ToolExecutionStart(call=call_ctx.call))
+                        await bus.emit(
+                            meta.MessageUpdateEvent, MessageUpdate(text=self._format_tool_status(call_ctx.call))
+                        )
                         result: ToolCallResult = await bus.request(meta.ToolCallRequestEvent, payload)
                         await bus.emit(
                             meta.ToolExecutionEndEvent, ToolExecutionEnd(call=call_ctx.call, result=result)

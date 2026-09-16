@@ -5,7 +5,7 @@ import pytest
 from conic.core.bus import MessageBus
 from conic.types.errors import AbortTurn
 from conic.types.messages import (
-    AssistantMessage, Error, ModelRequest, ModelResponse, StepEnd, StepStart,
+    AssistantMessage, Error, MessageUpdate, ModelRequest, ModelResponse, StepEnd, StepStart,
     ToolCall, ToolCallResult, ToolCallSpec, ToolExecutionEnd, ToolExecutionStart,
     TurnEnd, UserInput,
 )
@@ -356,3 +356,49 @@ async def test_tool_call_id_preserved_when_hook_mutates_call_id():
     # The tool-role message should use the ORIGINAL call id, not the mutated one
     tool_messages = [m for m in handle.messages if m.get("role") == "tool"]
     assert tool_messages == [{"role": "tool", "tool_call_id": "original_call_id", "content": "ran ls"}]
+
+
+async def test_message_update_cycles_through_thinking_and_tool_status():
+    handle = FakeStorageHandle()
+    tool_call = ToolCallSpec(id="call_1", name="bash", args={"command": "ls"})
+    responses = [
+        ModelResponse(text=None, tool_calls=[tool_call], raw_message={"role": "assistant", "tool_calls": [1]}),
+        ModelResponse(text="done", tool_calls=[], raw_message={"role": "assistant"}),
+    ]
+    bus, loop = make_loop(handle, responses)
+
+    updates = []
+
+    async def on_update(msg: MessageUpdate) -> None:
+        updates.append(msg.text)
+
+    bus.on("message_update", on_update)
+
+    await bus.emit("user_input", UserInput(text="run ls"))
+
+    assert updates[0] == "🤔 思考中…"
+    assert updates[1] == "🔧 bash(command='ls')"
+    assert updates[2] == "🤔 思考中…"
+
+
+async def test_model_request_opts_into_streaming():
+    handle = FakeStorageHandle()
+    bus = MessageBus()
+    captured = []
+
+    async def fake_model_request(msg: ModelRequest) -> ModelResponse:
+        captured.append(msg.stream_updates)
+        return ModelResponse(text="hi", tool_calls=[], raw_message={})
+
+    bus.on_request("model_request", fake_model_request)
+
+    loop = ReactLoopPlugin(
+        storage_handle=handle,
+        tool_schemas=[{"type": "function", "function": {"name": "bash"}}],
+        tool_payload_map={"bash": FakeToolCall},
+    )
+    loop.register(bus)
+
+    await bus.emit("user_input", UserInput(text="hello"))
+
+    assert captured == [True]
