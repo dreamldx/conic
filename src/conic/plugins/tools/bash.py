@@ -3,7 +3,7 @@ from dataclasses import dataclass
 
 from loguru import logger
 
-from conic.types.messages import ToolCallResult
+from conic.types.messages import BuildSystemPrompt, ToolCallResult
 from conic.plugins import meta
 
 
@@ -36,6 +36,17 @@ class BashToolPlugin:
 
     def register(self, bus) -> None:
         bus.on_request(meta.ToolCallRequestEvent, self.execute)
+        bus.on(meta.BuildSystemPromptEvent, self.contribute_bash_guidance)
+
+    async def contribute_bash_guidance(self, msg: BuildSystemPrompt) -> BuildSystemPrompt:
+        msg.sections["bash"] = (
+            f"The bash tool kills any command still running after {self._timeout:g} seconds "
+            "and reports it as a timeout error. Do not run long-running, blocking, or "
+            "interactive commands (dev servers, watch mode, `tail -f`, waiting for user "
+            "input, long `sleep`s) -- they will simply time out. Prefer commands that "
+            "complete quickly and return their result directly."
+        )
+        return msg
 
     async def execute(self, call: BashCall) -> ToolCallResult:
         logger.debug("bash: {}", call.command[:100])

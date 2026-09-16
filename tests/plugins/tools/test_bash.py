@@ -2,6 +2,7 @@ import sys
 
 from conic.plugins.tools.bash import BashCall, BashToolPlugin
 from conic.core.bus import MessageBus
+from conic.types.messages import BuildSystemPrompt
 
 
 async def test_execute_runs_command_and_returns_stdout(tmp_path):
@@ -66,6 +67,18 @@ async def test_execute_handles_oserror_from_communicate(tmp_path, monkeypatch):
     assert result.error is not None
     assert "broken pipe" in result.error
     assert result.output is None
+
+
+async def test_contributes_a_bash_guidance_section_with_the_configured_timeout():
+    tool = BashToolPlugin(workspace_dir=".", timeout=42)
+    bus = MessageBus()
+    tool.register(bus)
+
+    result = await bus.emit("build_system_prompt", BuildSystemPrompt(sections={}))
+
+    assert "bash" in result.sections
+    assert "42" in result.sections["bash"]
+    assert "long-running" in result.sections["bash"]
 
 
 def test_register_wires_tool_call_request():
