@@ -18,9 +18,8 @@ OUTPUT_REQUIREMENTS = (
     "- Your reply streams into the thread live, token by token, editing a "
     "single message as you generate it -- you don't need to chunk it or "
     "announce progress yourself.\n"
-    "- Keep replies to roughly 2000 characters or less when possible; that's "
-    "Discord's single-message limit, and longer replies get split across "
-    "multiple messages."
+    "- Keep replies within 2000 characters -- do not exceed Discord's "
+    "single-message limit."
 )
 
 DISCORD_MESSAGE_LIMIT = 2000
