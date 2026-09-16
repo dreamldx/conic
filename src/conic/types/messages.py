@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass
@@ -24,28 +24,31 @@ class SessionEnd:
 
 @dataclass
 class TurnStart:
-    pass
+    variables: dict = field(default_factory=dict)
 
 
 @dataclass
 class TurnEnd:
-    pass
+    variables: dict = field(default_factory=dict)
 
 
 @dataclass
 class StepStart:
     step_index: int
+    variables: dict = field(default_factory=dict)
 
 
 @dataclass
 class StepEnd:
     step_index: int
+    variables: dict = field(default_factory=dict)
 
 
 @dataclass
 class BeforeModelCall:
     messages: list[dict]
     tools: list[dict]
+    variables: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -53,6 +56,7 @@ class ModelRequest:
     messages: list[dict]
     tools: list[dict]
     stream_updates: bool = False
+    variables: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -82,6 +86,7 @@ class ModelResponse:
 @dataclass
 class ToolCall:
     call: ToolCallSpec
+    variables: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -93,22 +98,26 @@ class ToolCallResult:
 @dataclass
 class ToolExecutionStart:
     call: ToolCallSpec
+    variables: dict = field(default_factory=dict)
 
 
 @dataclass
 class ToolExecutionEnd:
     call: ToolCallSpec
     result: ToolCallResult
+    variables: dict = field(default_factory=dict)
 
 
 @dataclass
 class AssistantMessage:
     text: str
+    variables: dict = field(default_factory=dict)
 
 
 @dataclass
 class Error:
     exc: Exception
+    variables: dict = field(default_factory=dict)
 
 
 @dataclass

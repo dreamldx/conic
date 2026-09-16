@@ -36,8 +36,8 @@ def make_message(content=None, tool_calls=None):
     )
 
 
-def make_response(message):
-    return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+def make_response(message, usage=None):
+    return SimpleNamespace(choices=[SimpleNamespace(message=message)], usage=usage)
 
 
 async def test_complete_returns_text_response_with_no_tool_calls():
@@ -64,6 +64,44 @@ async def test_complete_parses_tool_calls():
     assert result.tool_calls[0].id == "call_1"
     assert result.tool_calls[0].name == "bash"
     assert result.tool_calls[0].args == {"command": "ls"}
+
+
+async def test_complete_records_token_usage_into_session_variables():
+    message = make_message(content="hello there")
+    usage = SimpleNamespace(prompt_tokens=10, completion_tokens=5, total_tokens=15)
+    client = FakeClient(FakeCompletions(make_response(message, usage=usage)))
+    backend = OpenRouterBackendPlugin(api_key="k", model="test-model", client=client)
+
+    variables = {"session": {"tokens_used": 0}}
+    await backend.complete(
+        ModelRequest(messages=[{"role": "user", "content": "hi"}], tools=[], variables=variables)
+    )
+
+    assert variables["session"]["tokens_used"] == 15
+
+
+async def test_complete_accumulates_token_usage_across_calls():
+    message = make_message(content="hello there")
+    usage = SimpleNamespace(prompt_tokens=10, completion_tokens=5, total_tokens=15)
+    client = FakeClient(FakeCompletions(make_response(message, usage=usage)))
+    backend = OpenRouterBackendPlugin(api_key="k", model="test-model", client=client)
+
+    variables = {"session": {"tokens_used": 100}}
+    await backend.complete(
+        ModelRequest(messages=[{"role": "user", "content": "hi"}], tools=[], variables=variables)
+    )
+
+    assert variables["session"]["tokens_used"] == 115
+
+
+async def test_complete_without_usage_or_session_does_not_raise():
+    message = make_message(content="hello there")
+    client = FakeClient(FakeCompletions(make_response(message)))
+    backend = OpenRouterBackendPlugin(api_key="k", model="test-model", client=client)
+
+    result = await backend.complete(ModelRequest(messages=[], tools=[]))
+
+    assert result.text == "hello there"
 
 
 def test_register_wires_model_request():
@@ -203,6 +241,26 @@ async def test_streaming_complete_skips_chunks_with_no_choices():
     result = await backend.complete(ModelRequest(messages=[], tools=[], stream_updates=True))
 
     assert result.text == "ok"
+
+
+async def test_streaming_complete_records_usage_from_final_chunk():
+    usage = SimpleNamespace(prompt_tokens=20, completion_tokens=8, total_tokens=28)
+    chunks = [
+        make_chunk(make_delta(content="Hi")),
+        SimpleNamespace(choices=[], usage=usage),
+    ]
+    client = FakeClient(FakeStreamingCompletions(chunks))
+    backend = OpenRouterBackendPlugin(api_key="k", model="m", client=client)
+    bus = MessageBus()
+    backend.register(bus)
+
+    variables = {"session": {"tokens_used": 0}}
+    await backend.complete(
+        ModelRequest(messages=[], tools=[], stream_updates=True, variables=variables)
+    )
+
+    assert variables["session"]["tokens_used"] == 28
+    assert client.chat.completions.last_kwargs["stream_options"] == {"include_usage": True}
 
 
 async def test_streaming_deltas_only_reach_the_registering_bus_not_other_sessions():

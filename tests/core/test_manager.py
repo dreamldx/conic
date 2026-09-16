@@ -93,7 +93,9 @@ def make_manager(tmp_path):
         context_plugins=(FakeContextPlugin,),
         policy_plugins=(FakePolicyPlugin,),
         summarizer=FakeSummarizer,
-        loop_factory=lambda handle, schemas, payload_map: ReactLoopPlugin(handle, schemas, payload_map),
+        loop_factory=lambda handle, schemas, payload_map, ws, session_vars: ReactLoopPlugin(
+            handle, schemas, payload_map, ws, persisted_session_variables=session_vars
+        ),
     )
     return storage, PluginManager(storage, plugin_set)
 

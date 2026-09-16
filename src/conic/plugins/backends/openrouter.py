@@ -22,6 +22,14 @@ class OpenRouterBackendPlugin:
             return await self._complete_streaming(msg)
         return await self._complete_blocking(msg)
 
+    def _record_usage(self, msg: ModelRequest, usage) -> None:
+        if usage is None:
+            return
+        session = msg.variables.get("session")
+        if session is None:
+            return
+        session["tokens_used"] = session.get("tokens_used", 0) + usage.total_tokens
+
     async def _complete_blocking(self, msg: ModelRequest) -> ModelResponse:
         logger.debug(
             "calling openrouter model={} messages={} tools={}",
@@ -32,6 +40,7 @@ class OpenRouterBackendPlugin:
             messages=msg.messages,
             tools=msg.tools or None,
         )
+        self._record_usage(msg, getattr(response, "usage", None))
         message = response.choices[0].message
         raw_message = message.model_dump()
         tool_calls = [
@@ -53,10 +62,14 @@ class OpenRouterBackendPlugin:
             messages=msg.messages,
             tools=msg.tools or None,
             stream=True,
+            stream_options={"include_usage": True},
         )
         content_parts: list[str] = []
         tool_call_acc: dict[int, dict] = {}
+        usage = None
         async for chunk in stream:
+            if getattr(chunk, "usage", None):
+                usage = chunk.usage
             if not chunk.choices:
                 continue
             delta = chunk.choices[0].delta
@@ -72,6 +85,7 @@ class OpenRouterBackendPlugin:
                 if tc.function and tc.function.arguments:
                     acc["arguments"] += tc.function.arguments
 
+        self._record_usage(msg, usage)
         text = "".join(content_parts) or None
         tool_calls = [
             ToolCallSpec(

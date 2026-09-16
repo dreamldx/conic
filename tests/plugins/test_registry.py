@@ -4,6 +4,7 @@ from conic.plugins.context.summarizer import SummarizerPlugin
 from conic.plugins.context.system_prompt import SystemPromptPlugin
 from conic.plugins.context.token_budget import TokenBudgetPlugin
 from conic.plugins.context.truncator import TruncatorPlugin
+from conic.plugins.context.variables import TurnVariableUpdaterPlugin
 from conic.plugins.policy.permission import PermissionPolicyPlugin
 from conic.plugins.policy.step_limit import StepLimitPlugin
 from conic.plugins.registry import build_plugin_set
@@ -58,11 +59,17 @@ def test_build_plugin_set_wires_context_chain_with_configured_values():
     plugin_set = build_plugin_set(make_config())
     instances = [factory("/tmp/ws", []) for factory in plugin_set.context_plugins]
     kinds = [type(p) for p in instances]
-    assert kinds == [SystemPromptPlugin, TruncatorPlugin, TokenBudgetPlugin]
-    truncator = instances[1]
+    assert kinds == [TurnVariableUpdaterPlugin, SystemPromptPlugin, TruncatorPlugin, TokenBudgetPlugin]
+    truncator = instances[2]
     assert truncator._keep_last_n == 9
-    token_budget = instances[2]
+    token_budget = instances[3]
     assert token_budget._budget_tokens == 123
+
+
+def test_build_plugin_set_wires_turn_variable_updater_plugin():
+    plugin_set = build_plugin_set(make_config())
+    variables_plugin = plugin_set.context_plugins[0]("/tmp/ws", [])
+    assert isinstance(variables_plugin, TurnVariableUpdaterPlugin)
 
 
 def test_build_plugin_set_wires_policy_plugins_with_configured_max_steps():
@@ -92,5 +99,27 @@ def test_loop_factory_produces_a_react_loop_plugin():
     from conic.plugins.loops.react_loop import ReactLoopPlugin
 
     plugin_set = build_plugin_set(make_config())
-    loop = plugin_set.loop_factory(object(), [], {})
+    loop = plugin_set.loop_factory(object(), [], {}, "/tmp/ws", {})
     assert isinstance(loop, ReactLoopPlugin)
+
+
+def test_loop_factory_wires_session_and_global_variables():
+    plugin_set = build_plugin_set(make_config())
+    loop = plugin_set.loop_factory(object(), [], {}, "/tmp/ws", {})
+    assert loop._session_variables == {"workspace_dir": "/tmp/ws", "tokens_used": 0, "turn_count": 0}
+    assert loop._global_variables["model"] == "test-model"
+    assert "platform" in loop._global_variables
+    assert "timezone" in loop._global_variables
+
+
+def test_loop_factory_seeds_session_variables_from_persisted_values():
+    plugin_set = build_plugin_set(make_config())
+    loop = plugin_set.loop_factory(object(), [], {}, "/tmp/ws", {"tokens_used": 999})
+    assert loop._session_variables == {"workspace_dir": "/tmp/ws", "tokens_used": 999, "turn_count": 0}
+
+
+def test_build_plugin_set_merges_caller_supplied_global_variables():
+    plugin_set = build_plugin_set(make_config(), global_variables={"deployment": "staging"})
+    loop = plugin_set.loop_factory(object(), [], {}, "/tmp/ws", {})
+    assert loop._global_variables["deployment"] == "staging"
+    assert loop._global_variables["model"] == "test-model"

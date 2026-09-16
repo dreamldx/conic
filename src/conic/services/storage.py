@@ -35,6 +35,10 @@ class SessionHandle:
         sql, params = queries.set_session_status_sql(self._session_key, status)
         self._conn.execute(sql, params)
 
+    def save_variables(self, variables: dict) -> None:
+        sql, params = queries.set_session_variables_sql(self._session_key, variables)
+        self._conn.execute(sql, params)
+
     def _next_seq(self) -> int:
         sql, params = queries.next_seq_sql(self._session_key)
         row = self._conn.execute(sql, params).fetchone()
@@ -54,6 +58,7 @@ class StorageService:
         self._conn = duckdb.connect(self._db_path)
         self._conn.execute(*queries.create_sessions_table_sql())
         self._conn.execute(*queries.create_messages_table_sql())
+        self._conn.execute(*queries.add_sessions_variables_column_sql())
 
     def shutdown(self) -> None:
         if self._conn is not None:
@@ -80,6 +85,7 @@ class StorageService:
             model=self._default_model,
             status="active",
             created_at=datetime.now(timezone.utc),
+            variables={},
         )
         sql, params = queries.insert_session_sql(session)
         self._conn.execute(sql, params)
@@ -98,4 +104,5 @@ class StorageService:
         return Session(
             session_key=r[0], channel=r[1], native_id=r[2], workspace_dir=r[3],
             model=r[4], status=r[5], created_at=datetime.fromisoformat(r[6]),
+            variables=json.loads(r[7]) if r[7] else {},
         )

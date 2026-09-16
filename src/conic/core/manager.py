@@ -14,7 +14,7 @@ class PluginSet:
     context_plugins: tuple[Callable[[str, list[dict]], object], ...]
     policy_plugins: tuple[Callable[[], object], ...]
     summarizer: Callable[[], object]
-    loop_factory: Callable[[object, list[dict], dict[str, type]], object]
+    loop_factory: Callable[[object, list[dict], dict[str, type], str, dict], object]
 
 
 class PluginManager:
@@ -45,7 +45,9 @@ class PluginManager:
         self._plugin_set.summarizer().register(bus)
 
         handle = self._storage.handle_for(row)
-        self._plugin_set.loop_factory(handle, tool_schemas, tool_payload_map).register(bus)
+        self._plugin_set.loop_factory(
+            handle, tool_schemas, tool_payload_map, row.workspace_dir, row.variables
+        ).register(bus)
 
         channel_plugin_factory().register(bus)
 

@@ -11,6 +11,7 @@ class Session(BaseModel):
     model: str
     status: str
     created_at: datetime
+    variables: dict = Field(default_factory=dict)
 
 
 class Message(BaseModel):

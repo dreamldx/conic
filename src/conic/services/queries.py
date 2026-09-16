@@ -1,3 +1,5 @@
+import json
+
 from conic.services.models import Message, Session
 
 
@@ -10,8 +12,13 @@ CREATE TABLE IF NOT EXISTS sessions (
     workspace_dir VARCHAR,
     model VARCHAR,
     status VARCHAR,
-    created_at VARCHAR
+    created_at VARCHAR,
+    variables VARCHAR DEFAULT '{}'
 )""", [])
+
+
+def add_sessions_variables_column_sql() -> tuple[str, list]:
+    return ("ALTER TABLE sessions ADD COLUMN IF NOT EXISTS variables VARCHAR DEFAULT '{}'", [])
 
 
 def create_messages_table_sql() -> tuple[str, list]:
@@ -47,20 +54,27 @@ def next_seq_sql(session_key: str) -> tuple[str, list]:
 
 def get_session_sql(session_key: str) -> tuple[str, list]:
     return (
-        "SELECT session_key, channel, native_id, workspace_dir, model, status, created_at FROM sessions WHERE session_key = ?",
+        "SELECT session_key, channel, native_id, workspace_dir, model, status, created_at, variables FROM sessions WHERE session_key = ?",
         [session_key],
     )
 
 
 def insert_session_sql(session: Session) -> tuple[str, list]:
     return (
-        "INSERT INTO sessions (session_key, channel, native_id, workspace_dir, model, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        [session.session_key, session.channel, session.native_id, session.workspace_dir, session.model, session.status, session.created_at.isoformat()],
+        "INSERT INTO sessions (session_key, channel, native_id, workspace_dir, model, status, created_at, variables) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        [
+            session.session_key, session.channel, session.native_id, session.workspace_dir,
+            session.model, session.status, session.created_at.isoformat(), json.dumps(session.variables),
+        ],
     )
 
 
 def list_active_sessions_sql(channel: str) -> tuple[str, list]:
     return (
-        "SELECT session_key, channel, native_id, workspace_dir, model, status, created_at FROM sessions WHERE channel = ? AND status = 'active'",
+        "SELECT session_key, channel, native_id, workspace_dir, model, status, created_at, variables FROM sessions WHERE channel = ? AND status = 'active'",
         [channel],
     )
+
+
+def set_session_variables_sql(session_key: str, variables: dict) -> tuple[str, list]:
+    return "UPDATE sessions SET variables = ? WHERE session_key = ?", [json.dumps(variables), session_key]

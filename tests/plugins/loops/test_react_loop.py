@@ -5,9 +5,9 @@ import pytest
 from conic.core.bus import MessageBus
 from conic.types.errors import AbortTurn
 from conic.types.messages import (
-    AssistantMessage, Error, MessageUpdate, ModelRequest, ModelResponse, StepEnd, StepStart,
-    ToolCall, ToolCallResult, ToolCallSpec, ToolExecutionEnd, ToolExecutionStart,
-    TurnEnd, UserInput,
+    AssistantMessage, BeforeModelCall, Error, MessageUpdate, ModelRequest, ModelResponse, StepEnd,
+    StepStart, ToolCall, ToolCallResult, ToolCallSpec, ToolExecutionEnd, ToolExecutionStart,
+    TurnEnd, TurnStart, UserInput,
 )
 from conic.plugins.loops.react_loop import ReactLoopPlugin
 
@@ -15,6 +15,7 @@ from conic.plugins.loops.react_loop import ReactLoopPlugin
 class FakeStorageHandle:
     def __init__(self):
         self.messages: list[dict] = []
+        self.saved_variables: list[dict] = []
 
     def append_message(self, message: dict) -> None:
         self.messages.append(message)
@@ -24,6 +25,9 @@ class FakeStorageHandle:
 
     def set_status(self, status: str) -> None:
         pass
+
+    def save_variables(self, variables: dict) -> None:
+        self.saved_variables.append(dict(variables))
 
 
 @dataclass
@@ -406,3 +410,220 @@ async def test_model_request_opts_into_streaming():
     await bus.emit("user_input", UserInput(text="hello"))
 
     assert captured == [True]
+
+
+async def test_variables_dict_is_shared_across_turn_scoped_events():
+    """A handler on TurnStartEvent that contributes a turn-scoped variable
+    must have it visible to later Turn-scoped events (e.g. BeforeModelCallEvent)
+    in the same turn, since react_loop threads a single shared dict instance."""
+    handle = FakeStorageHandle()
+    responses = [ModelResponse(text="hi", tool_calls=[], raw_message={})]
+    bus, loop = make_loop(handle, responses)
+
+    async def contribute(msg: TurnStart) -> TurnStart:
+        msg.variables["turn"]["injected"] = "value"
+        return msg
+
+    seen = []
+
+    async def observe(msg: BeforeModelCall) -> None:
+        seen.append(msg.variables["turn"].get("injected"))
+
+    bus.on("turn_start", contribute)
+    bus.on("before_model_call", observe)
+
+    await bus.emit("user_input", UserInput(text="hello"))
+
+    assert seen == ["value"]
+
+
+async def test_turn_step_count_tracks_current_step_index():
+    handle = FakeStorageHandle()
+    tool_call = ToolCallSpec(id="call_1", name="bash", args={"command": "ls"})
+    responses = [
+        ModelResponse(text=None, tool_calls=[tool_call], raw_message={"role": "assistant", "tool_calls": [1]}),
+        ModelResponse(text="done", tool_calls=[], raw_message={"role": "assistant"}),
+    ]
+    bus, loop = make_loop(handle, responses)
+
+    seen_step_counts = []
+
+    async def observe(msg: BeforeModelCall) -> None:
+        seen_step_counts.append(msg.variables["turn"]["step_count"])
+
+    bus.on("before_model_call", observe)
+
+    await bus.emit("user_input", UserInput(text="run ls"))
+
+    assert seen_step_counts == [0, 1]
+
+
+async def test_variables_has_global_session_turn_scopes():
+    handle = FakeStorageHandle()
+    responses = [ModelResponse(text="hi", tool_calls=[], raw_message={})]
+    bus = MessageBus()
+    responses_iter = iter(responses)
+
+    async def fake_model_request(msg: ModelRequest) -> ModelResponse:
+        return next(responses_iter)
+
+    bus.on_request("model_request", fake_model_request)
+
+    loop = ReactLoopPlugin(
+        storage_handle=handle,
+        tool_schemas=[{"type": "function", "function": {"name": "bash"}}],
+        tool_payload_map={"bash": FakeToolCall},
+        workspace_dir="/tmp/ws",
+        global_variables={"model": "gpt-test"},
+    )
+    loop.register(bus)
+
+    seen = []
+
+    async def observe(msg: BeforeModelCall) -> None:
+        seen.append(msg.variables)
+
+    bus.on("before_model_call", observe)
+
+    await bus.emit("user_input", UserInput(text="hello"))
+
+    assert seen[0]["global"] == {"model": "gpt-test"}
+    assert seen[0]["session"] == {"workspace_dir": "/tmp/ws", "tokens_used": 0, "turn_count": 1}
+    assert seen[0]["turn"] == {"step_count": 0}
+
+
+async def test_session_variables_seeded_from_persisted_values():
+    handle = FakeStorageHandle()
+    responses = [ModelResponse(text="hi", tool_calls=[], raw_message={})]
+    bus, _responses_iter = MessageBus(), iter(responses)
+
+    async def fake_model_request(msg: ModelRequest) -> ModelResponse:
+        return next(_responses_iter)
+
+    bus.on_request("model_request", fake_model_request)
+
+    loop = ReactLoopPlugin(
+        storage_handle=handle,
+        tool_schemas=[{"type": "function", "function": {"name": "bash"}}],
+        tool_payload_map={"bash": FakeToolCall},
+        workspace_dir="/tmp/ws",
+        persisted_session_variables={"tokens_used": 250},
+    )
+    loop.register(bus)
+
+    await bus.emit("user_input", UserInput(text="hello"))
+
+    assert loop._session_variables == {"workspace_dir": "/tmp/ws", "tokens_used": 250, "turn_count": 1}
+
+
+async def test_session_variables_persisted_after_successful_turn():
+    handle = FakeStorageHandle()
+    responses = [ModelResponse(text="hi", tool_calls=[], raw_message={})]
+    bus, loop = make_loop(handle, responses)
+
+    await bus.emit("user_input", UserInput(text="hello"))
+
+    assert handle.saved_variables == [{"workspace_dir": "", "tokens_used": 0, "turn_count": 1}]
+
+
+async def test_session_variables_persisted_after_abort_turn():
+    handle = FakeStorageHandle()
+    responses = [ModelResponse(text="unreachable", tool_calls=[], raw_message={})]
+    bus, loop = make_loop(handle, responses)
+
+    async def always_abort(msg: StepStart) -> None:
+        raise AbortTurn("blocked by policy")
+
+    bus.on("step_start", always_abort)
+
+    await bus.emit("user_input", UserInput(text="hello"))
+
+    assert handle.saved_variables == [{"workspace_dir": "", "tokens_used": 0, "turn_count": 1}]
+
+
+async def test_session_variables_persisted_after_generic_exception():
+    handle = FakeStorageHandle()
+    bus = MessageBus()
+
+    async def failing_model_request(msg: ModelRequest) -> ModelResponse:
+        raise ValueError("openrouter blew up")
+
+    bus.on_request("model_request", failing_model_request)
+
+    loop = ReactLoopPlugin(
+        storage_handle=handle,
+        tool_schemas=[{"type": "function", "function": {"name": "bash"}}],
+        tool_payload_map={"bash": FakeToolCall},
+    )
+    loop.register(bus)
+
+    await bus.emit("user_input", UserInput(text="hello"))
+
+    assert handle.saved_variables == [{"workspace_dir": "", "tokens_used": 0, "turn_count": 1}]
+
+
+async def test_session_variables_reflect_mutations_made_during_the_turn():
+    """OpenRouterBackendPlugin (or any handler) mutating session["tokens_used"]
+    in place during the turn must be reflected in what gets persisted, since
+    save_variables() is called after the turn body runs."""
+    handle = FakeStorageHandle()
+    responses = [ModelResponse(text="hi", tool_calls=[], raw_message={})]
+    bus, loop = make_loop(handle, responses)
+
+    async def bump_tokens(msg: BeforeModelCall) -> None:
+        msg.variables["session"]["tokens_used"] += 42
+
+    bus.on("before_model_call", bump_tokens)
+
+    await bus.emit("user_input", UserInput(text="hello"))
+
+    assert handle.saved_variables == [{"workspace_dir": "", "tokens_used": 42, "turn_count": 1}]
+
+
+async def test_turn_count_increments_across_multiple_turns_in_the_same_session():
+    handle = FakeStorageHandle()
+    responses = [
+        ModelResponse(text="hi", tool_calls=[], raw_message={}),
+        ModelResponse(text="hi again", tool_calls=[], raw_message={}),
+        ModelResponse(text="hi a third time", tool_calls=[], raw_message={}),
+    ]
+    bus, loop = make_loop(handle, responses)
+
+    seen_turn_counts = []
+
+    async def observe(msg: BeforeModelCall) -> None:
+        seen_turn_counts.append(msg.variables["session"]["turn_count"])
+
+    bus.on("before_model_call", observe)
+
+    await bus.emit("user_input", UserInput(text="hello"))
+    await bus.emit("user_input", UserInput(text="hello again"))
+    await bus.emit("user_input", UserInput(text="hello a third time"))
+
+    assert seen_turn_counts == [1, 2, 3]
+    assert loop._session_variables["turn_count"] == 3
+    assert handle.saved_variables[-1]["turn_count"] == 3
+
+
+async def test_turn_count_seeded_from_persisted_value():
+    handle = FakeStorageHandle()
+    responses = [ModelResponse(text="hi", tool_calls=[], raw_message={})]
+    bus = MessageBus()
+    responses_iter = iter(responses)
+
+    async def fake_model_request(msg: ModelRequest) -> ModelResponse:
+        return next(responses_iter)
+
+    bus.on_request("model_request", fake_model_request)
+
+    loop = ReactLoopPlugin(
+        storage_handle=handle,
+        tool_schemas=[{"type": "function", "function": {"name": "bash"}}],
+        tool_payload_map={"bash": FakeToolCall},
+        persisted_session_variables={"turn_count": 9},
+    )
+    loop.register(bus)
+
+    await bus.emit("user_input", UserInput(text="hello"))
+
+    assert loop._session_variables["turn_count"] == 10

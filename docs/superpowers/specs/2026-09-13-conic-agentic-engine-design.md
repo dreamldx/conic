@@ -108,7 +108,7 @@ class Gateway(Protocol):
 | `InputEvent` | emit | `Input` | 无默认订阅者（拦截点，供未来文本命令插件使用） |
 | `UserInputEvent` | emit | `UserInput` | LoopPlugin |
 | `SessionStartEvent` | emit | `SessionStart` | 无默认订阅者（会话开始通知，reason: new/resume） |
-| `TurnStartEvent` | emit | `TurnStart` | DiscordThreadPlugin（typing indicator + 发送占位状态消息） |
+| `TurnStartEvent` | emit | `TurnStart` | TurnVariableUpdaterPlugin（注入 `now` 到 `variables["turn"]`）→ DiscordThreadPlugin（typing indicator + 发送占位状态消息） |
 | `StepStartEvent` | emit | `StepStart` | StepLimitPlugin、DiscordThreadPlugin（续接 typing indicator） |
 | `BeforeModelCallEvent` | emit | `BeforeModelCall` | SystemPromptPlugin → TruncatorPlugin → TokenBudgetPlugin |
 | `BeforeSummarizeEvent` | emit | `BeforeSummarize` | 无默认订阅者（可改写 `instructions` 或置 `cancelled=True`） |
@@ -141,7 +141,7 @@ class Gateway(Protocol):
 | identity | `IdentitySectionPlugin` | `prompts/identity.md`（启动时加载进内存） |
 | tooling | `ToolingSectionPlugin` | 当前会话的 tool schemas |
 | workspace | `WorkspaceSectionPlugin` | 会话 workspace_dir |
-| runtime | `RuntimeSectionPlugin` | 平台、模型等运行时信息 |
+| extra | `ExtraPromptPlugin` | 纯 Jinja2 占位符文本（`{{ global.platform }}`/`{{ global.model }}`/`{{ global.timezone }}`/`{{ turn.now }}`/`{{ turn.step_count }}`/`{{ session.tokens_used }}`/`{{ session.turn_count }}`），不在 `BuildSystemPromptEvent` 时求值，留给 `SystemPromptPlugin.apply()` 之后统一渲染（见 7.1） |
 | execution | `ExecutionBiasSectionPlugin` | `prompts/execution.md`（启动时加载进内存） |
 | output | `DiscordThreadPlugin`（渠道插件） | 硬编码常量 `OUTPUT_REQUIREMENTS`（`plugins/channels/discord.py`） |
 | bash | `BashToolPlugin`（工具插件） | 动态拼接，携带当前会话的 `self._timeout` 和 `self._workspace_dir`（`plugins/tools/bash.py`） |
@@ -152,6 +152,52 @@ class Gateway(Protocol):
 任何插件都可以 hook `BuildSystemPromptEvent` 注入自定义 section。`SystemPromptPlugin._assemble()` 按 `SECTION_ORDER` 拼接为最终系统消息；不在 `SECTION_ORDER` 里的 section（未来插件新增的）会追加在已知 section 之后，不会丢失——`output` 就是这样一个例子：由渠道插件（而不是 `context_plugins` 里的固定 section 插件）贡献，告诉模型当前输出渠道（Discord）的格式限制（不渲染 markdown 表格、标题只支持到 `###`）、流式渲染方式（同一条消息逐 token 编辑，不需要模型自己分段）、以及要求回复不超过单条消息字符数上限（2000）。这也是"渠道相关的输出要求应该由渠道插件自己声明，而不是写死在 core prompt 里"这一设计意图的落地。`bash` 是同一模式在工具侧的例子：`BashToolPlugin.register()` 同时 hook `ToolCallRequestEvent`（真正执行命令）和 `BuildSystemPromptEvent`（告诉模型"超过 `self._timeout` 秒的命令会被 kill 并报错，不要跑长期运行/阻塞/交互式命令"），把"这个工具有什么限制"和"工具本身怎么实现"放在同一个文件里维护，且提示词里的超时数字直接读 `self._timeout`，配置改了不会和提示词文字脱节。
 
 `registry.py` 里的 `_load_prompts()` 并不是只认 `identity.md`/`execution.md` 两个硬编码文件名，而是遍历 `prompts/*.md` 下所有文件，以文件名（去掉 `.md`）为 key 存进字典；`build_plugin_set()` 目前只取 `identity`/`execution` 两个 key 使用，往 `prompts/` 下新增 `.md` 文件不会自动被消费，需要相应 section 插件去 `prompts.get(...)`。
+
+### 7.1 变量注入与 Jinja2 模板渲染
+
+模板变量分三层作用域，各自的生命周期和来源不同，渲染时通过命名空间区分，不做扁平合并：
+
+| 作用域 | 生命周期 | 建立时机 | 键 | 更新者 |
+|---|---|---|---|---|
+| `global` | 与进程/`PluginSet` 同寿命，所有 session 共享同一份引用 | `build_plugin_set()` 调用时 | `model`（`config.openrouter_model`）、`platform`（`platform.system() + platform.release()`）、`timezone`（`datetime.now().astimezone().tzinfo`），加上调用方可选传入的 `global_variables: dict`（覆盖同名默认键） | `registry.py::build_plugin_set()`，一次性计算，之后只读 |
+| `session` | 与一次 Discord 会话（一个 `ReactLoopPlugin` 实例）同寿命 | `ReactLoopPlugin.__init__()` 构造时 | `workspace_dir`；`tokens_used`（初值 0）；`turn_count`（初值 0） | `workspace_dir` 由 `__init__` 一次性写入；`tokens_used` 由 `OpenRouterBackendPlugin` 在每次 `ModelRequestEvent` 完成后累加（阻塞/流式路径都支持，流式通过 `stream_options={"include_usage": True}` 从最后一个 chunk 拿 usage），跨 Turn 累计不清零；`turn_count` 由 `ReactLoopPlugin.handle_user_input()` 在方法一开始（`variables` 字典构造之前）`self._session_variables["turn_count"] += 1`，因此本 Turn 内读到的值就是"这是第几轮对话"（1-based），累计不清零 |
+| `turn` | 一次 Turn（一次 `handle_user_input()` 调用） | 每次 `handle_user_input()` 开始时新建空 dict | `now`（UTC ISO8601，精确到秒，由 `TurnVariableUpdaterPlugin` 在 `TurnStartEvent` 上写入）；`step_count`（当前 Step 序号，0-based，由 `ReactLoopPlugin` 在每次进入 while 循环体时写入，与该次 `StepStart.step_index` 一致） | `TurnVariableUpdaterPlugin`（`now`）、`ReactLoopPlugin.handle_user_input()`（`step_count`）；任何 Turn 内事件的订阅者都可以继续往 `turn` 里写 |
+
+`ReactLoopPlugin.handle_user_input()` 在 Turn 开始时创建：
+
+```python
+variables: dict = {
+    "global": self._global_variables,   # 引用，跨 Turn/跨 session 不变
+    "session": self._session_variables, # 引用，跨 Turn 不变，随 loop 实例存在
+    "turn": {},                         # 每个 Turn 新建
+}
+```
+
+并把同一个 `variables` 引用传给该 Turn 内所有 Turn/Step/工具生命周期事件的 payload（`TurnStart`/`TurnEnd`/`StepStart`/`StepEnd`/`BeforeModelCall`/`ToolCall`/`ToolExecutionStart`/`ToolExecutionEnd`/`AssistantMessage`/`Error`，均带 `variables: dict = field(default_factory=dict)` 字段），以及 `ModelRequest`（同样带 `variables` 字段，专门为了让 `OpenRouterBackendPlugin` 能回写 `session.tokens_used`，见下）。因为 `global`/`session`/`turn` 三个子 dict 都是引用（不是逐次拷贝），任何事件订阅者往 `msg.variables["turn"]` 里写入的键，本 Turn 后续事件的订阅者都能读到；`global`/`session` 也会被订阅者原地修改——`OpenRouterBackendPlugin` 就是这么更新 `session["tokens_used"]` 的（见下）。除 `ModelRequest` 外，其余请求/响应类 payload（`ModelResponse`/`ToolCallSpec`/`ToolCallResult`/`SummarizeRequest`/`SummarizeResult` 等）以及非 Turn 生命周期事件（`BuildSystemPrompt` 等）仍不携带 `variables`。
+
+`TurnVariableUpdaterPlugin`（`plugins/context/variables.py`，无构造参数）订阅 `TurnStartEvent`，只做一件事：`msg.variables["turn"]["now"] = ...`。它在 `registry.py` 的 `context_plugins` 元组里排第一位，保证同一 Turn 后续任何事件读取 `variables["turn"]["now"]` 时这个键已经存在。`turn.step_count` 不经过插件，直接由 `ReactLoopPlugin.handle_user_input()` 在 while 循环体顶部（`this_step = step_index` 之后）写入 `variables["turn"]["step_count"] = this_step`，与该次 `StepStartEvent` 的 `step_index` 保持一致，因此 `BeforeModelCallEvent` 渲染系统提示词时总能读到当前 Step 序号。
+
+`global`/`session` 两层的建立入口不在 `TurnVariableUpdaterPlugin` 里，而是：
+- `registry.py::build_plugin_set(config, global_variables=None)` 计算 `resolved_global_variables = {"model": ..., "platform": ..., "timezone": ..., **(global_variables or {})}`，通过闭包捕获进 `loop_factory`；
+- `PluginSet.loop_factory` 签名是 `Callable[[handle, tool_schemas, tool_payload_map, workspace_dir, persisted_session_variables], object]`（比原来多了 `workspace_dir` 和 `persisted_session_variables` 两个参数），`core/manager.py::PluginManager.start_session()` 调用时传入 `row.workspace_dir` 和 `row.variables`（后者来自 storage，见下）；
+- `ReactLoopPlugin.__init__(..., workspace_dir="", global_variables=None, persisted_session_variables=None)` 建立 `self._session_variables = {"tokens_used": 0, "turn_count": 0, **(persisted_session_variables or {}), "workspace_dir": workspace_dir}`——先给默认值，再用持久化值覆盖（找回上次的 `tokens_used`/`turn_count` 等），最后强制用本次构造传入的 `workspace_dir` 覆盖（不信任持久化里的旧路径，永远以当前会话的实际路径为准）；
+- `OpenRouterBackendPlugin.complete()`（阻塞与流式两条路径都会调用同一个 `_record_usage(msg, usage)` 辅助方法）在拿到模型响应的 `usage`（阻塞路径读 `response.usage`；流式路径给 `create()` 传 `stream_options={"include_usage": True}`，从不含 `choices` 的最后一个 chunk 读 `chunk.usage`）后，把 `usage.total_tokens` 累加进 `msg.variables["session"]["tokens_used"]`——因为 `session` 子 dict 和 `ReactLoopPlugin` 持有的是同一个引用，这个累加值跨 Turn 持续到会话结束都不会被重置。`usage` 为 `None`（如 fake/未启用用量统计的响应）或 `variables` 里没有 `session` key 时静默跳过，不抛异常。
+
+**持久化：** `session` 变量每个 Turn 结束都会写入 storage，会话恢复时从 storage 读回，跨进程重启也不丢：
+- Schema：`sessions` 表新增 `variables VARCHAR DEFAULT '{}'` 列（JSON 序列化的 `dict`）。新建表（`queries.create_sessions_table_sql()`）直接带这一列；已存在的旧库靠 `StorageService.startup()` 里额外执行的 `queries.add_sessions_variables_column_sql()`（`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS variables VARCHAR DEFAULT '{}'`，DuckDB 支持该语法，幂等）补齐。
+- 读取：`services/models.py::Session` 新增 `variables: dict` 字段；`StorageService._session_from_row()` 把该列 `json.loads()` 回 dict（空/`None` 时给 `{}`）；`get_or_create()` 新建会话时 `variables={}`。
+- 写入：`SessionHandle.save_variables(variables: dict)`（`services/storage.py`）把整个 dict `json.dumps()` 后 `UPDATE sessions SET variables = ? WHERE session_key = ?`（`queries.set_session_variables_sql`），整体替换而不是合并。
+- 调用时机：`ReactLoopPlugin.handle_user_input()` 把 while 循环体（含两个 `except`）包在一个 `try/finally` 里，`finally: self._storage.save_variables(self._session_variables)`——无论 Turn 是正常走到 `break` 后触发 `TurnEndEvent`、被 `AbortTurn` 中止、还是被普通异常中止，这一行都会执行且只执行一次，保证"每次 Turn 结束都持久化"覆盖全部三种收尾路径。因为 `self._session_variables` 就是 `variables["session"]` 的同一个引用，Turn 期间任何写入（例如 `OpenRouterBackendPlugin` 累加的 `tokens_used`）在持久化时都已经生效。
+- 恢复时机：`PluginManager.start_session()` 每次都会调用 `storage.get_or_create()`（新会话或恢复已有会话都走这条路径），把拿到的 `row.variables` 传给 `loop_factory` 再传给 `ReactLoopPlugin.__init__`；对新会话这就是 `{}`（用默认值 `tokens_used=0`），对恢复的会话则是上次持久化的值。
+
+真正的模板渲染发生在 `SystemPromptPlugin.apply()`（`BeforeModelCallEvent` 的第一个订阅者）里，在 `_assemble()` 把所有 section 拼成纯文本之后：
+
+```python
+system_text = self._assemble(sections_msg.sections)
+system_text = Template(system_text).render(**ctx.variables)
+```
+
+`**ctx.variables` 把 `global`/`session`/`turn` 三个 key 展开成同名关键字参数传给 `render()`（Jinja2 不受 Python `global` 关键字保留限制），因此各 section 插件（`identity`/`execution.md` 等）里的占位符要写成带命名空间前缀的形式，例如 `prompts/identity.md` 现在写的是 `"You are Conic, a helpful coding agent running on {{ global.model }}."`；`session` 级变量用 `{{ session.workspace_dir }}`，`turn` 级变量用 `{{ turn.now }}`。渲染时机在"所有 section 收集完成之后、拼成最终 system 消息之前"一次性完成，而不是每个 section 插件各自渲染。`SystemPromptPlugin.apply()` 返回的新 `BeforeModelCall` 会把 `variables=ctx.variables` 原样带上，但由于它是 `BeforeModelCallEvent` 链上唯一读取/渲染 `variables` 的订阅者，链上后续的 `TruncatorPlugin`/`TokenBudgetPlugin` 即使构造自己的 `BeforeModelCall` 时不传 `variables`（用默认空 dict）也不影响结果——本次事件周期内不会再有人读它。
 
 ## 8. 各插件详细设计
 
@@ -313,9 +359,10 @@ conic/                     # 项目根（main.py 与 pyproject.toml 同级，不
         sections/         # 提示词 section 贡献插件
           identity.py
           tooling.py
-          runtime.py
+          extra.py
           workspace.py
           execution.py
+        variables.py      # TurnVariableUpdaterPlugin (turn 级变量)
       policy/{permission,step_limit}.py
     services/
       storage.py          # StorageService + SessionHandle (DuckDB)

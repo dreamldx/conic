@@ -1,7 +1,9 @@
+from jinja2 import Template
+
 from conic.types.messages import BeforeModelCall, BuildSystemPrompt
 from conic.plugins import meta
 
-SECTION_ORDER = ["identity", "tooling", "workspace", "runtime", "execution"]
+SECTION_ORDER = ["identity", "tooling", "workspace", "extra", "execution"]
 
 
 class SystemPromptPlugin:
@@ -23,9 +25,11 @@ class SystemPromptPlugin:
             meta.BuildSystemPromptEvent, BuildSystemPrompt(sections={})
         )
         system_text = self._assemble(sections_msg.sections)
+        system_text = Template(system_text).render(**ctx.variables)
         return BeforeModelCall(
             messages=[{"role": "system", "content": system_text}, *ctx.messages],
             tools=ctx.tools,
+            variables=ctx.variables,
         )
 
     @staticmethod

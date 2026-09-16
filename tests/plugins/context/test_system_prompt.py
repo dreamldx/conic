@@ -42,3 +42,30 @@ def test_assemble_omits_missing_ordered_sections():
     result = SystemPromptPlugin._assemble({"custom_section": "custom content"})
     assert "identity" not in result
     assert "custom_section" in result
+
+
+async def test_renders_jinja2_variables_from_namespaced_scopes():
+    bus = MessageBus()
+    plugin = SystemPromptPlugin([
+        IdentitySectionPlugin("You are running on {{ global.model }} in {{ session.workspace_dir }} at {{ turn.now }}.")
+    ])
+    plugin.register(bus)
+    ctx = BeforeModelCall(
+        messages=[{"role": "user", "content": "hi"}],
+        tools=[],
+        variables={
+            "global": {"model": "gpt-test"},
+            "session": {"workspace_dir": "/tmp/ws"},
+            "turn": {"now": "2026-09-15T00:00:00+00:00"},
+        },
+    )
+    result = await plugin.apply(ctx)
+    assert "You are running on gpt-test in /tmp/ws at 2026-09-15T00:00:00+00:00." in result.messages[0]["content"]
+
+
+async def test_forwards_variables_on_returned_before_model_call():
+    plugin, _bus = make_plugin()
+    variables = {"global": {"foo": "bar"}, "session": {}, "turn": {}}
+    ctx = BeforeModelCall(messages=[{"role": "user", "content": "hi"}], tools=[], variables=variables)
+    result = await plugin.apply(ctx)
+    assert result.variables == variables
