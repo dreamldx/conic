@@ -11,7 +11,7 @@ Conic 是 Python 的 Discord-thread agent 引擎,两者形态不同,部分差异
 | Pi | Conic 现状 |
 |---|---|
 | 统一多 provider LLM API(OpenAI / Anthropic / Google / 自定义 provider / OAuth 订阅登录 / llama.cpp 本地模型) | 只有 OpenRouter 一个后端(`plugins/backends/openrouter.py`),靠 OpenRouter 间接多模型 |
-| 流式输出(message_start/update/end 事件流) | 完全非流式,单次阻塞 completion |
+| 流式输出(message_start/update/end 事件流) | ✅ 已实现:`ModelRequest.stream_updates=True` 时 `OpenRouterBackendPlugin` 走 SDK `stream=True`,逐 chunk emit `MessageDeltaUpdateEvent`(增量追加);`ReactLoopPlugin` 在 Step/工具状态切换时另 emit `MessageUpdateEvent`(整体替换);`DiscordThreadPlugin` 把两者渲染成同一条 Discord 消息的实时编辑(节流 1 次/秒)。范围小于 Pi:只有驱动主循环的调用开流式,`SummarizerPlugin` 内部摘要请求仍非流式(不应驱动 UI 更新)。 |
 | 运行时切换模型、thinking level 选择 | 模型仅由环境变量 `OPENROUTER_MODEL` 固定 |
 
 ## 工具与扩展
@@ -48,7 +48,11 @@ Conic 的历史是线性 append-only:无分支、无导出、无重试/回退某
   OpenShell)+ 项目信任(project trust)机制。
 - Conic 的 `PermissionPolicyPlugin` 是空实现(v1 全部放行);文件工具有 workspace
   路径沙箱,但 bash 只设 cwd、可自由逃逸。以 Conic"给 bot 挂真实本地工具"的场景,
-  这块比 Pi 更需要补——至少实现权限门控或跑在容器里。
+  这块比 Pi 更需要补——至少实现权限门控或跑在容器里。**部分缓解**:`bash` 现在有
+  可配置超时(`BASH_TIMEOUT`,默认 60s,超时 kill 进程返回 error),且通过
+  `BuildSystemPromptEvent` 往 prompt 里加了一段"不要跑长期运行/阻塞/交互式命令"
+  的提示词——这是时长上的资源约束,不是访问权限控制,`bash` 依然可以执行任意
+  命令(`rm -rf`、网络请求等都不受限),权限门控本身仍是空白。
 
 ## 接口形态
 
@@ -66,8 +70,8 @@ Conic 的历史是线性 append-only:无分支、无导出、无重试/回退某
 
 ## 建议优先级(结合 Conic 定位:Discord 内小团队编码 agent)
 
-1. **权限门控落地** — 目前是安全空洞,bash 无任何限制;
-2. **流式/分段输出** — Discord 下长回复体验差,可借鉴 Pi 的 message_update 模型;
+1. **权限门控落地** — 仍是安全空洞:`bash` 现在有超时,但没有访问权限限制,任意命令都能跑;
+2. ✅ **流式/分段输出** — 已实现(`MessageUpdateEvent`/`MessageDeltaUpdateEvent`,见"模型层"对比和下文生命周期事件对比第 3 节);Discord 的表格/标题渲染问题仍未解决(见"Discord 显示逻辑改进"一节,目前只是在 prompt 里提醒模型别用表格,没有代码层转换);
 3. **图片/附件输入** — Discord 场景刚需;
 4. **多后端抽象兑现** — 至少直连 Anthropic/OpenAI,支持运行时切换模型;
 5. **会话分支/重试** — bus 事件模型已支持,存储层给 `messages` 加 `parent_id` 即可起步
@@ -82,8 +86,9 @@ Conic 的历史是线性 append-only:无分支、无导出、无重试/回退某
 对比 Pi 扩展系统的生命周期事件(`packages/coding-agent/docs/extensions.md`)
 与 Conic 的总线事件(`src/conic/plugins/meta.py`)。
 
-Pi 约有 35 个生命周期事件;Conic 目前有 24 个总线主题(原 15 个 + 本文档第二节
-1/2/4/5 项已落地新增的 9 个)。本节记录已对齐的部分、Conic 缺失的事件,以及
+Pi 约有 35 个生命周期事件;Conic 目前有 26 个总线主题(原 15 个 + 本文档第二节
+1/2/4/5 项落地新增的 9 个 + 第 3 节流式输出落地新增的 `MessageUpdateEvent`/
+`MessageDeltaUpdateEvent` 2 个)。本节记录已对齐的部分、Conic 缺失的事件,以及
 不适用于 Conic 形态(Discord bot,非终端 TUI)的事件。
 
 ## 一、已对齐(Conic 已有等价物)
@@ -126,12 +131,17 @@ Pi 约有 35 个生命周期事件;Conic 目前有 24 个总线主题(原 15 个
 - **`tool_execution_update`(进度流)** — 仍未实现。需要工具执行本身支持非阻塞/可
   流式上报进度,目前 `bash` 等工具是同步 `await` 到底,没有中间点可以 emit。
 
-### 3. 消息流式事件(优先级:中,受阻于非流式后端)
+### 3. 消息流式事件(优先级:中)✅ 已实现
 
-- **`message_start` / `message_update`** — Pi 在 assistant 流式输出期间持续发
-  `message_update`。Conic 后端(`backends/openrouter.py`)是非流式单次 completion,
-  整个事件层没有 partial message 概念。要支持 Discord 消息渐进式编辑,需要
-  先让 backend 支持 streaming,再补这两个事件。
+- **`message_update`** ✅ 已实现,对应 Conic 的 `MessageDeltaUpdateEvent`(增量追加,
+  由 `OpenRouterBackendPlugin` 在 `ModelRequest.stream_updates=True` 时逐 chunk emit)
+  + `MessageUpdateEvent`(整体替换,由 `ReactLoopPlugin` 在 Step/工具状态切换时 emit)。
+  事件名和 Pi 不完全一一对应(Pi 是单一 `message_update` 事件,Conic 拆成"追加"/
+  "替换"两种语义分开的事件),但覆盖的能力(渐进式编辑同一条消息)是等价的,
+  `DiscordThreadPlugin` 已经落地为"Turn 开始发占位消息、全程动态编辑、结束时
+  editor 成最终答案"。
+- **`message_start`** — 没有单独对应的事件,Conic 用 `TurnStartEvent` 触发
+  `DiscordThreadPlugin` 发占位消息,复用已有事件而不是新增一个。
 
 ### 4. 上下文压缩(Summarize)前后钩子(优先级:中)✅ 已实现
 
@@ -185,7 +195,8 @@ Pi 约有 35 个生命周期事件;Conic 目前有 24 个总线主题(原 15 个
 2. ✅ `step_end` + `tool_execution_start/end` — 已实现。
 3. ✅ `before_summarize` / `summarize_done` / `summarize_failed` — 已实现。
 4. ✅ `input` 拦截事件 — 已实现(挂载点已就绪,尚无插件使用它)。
-5. streaming(`message_update`)与 provider 层钩子 — 仍待做,依赖后端改造,放到最后。
+5. ✅ streaming(`message_update`,拆成 `MessageUpdateEvent`/`MessageDeltaUpdateEvent`)— 已实现。
+6. provider 层钩子(`before_provider_request` 等)— 仍待做,需要给 `model_request` 加 HTTP 层拦截点。
 
 ---
 
@@ -381,6 +392,8 @@ Turn 依次执行。消息不丢,但**运行中无法插话**——agent 跑偏�
 
 - 模型响应 `finish_reason == "length"`(输出被 token 上限截断)时,消息里的
   tool call 参数可能残缺,应全部判失败而不执行(Conic 目前会照常解析执行)。
+  流式路径(`OpenRouterBackendPlugin._complete_streaming`)同样没有读取每个
+  chunk 的 `finish_reason`,这个检查非流式/流式两条路径都要补。
 
 ---
 
@@ -432,6 +445,20 @@ Pi 没有这个问题——压缩是单一管线。建议把两者合并:Truncat
 ---
 
 # Discord 显示逻辑改进(表格与代码块)
+
+**现状(响应式消息流式输出落地后更新)**:本节描述的 `render_tables`/
+`chunk_message` 转换**仍未实现**。已经落地的是一个更轻量的临时缓解——
+`BashToolPlugin`/`DiscordThreadPlugin` 现在会通过 `BuildSystemPromptEvent`
+往 prompt 里加提示词,直接告诉模型"Discord 不渲染表格、标题只到 `###`、
+单条消息别超 2000 字符",指望模型自己规避,而不是代码层兜底转换。这只是
+"提示词层面的软约束",模型仍可能不听;本节的代码层方案(表格转等宽代码块、
+围栏感知分块)依然是更彻底的解法,优先级评估不变。
+
+另外,响应式消息的流式预览截断(`DiscordThreadPlugin._apply_edit`,超过
+2000 字符时展示"末尾 2000 字符 + 前缀 `…`")和最终定稿的分段发送
+(`_finalize`/`_send`)都还是**纯字符切片**,没有围栏感知——如果流式预览
+恰好在代码块中间被截断,和下文描述的"两条全碎"是同一个问题,只是现在
+多了一个"实时预览"场景会触发它,不只是最终发送。
 
 ## 现状问题
 
@@ -614,3 +641,11 @@ steering 插话)。
 **通用化**:"底部则编辑、被顶则重发"是可复用原语——工具执行进度提示
 (`tool_execution_update`)、流式输出渐进编辑都能用。建议做成 channel
 层小组件 `RepositionableMessage`,Plan 插件是第一个用户。
+
+**注**:响应式消息流式输出(`DiscordThreadPlugin` 的 `_status_message`/
+`_buffer`/`_apply_edit`)已经落地了"编辑同一条消息"这一半,但没有实现
+"被顶则重发"这一半——它始终原地 `edit`,不检查自己是不是还在 `thread`
+底部。这是刻意的最小实现(一次 Turn 通常很快出结果,被顶概率低,值当
+不值当加检测有待观察),不是本节设想的通用 `RepositionableMessage` 组件;
+如果以后做 Plan 消息或其他常驻状态展示,这一半"被顶则重发"逻辑需要单独补,
+可以借鉴响应式消息已有的节流/缓冲区设计,但不能直接复用它的代码。
