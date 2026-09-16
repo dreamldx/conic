@@ -358,7 +358,13 @@ async def test_tool_call_id_preserved_when_hook_mutates_call_id():
     assert tool_messages == [{"role": "tool", "tool_call_id": "original_call_id", "content": "ran ls"}]
 
 
-async def test_message_update_cycles_through_thinking_and_tool_status():
+async def test_message_update_fires_only_for_tool_status_not_a_per_step_thinking_reset():
+    """StepStart must NOT reset the responsive message back to "thinking" --
+    that would wipe out a still-relevant tool-status line (or in-flight
+    streamed text) every time a new step begins. MessageUpdate should only
+    fire for genuine state transitions (here: the one tool call), and the
+    "thinking" placeholder is DiscordThreadPlugin's job at Turn start, not
+    something ReactLoopPlugin re-asserts every step."""
     handle = FakeStorageHandle()
     tool_call = ToolCallSpec(id="call_1", name="bash", args={"command": "ls"})
     responses = [
@@ -376,9 +382,7 @@ async def test_message_update_cycles_through_thinking_and_tool_status():
 
     await bus.emit("user_input", UserInput(text="run ls"))
 
-    assert updates[0] == "🤔 思考中…"
-    assert updates[1] == "🔧 bash(command='ls')"
-    assert updates[2] == "🤔 思考中…"
+    assert updates == ["🔧 bash(command='ls')"]
 
 
 async def test_model_request_opts_into_streaming():

@@ -109,7 +109,7 @@ class Gateway(Protocol):
 | `UserInputEvent` | emit | `UserInput` | LoopPlugin |
 | `SessionStartEvent` | emit | `SessionStart` | 无默认订阅者（会话开始通知，reason: new/resume） |
 | `TurnStartEvent` | emit | `TurnStart` | DiscordThreadPlugin（typing indicator + 发送占位状态消息） |
-| `StepStartEvent` | emit | `StepStart` | StepLimitPlugin、DiscordThreadPlugin（续接 typing indicator）、ReactLoopPlugin 紧接着 emit `MessageUpdateEvent("🤔 思考中…")` |
+| `StepStartEvent` | emit | `StepStart` | StepLimitPlugin、DiscordThreadPlugin（续接 typing indicator） |
 | `BeforeModelCallEvent` | emit | `BeforeModelCall` | SystemPromptPlugin → TruncatorPlugin → TokenBudgetPlugin |
 | `BeforeSummarizeEvent` | emit | `BeforeSummarize` | 无默认订阅者（可改写 `instructions` 或置 `cancelled=True`） |
 | `SummarizeEvent` | request | `SummarizeRequest` → `SummarizeResult` | SummarizerPlugin |
@@ -158,7 +158,7 @@ class Gateway(Protocol):
 - 单次工具调用若在 `ToolCallEvent`/`ToolCallRequestEvent`/`ToolCallResultEvent` 任一环节抛出普通异常，Loop 会捕获并把 `f"Error: {exc}"` 作为该 `tool_call_id` 的回复内容写回历史（保留原始 `call.id`，不中断整个 Turn）；`AbortTurn` 是这个局部 catch 的显式例外——即使在这三个环节里抛出（例如 `PermissionPolicyPlugin` 在 `before_tool_call` 里拒绝一次调用），也会先被 `except AbortTurn: raise` 放行，穿透到外层，和 `StepLimitPlugin` 那种在 `StepStartEvent` 抛出的 `AbortTurn` 一样，终止整个 Turn 并发 `ErrorEvent`。
 - 每个 Step 结束时（不论走"最终回答"分支还是"处理完所有工具调用"分支）都会 emit `StepEndEvent`，`step_index` 与该 Step 的 `StepStartEvent` 一致；Step 因 `AbortTurn` 中止时不会补发（与 `TurnEndEvent` 在出错时也不补发、改由 `ErrorEvent` 收尾的既有约定一致）。
 - `ToolExecutionStartEvent`/`ToolExecutionEndEvent` 括住 `bus.request(ToolCallRequestEvent, payload)` 这次实际派发：前者在 `before_tool_call` 策略检查通过、`payload` 构造完成后 emit；后者携带派发拿到的原始 `ToolCallResult`（在 `ToolCallResultEvent` 观察/改写链跑之前），用于区分"策略放行"与"真正开始执行"。两者都在同一个 `try` 块内，不改变 `AbortTurn`/普通异常的传播路径。
-- **实时状态展示**：每次 `StepStartEvent` 之后紧跟着 emit `MessageUpdateEvent(MessageUpdate(text="🤔 思考中…"))`；每次 `ToolExecutionStartEvent` 之后紧跟着 emit `MessageUpdateEvent(MessageUpdate(text=self._format_tool_status(call_ctx.call)))`，其中 `_format_tool_status` 是通用格式化（不区分具体工具）：`f"🔧 {call.name}(" + ", ".join(f"{k}={v!r}" for k, v in call.args.items()) + ")"`，例如 `🔧 bash(command='ls -la')`。这两处 emit 只负责"当前状态该显示成什么文字"，具体怎么把文字落到 Discord 消息上是 `DiscordThreadPlugin`（8.5）的职责，Loop 本身不知道、也不关心渲染细节。
+- **实时状态展示**：每次 `ToolExecutionStartEvent` 之后紧跟着 emit `MessageUpdateEvent(MessageUpdate(text=self._format_tool_status(call_ctx.call)))`，其中 `_format_tool_status` 是通用格式化（不区分具体工具）：`f"🔧 {call.name}(" + ", ".join(f"{k}={v!r}" for k, v in call.args.items()) + ")"`，例如 `🔧 bash(command='ls -la')`。这个 emit 只负责"当前状态该显示成什么文字"，具体怎么把文字落到 Discord 消息上是 `DiscordThreadPlugin`（8.5）的职责，Loop 本身不知道、也不关心渲染细节。**`StepStartEvent` 本身不会触发"🤔 思考中…"重置**——早期版本每个 Step 开始时都会把响应式消息打回"思考中"，但这会把上一个 Step 留下的、仍有意义的工具状态行/已流式输出文本无谓抹掉；"思考中"现在只在 `TurnStartEvent` 时由 `DiscordThreadPlugin` 发一次占位消息（见 8.5），之后完全靠 `MessageUpdateEvent`（工具状态）和 `MessageDeltaUpdateEvent`（模型流式文本）自然覆盖，Loop 不再主动"复位"。
 - 请求模型时把 `ModelRequest.stream_updates` 显式设为 `True`（`ModelRequest(messages=ctx.messages, tools=ctx.tools, stream_updates=True)`），让 `OpenRouterBackendPlugin`（8.2）对本次调用走流式路径、逐 token emit `MessageDeltaUpdateEvent`。`AssistantMessageEvent`/`ErrorEvent`/`TurnEndEvent` 的 emit 时机和内容完全不变——Loop 不需要为"把消息编辑成最终答案"做任何特殊处理，这仍然是 `DiscordThreadPlugin` 订阅这两个既有事件后自己完成的。
 
 ### 8.2 BackendPlugin — OpenRouterBackendPlugin

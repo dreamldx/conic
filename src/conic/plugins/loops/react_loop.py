@@ -33,7 +33,6 @@ class ReactLoopPlugin:
             while True:
                 this_step = step_index
                 await bus.emit(meta.StepStartEvent, StepStart(step_index=this_step))
-                await bus.emit(meta.MessageUpdateEvent, MessageUpdate(text="🤔 思考中…"))
                 step_index += 1
                 history = self._storage.load_history()
                 ctx = await bus.emit(
