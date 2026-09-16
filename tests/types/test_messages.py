@@ -2,7 +2,7 @@ from conic.types.errors import AbortTurn, NoResponderError, DuplicateResponderEr
 from conic.types.messages import (
     UserInput, TurnStart, TurnEnd, StepStart, BeforeModelCall, ModelRequest,
     ToolCallSpec, ModelResponse, ToolCall, ToolCallResult, AssistantMessage,
-    Error, SummarizeRequest, SummarizeResult,
+    Error, SummarizeRequest, SummarizeResult, MessageUpdate, MessageDeltaUpdate,
 )
 
 
@@ -23,6 +23,9 @@ def test_message_dataclasses_construct():
     assert SummarizeResult(messages=[{"role": "system", "content": "s"}]).messages[0]["role"] == "system"
     TurnStart()
     TurnEnd()
+    assert MessageUpdate(text="hi").text == "hi"
+    assert MessageDeltaUpdate(text_delta="he").text_delta == "he"
+    assert ModelRequest(messages=[], tools=[]).stream_updates is False
 
 
 def test_error_types_are_exceptions():

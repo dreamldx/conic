@@ -52,6 +52,17 @@ class BeforeModelCall:
 class ModelRequest:
     messages: list[dict]
     tools: list[dict]
+    stream_updates: bool = False
+
+
+@dataclass
+class MessageUpdate:
+    text: str
+
+
+@dataclass
+class MessageDeltaUpdate:
+    text_delta: str
 
 
 @dataclass

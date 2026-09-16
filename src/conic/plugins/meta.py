@@ -67,3 +67,12 @@ SummarizeFailedEvent = "summarize_failed"
 # ── Plugin: SystemPromptPlugin ────────────────────────────────────────────
 # dispatched internally to collect prompt sections from all plugins
 BuildSystemPromptEvent = "build_system_prompt"
+
+# ── Plugin: ReactLoopPlugin / OpenRouterBackendPlugin ─────────────────────
+# emitted by ReactLoopPlugin to wholesale-replace the current live status
+# text (e.g. "thinking", a tool-status line)
+MessageUpdateEvent = "message_update"
+# emitted by OpenRouterBackendPlugin per streaming chunk when
+# ModelRequest.stream_updates is True; carries only visible text, never
+# tool-call argument fragments
+MessageDeltaUpdateEvent = "message_delta_update"

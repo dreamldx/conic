@@ -3,7 +3,7 @@ import json
 from loguru import logger
 from openai import AsyncOpenAI
 
-from conic.types.messages import ModelRequest, ModelResponse, ToolCallSpec
+from conic.types.messages import MessageDeltaUpdate, ModelRequest, ModelResponse, ToolCallSpec
 from conic.plugins import meta
 
 
@@ -11,12 +11,22 @@ class OpenRouterBackendPlugin:
     def __init__(self, api_key: str, model: str, client: AsyncOpenAI | None = None):
         self.model = model
         self._client = client or AsyncOpenAI(base_url="https://openrouter.ai/api/v1", api_key=api_key)
+        self._bus = None
 
     def register(self, bus) -> None:
+        self._bus = bus
         bus.on_request(meta.ModelRequestEvent, self.complete)
 
     async def complete(self, msg: ModelRequest) -> ModelResponse:
-        logger.debug("calling openrouter model={} messages={} tools={}", self.model, len(msg.messages), len(msg.tools or []))
+        if msg.stream_updates:
+            return await self._complete_streaming(msg)
+        return await self._complete_blocking(msg)
+
+    async def _complete_blocking(self, msg: ModelRequest) -> ModelResponse:
+        logger.debug(
+            "calling openrouter model={} messages={} tools={}",
+            self.model, len(msg.messages), len(msg.tools or []),
+        )
         response = await self._client.chat.completions.create(
             model=self.model,
             messages=msg.messages,
@@ -28,5 +38,55 @@ class OpenRouterBackendPlugin:
             ToolCallSpec(id=tc.id, name=tc.function.name, args=json.loads(tc.function.arguments))
             for tc in (message.tool_calls or [])
         ]
-        logger.debug("openrouter response text_len={} tool_calls={}", len(message.content or ""), len(tool_calls))
+        logger.debug(
+            "openrouter response text_len={} tool_calls={}", len(message.content or ""), len(tool_calls)
+        )
         return ModelResponse(text=message.content, tool_calls=tool_calls, raw_message=raw_message)
+
+    async def _complete_streaming(self, msg: ModelRequest) -> ModelResponse:
+        logger.debug(
+            "calling openrouter (streaming) model={} messages={} tools={}",
+            self.model, len(msg.messages), len(msg.tools or []),
+        )
+        stream = await self._client.chat.completions.create(
+            model=self.model,
+            messages=msg.messages,
+            tools=msg.tools or None,
+            stream=True,
+        )
+        content_parts: list[str] = []
+        tool_call_acc: dict[int, dict] = {}
+        async for chunk in stream:
+            delta = chunk.choices[0].delta
+            if delta.content:
+                content_parts.append(delta.content)
+                await self._bus.emit(meta.MessageDeltaUpdateEvent, MessageDeltaUpdate(text_delta=delta.content))
+            for tc in (delta.tool_calls or []):
+                acc = tool_call_acc.setdefault(tc.index, {"id": None, "name": None, "arguments": ""})
+                if tc.id:
+                    acc["id"] = tc.id
+                if tc.function and tc.function.name:
+                    acc["name"] = tc.function.name
+                if tc.function and tc.function.arguments:
+                    acc["arguments"] += tc.function.arguments
+
+        text = "".join(content_parts) or None
+        tool_calls = [
+            ToolCallSpec(
+                id=acc["id"], name=acc["name"],
+                args=json.loads(acc["arguments"]) if acc["arguments"] else {},
+            )
+            for _, acc in sorted(tool_call_acc.items())
+        ]
+        raw_message = {
+            "role": "assistant",
+            "content": text,
+            "tool_calls": [
+                {"id": tc.id, "type": "function", "function": {"name": tc.name, "arguments": json.dumps(tc.args)}}
+                for tc in tool_calls
+            ] or None,
+        }
+        logger.debug(
+            "openrouter streaming response text_len={} tool_calls={}", len(text or ""), len(tool_calls)
+        )
+        return ModelResponse(text=text, tool_calls=tool_calls, raw_message=raw_message)
