@@ -29,3 +29,6 @@ dev = [
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# src-layout: make pytest import the local package instead of any
+# editable/system install that may shadow it via PYTHONPATH.
+pythonpath = ["src"]
