@@ -4,7 +4,7 @@ import pytest
 
 from conic.core.bus import MessageBus
 from conic.types.messages import (
-    AssistantMessage, Error, MessageDeltaUpdate, MessageUpdate, StepStart, TurnStart,
+    AssistantMessage, BuildSystemPrompt, Error, MessageDeltaUpdate, MessageUpdate, StepStart, TurnStart,
 )
 from conic.plugins import meta
 from conic.plugins.channels.discord import DiscordThreadPlugin
@@ -298,6 +298,20 @@ async def test_finalize_substitutes_a_placeholder_for_empty_assistant_text():
     await bus.emit(meta.AssistantMessageEvent, AssistantMessage(text=""))
 
     assert placeholder.edits[-1] == "(empty response)"
+
+
+async def test_contributes_an_output_requirements_section_to_the_system_prompt():
+    thread = FakeThread()
+    plugin = DiscordThreadPlugin(thread)
+    bus = MessageBus()
+    plugin.register(bus)
+
+    result = await bus.emit(meta.BuildSystemPromptEvent, BuildSystemPrompt(sections={}))
+
+    assert "output" in result.sections
+    assert "table" in result.sections["output"]
+    assert "###" in result.sections["output"]
+    assert "2000" in result.sections["output"]
 
 
 async def test_chunks_messages_longer_than_discord_limit():

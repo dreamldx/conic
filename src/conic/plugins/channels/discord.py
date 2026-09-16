@@ -5,9 +5,23 @@ from typing import Callable
 from loguru import logger
 
 from conic.types.messages import (
-    AssistantMessage, Error, MessageDeltaUpdate, MessageUpdate, StepStart, TurnStart, TurnEnd,
+    AssistantMessage, BuildSystemPrompt, Error, MessageDeltaUpdate, MessageUpdate,
+    StepStart, TurnStart, TurnEnd,
 )
 from conic.plugins import meta
+
+OUTPUT_REQUIREMENTS = (
+    "Your reply is posted to a Discord thread. Formatting constraints:\n"
+    "- Discord does not render markdown tables (they show as raw pipe-separated "
+    "text) -- use short lists or aligned code blocks instead.\n"
+    "- Discord only renders headings up to ### -- avoid deeper heading levels.\n"
+    "- Your reply streams into the thread live, token by token, editing a "
+    "single message as you generate it -- you don't need to chunk it or "
+    "announce progress yourself.\n"
+    "- Keep replies to roughly 2000 characters or less when possible; that's "
+    "Discord's single-message limit, and longer replies get split across "
+    "multiple messages."
+)
 
 DISCORD_MESSAGE_LIMIT = 2000
 TYPING_INTERVAL = 8
@@ -36,6 +50,11 @@ class DiscordThreadPlugin:
         bus.on(meta.TurnEndEvent, self.on_turn_end)
         bus.on(meta.ErrorEvent, self.on_error)
         bus.on(meta.AssistantMessageEvent, self.on_assistant_message)
+        bus.on(meta.BuildSystemPromptEvent, self.contribute_output_requirements)
+
+    async def contribute_output_requirements(self, msg: BuildSystemPrompt) -> BuildSystemPrompt:
+        msg.sections["output"] = OUTPUT_REQUIREMENTS
+        return msg
 
     async def on_session_stop(self, _msg: TurnEnd) -> None:
         self._stopped = True
