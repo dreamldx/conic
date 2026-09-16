@@ -108,17 +108,19 @@ class Gateway(Protocol):
 | `InputEvent` | emit | `Input` | 无默认订阅者（拦截点，供未来文本命令插件使用） |
 | `UserInputEvent` | emit | `UserInput` | LoopPlugin |
 | `SessionStartEvent` | emit | `SessionStart` | 无默认订阅者（会话开始通知，reason: new/resume） |
-| `TurnStartEvent` | emit | `TurnStart` | DiscordThreadPlugin（typing indicator） |
-| `StepStartEvent` | emit | `StepStart` | StepLimitPlugin、DiscordThreadPlugin（续接 typing indicator） |
+| `TurnStartEvent` | emit | `TurnStart` | DiscordThreadPlugin（typing indicator + 发送占位状态消息） |
+| `StepStartEvent` | emit | `StepStart` | StepLimitPlugin、DiscordThreadPlugin（续接 typing indicator）、ReactLoopPlugin 紧接着 emit `MessageUpdateEvent("🤔 思考中…")` |
 | `BeforeModelCallEvent` | emit | `BeforeModelCall` | SystemPromptPlugin → TruncatorPlugin → TokenBudgetPlugin |
 | `BeforeSummarizeEvent` | emit | `BeforeSummarize` | 无默认订阅者（可改写 `instructions` 或置 `cancelled=True`） |
 | `SummarizeEvent` | request | `SummarizeRequest` → `SummarizeResult` | SummarizerPlugin |
 | `SummarizeDoneEvent` | emit | `SummarizeDone` | 无默认订阅者 |
 | `SummarizeFailedEvent` | emit | `SummarizeFailed` | 无默认订阅者（emit 后异常仍会重新抛出） |
 | `ModelRequestEvent` | request | `ModelRequest` → `ModelResponse` | OpenRouterBackendPlugin |
+| `MessageDeltaUpdateEvent` | emit | `MessageDeltaUpdate` | DiscordThreadPlugin（追加缓冲区 + 节流 edit）；仅当 `ModelRequest.stream_updates=True` 时由 OpenRouterBackendPlugin 逐 chunk emit |
 | `ModelResponseEvent` | emit | `ModelResponse` | 无默认订阅者 |
 | `ToolCallEvent` | emit | `ToolCall` | PermissionPolicyPlugin |
-| `ToolExecutionStartEvent` | emit | `ToolExecutionStart` | 无默认订阅者 |
+| `ToolExecutionStartEvent` | emit | `ToolExecutionStart` | 无默认订阅者；ReactLoopPlugin 紧接着 emit `MessageUpdateEvent`（工具状态行） |
+| `MessageUpdateEvent` | emit | `MessageUpdate` | DiscordThreadPlugin（整体替换缓冲区 + 立即 edit，不节流） |
 | `ToolCallRequestEvent` | request | tool payload → `ToolCallResult` | 对应 ToolPlugin |
 | `ToolExecutionEndEvent` | emit | `ToolExecutionEnd` | 无默认订阅者（携带派发得到的原始 `ToolCallResult`） |
 | `ToolCallResultEvent` | emit | `ToolCallResult` | 无默认订阅者 |
@@ -156,9 +158,19 @@ class Gateway(Protocol):
 - 单次工具调用若在 `ToolCallEvent`/`ToolCallRequestEvent`/`ToolCallResultEvent` 任一环节抛出普通异常，Loop 会捕获并把 `f"Error: {exc}"` 作为该 `tool_call_id` 的回复内容写回历史（保留原始 `call.id`，不中断整个 Turn）；`AbortTurn` 是这个局部 catch 的显式例外——即使在这三个环节里抛出（例如 `PermissionPolicyPlugin` 在 `before_tool_call` 里拒绝一次调用），也会先被 `except AbortTurn: raise` 放行，穿透到外层，和 `StepLimitPlugin` 那种在 `StepStartEvent` 抛出的 `AbortTurn` 一样，终止整个 Turn 并发 `ErrorEvent`。
 - 每个 Step 结束时（不论走"最终回答"分支还是"处理完所有工具调用"分支）都会 emit `StepEndEvent`，`step_index` 与该 Step 的 `StepStartEvent` 一致；Step 因 `AbortTurn` 中止时不会补发（与 `TurnEndEvent` 在出错时也不补发、改由 `ErrorEvent` 收尾的既有约定一致）。
 - `ToolExecutionStartEvent`/`ToolExecutionEndEvent` 括住 `bus.request(ToolCallRequestEvent, payload)` 这次实际派发：前者在 `before_tool_call` 策略检查通过、`payload` 构造完成后 emit；后者携带派发拿到的原始 `ToolCallResult`（在 `ToolCallResultEvent` 观察/改写链跑之前），用于区分"策略放行"与"真正开始执行"。两者都在同一个 `try` 块内，不改变 `AbortTurn`/普通异常的传播路径。
+- **实时状态展示**：每次 `StepStartEvent` 之后紧跟着 emit `MessageUpdateEvent(MessageUpdate(text="🤔 思考中…"))`；每次 `ToolExecutionStartEvent` 之后紧跟着 emit `MessageUpdateEvent(MessageUpdate(text=self._format_tool_status(call_ctx.call)))`，其中 `_format_tool_status` 是通用格式化（不区分具体工具）：`f"🔧 {call.name}(" + ", ".join(f"{k}={v!r}" for k, v in call.args.items()) + ")"`，例如 `🔧 bash(command='ls -la')`。这两处 emit 只负责"当前状态该显示成什么文字"，具体怎么把文字落到 Discord 消息上是 `DiscordThreadPlugin`（8.5）的职责，Loop 本身不知道、也不关心渲染细节。
+- 请求模型时把 `ModelRequest.stream_updates` 显式设为 `True`（`ModelRequest(messages=ctx.messages, tools=ctx.tools, stream_updates=True)`），让 `OpenRouterBackendPlugin`（8.2）对本次调用走流式路径、逐 token emit `MessageDeltaUpdateEvent`。`AssistantMessageEvent`/`ErrorEvent`/`TurnEndEvent` 的 emit 时机和内容完全不变——Loop 不需要为"把消息编辑成最终答案"做任何特殊处理，这仍然是 `DiscordThreadPlugin` 订阅这两个既有事件后自己完成的。
 
 ### 8.2 BackendPlugin — OpenRouterBackendPlugin
 唯一应答 `model_request`，用 openai SDK 调用 OpenRouter API。
+
+`register()` 额外保存一份 `self._bus`（原来不需要，现在流式分支要用它 emit chunk）。`complete()` 按 `msg.stream_updates` 分两条路径：
+
+- **`stream_updates=False`（默认）**：和原来完全一样的一次性阻塞调用，`SummarizerPlugin` 内部摘要用的 `ModelRequest` 从不设这个字段，永远走这条路径——摘要生成不会驱动任何 Discord 更新。
+- **`stream_updates=True`（`ReactLoopPlugin` 每次真正驱动 Turn 的模型调用都会用到）**：改为 `stream=True` 调用 OpenAI SDK，边迭代 chunk 边组装：
+  - 每个 chunk 的 `delta.content` 只要非空，就追加进 `content_parts` 并 `bus.emit(MessageDeltaUpdateEvent, MessageDeltaUpdate(text_delta=delta.content))`；工具调用参数的 JSON 片段（`delta.tool_calls[i].function.arguments`）**不会**触发这个事件，用户看不到原始参数流。
+  - `tool_calls` 的增量按 `index` 累加进 `dict[int, dict]`（`id`/`name` 只在各自 index 的首个 chunk 出现一次，`arguments` 是要靠 index 拼接的 JSON 字符串片段），收尾按 index 排序、`json.loads` 解析出最终 `ToolCallSpec` 列表；某个工具调用全程没有 `arguments` 片段时用 `{}` 兜底，避免 `json.loads("")` 抛异常。
+  - 组装出的 `raw_message` dict 形状必须和非流式分支的 `message.model_dump()` 完全一致（因为会原样存进历史、原样回放给模型）：`tool_calls` 字段是 `[{"id":.., "type": "function", "function": {"name":.., "arguments": json.dumps(tc.args)}}] or None`——注意这里要把 `ToolCallSpec.args`（解析后的 dict，方便 Loop 直接构造工具 payload）重新 `json.dumps` 回字符串，两种表示是反着来的。
 
 ### 8.3 ToolPlugin（4 个）
 每个工具构造时绑定本会话 `workspace_dir`，任何解析后越出该目录的路径直接拒绝。路径校验逻辑集中在 `plugins/tools/base.py`：`resolve_within_workspace(workspace_dir, path)` 把相对路径解析到 `workspace_dir` 下并 `.resolve()`，若结果不在 workspace 内则 `raise WorkspaceEscapeError`；四个文件类工具都复用这一个函数，不各自实现越权检查。
@@ -175,10 +187,22 @@ class Gateway(Protocol):
 - `handle_message` 在把文本转成 `UserInputEvent` 之前，先在同一把 `scope.lock` 内链式 emit `InputEvent(Input(text=text))`：钩子可返回改写过 `text` 的 `Input`（继续走 loop，但用新文本），或把 `handled` 置 `True` 完全拦下（`UserInputEvent` 不发出，方法直接返回）。
 
 ### 8.5 DiscordThreadPlugin（Plugin）
-每会话一份，订阅 `AssistantMessageEvent`/`ErrorEvent`/`TurnStartEvent`/`StepStartEvent`/`TurnEndEvent`/`SessionStopEvent`。TurnStart/StepStart 时启动或续接 typing indicator（`TYPING_INTERVAL=8s` 刷新一次 `thread.typing()`，`TYPING_TIMEOUT=20s` 兜底超时自动停止单段任务），TurnEnd/Error/SessionStop 时停止。由于单段任务有 20s 上限，多 Step 的长 Turn 靠每个 `StepStartEvent` 重新拉起一个新任务（若旧任务已超时结束）来续接，避免指示器在 Turn 中途消失。在 `conic/plugins/channels/discord.py`。
+每会话一份，订阅 `AssistantMessageEvent`/`ErrorEvent`/`TurnStartEvent`/`StepStartEvent`/`MessageUpdateEvent`/`MessageDeltaUpdateEvent`/`TurnEndEvent`/`SessionStopEvent`。TurnStart/StepStart 时启动或续接 typing indicator（`TYPING_INTERVAL=8s` 刷新一次 `thread.typing()`，`TYPING_TIMEOUT=20s` 兜底超时自动停止单段任务），TurnEnd/Error/SessionStop 时停止。由于单段任务有 20s 上限，多 Step 的长 Turn 靠每个 `StepStartEvent` 重新拉起一个新任务（若旧任务已超时结束）来续接，避免指示器在 Turn 中途消失。在 `conic/plugins/channels/discord.py`。
 
-- `SessionStopEvent`（`agent_stop` 命令触发）会把内部 `_stopped` 标记置位；之后任何 `AssistantMessageEvent`/`ErrorEvent` 都会被 `_send()` 直接忽略——防止会话已停止（thread 即将被 archive/lock）后模型仍在跑最后一个 Step 时把消息发进已关闭的线程。
+- `SessionStopEvent`（`agent_stop` 命令触发）会把内部 `_stopped` 标记置位；之后任何 `AssistantMessageEvent`/`ErrorEvent` 都会被忽略——防止会话已停止（thread 即将被 archive/lock）后模型仍在跑最后一个 Step 时把消息发进已关闭的线程。
 - `_send()` 按 `DISCORD_MESSAGE_LIMIT=2000` 字符切片分段发送，应对 Discord 单条消息长度限制。
+
+**实时状态消息 + token 流式输出**：
+
+内部状态：`_status_message`（占位消息对象，或 `None`）、`_buffer: str`（当前应显示的文字）、`_awaiting_first_delta: bool`、`_last_edit_time: float`，以及一个可注入的 `_clock`（默认 `time.monotonic`，测试时替换成假时钟，避免真实 sleep）。`STREAM_EDIT_INTERVAL = 1.0`（秒）。
+
+- **`on_turn_start`**：除了原来的 `_ensure_typing()`，还把 `_buffer` 设成 `"🤔 思考中…"`、`_awaiting_first_delta` 置 `True`，并 `await self._thread.send(self._buffer)` 拿到 `_status_message`——这是本次改动新增的"Turn 一开始就发一条占位消息"的行为。
+- **`on_message_update`**（新增）：`_buffer = msg.text`，`_awaiting_first_delta = True`，然后强制 `_apply_edit(force=True)`（不受节流影响，因为这类"整体替换"频率天然低）。
+- **`on_message_delta_update`**（新增）：记下 `force = self._awaiting_first_delta`（复位前的值），如果为真则把 `_buffer` 清空、标记复位，再把 `msg.text_delta` 追加进 `_buffer`；然后 `_apply_edit(force=force)`。**这一条清空规则统一处理了所有"旧状态文字要被新内容取代"的场景**——不管是"思考中"要被工具状态取代，还是工具状态/思考中要被真正开始流式输出的模型文本取代（包括最终答案），都走同一条路径，不需要为"这是最后一步"单独判断。重置后的**第一个** delta 一定立即 edit（`force=True`），不受节流影响——这是从状态行切换到真实内容的关键一帧，值得立刻可见；同一次流式输出里后续的 delta 才会真正受节流约束。`_last_edit_time` 初始化成 `float("-inf")`（而不是 `0.0`）：配合测试用的假时钟从 `0.0` 起算，避免"重置后第一次 edit 恰好发生在 t=0"被误判成"刚 edit 过"而被节流。
+- **`_apply_edit(force)`**：`_status_message is None` 或 `_stopped` 时直接跳过；非强制模式下，距上次真正调用 `.edit()` 不足 `STREAM_EDIT_INTERVAL` 秒就只更新内存里的 `_buffer`、不调用 Discord API，留给下一次 delta 或下一次状态切换去补上——因为 `_buffer` 在内存里永远是最新最全的，跳过的只是"现在要不要花一次 Discord API 调用"，不会丢内容。超过 `DISCORD_MESSAGE_LIMIT` 时，流式预览阶段展示末尾 2000 字符并加前缀 `…`（保证看到的是最新内容，而不是卡在开头）。
+- **`_finalize(text)`**（`on_assistant_message`/`on_error` 内部复用）：`_status_message` 存在则把它 `.edit()` 成 `text` 的前 2000 字符，剩余部分交给既有的 `_send()` 按原逻辑分段续发；`_status_message` 为 `None`（理论上不会发生，防御性分支）则整段交给 `_send()`。结束后把 `_status_message` 置回 `None`。`on_error` 在调用 `_finalize` 前仍然先 `_stop_typing()`，行为不变。
+
+这样一次 Turn 在 Discord 里呈现为**同一条消息**从头到尾的动态演进：占位 →（可能多轮）思考中/工具状态/流式模型文本 → 编辑成最终答案（或报错），而不是像改动前那样中途只有 typing indicator、结束时才突然冒出一条新消息。
 
 ### 8.6 PolicyPlugin
 - `PermissionPolicyPlugin`：v1 全部放行
