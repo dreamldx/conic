@@ -82,8 +82,9 @@ Conic 的历史是线性 append-only:无分支、无导出、无重试/回退某
 对比 Pi 扩展系统的生命周期事件(`packages/coding-agent/docs/extensions.md`)
 与 Conic 的总线事件(`src/conic/plugins/meta.py`)。
 
-Pi 约有 35 个生命周期事件;Conic 目前有 15 个总线主题。本节记录已对齐的部分、
-Conic 缺失的事件,以及不适用于 Conic 形态(Discord bot,非终端 TUI)的事件。
+Pi 约有 35 个生命周期事件;Conic 目前有 24 个总线主题(原 15 个 + 本文档第二节
+1/2/4/5 项已落地新增的 9 个)。本节记录已对齐的部分、Conic 缺失的事件,以及
+不适用于 Conic 形态(Discord bot,非终端 TUI)的事件。
 
 ## 一、已对齐(Conic 已有等价物)
 
@@ -99,22 +100,31 @@ Conic 缺失的事件,以及不适用于 Conic 形态(Discord bot,非终端 TUI)
 
 ## 二、Conic 缺失的事件
 
-### 1. 会话生命周期(优先级:高)
+### 1. 会话生命周期(优先级:高)✅ 已实现
 
-- **`session_start`** — Conic 在 `PluginManager.start_session` 创建 SessionScope 时不发任何事件,
-  插件无法感知"会话开始/恢复"。Pi 还区分 reason(startup/new/resume/fork),Conic 重启恢复
-  (`resume_active_sessions`)与新建 `/agent_start` 对插件而言不可区分。
-- **`session_end` 带 reason** — 现有 `session_stop` 只是"别再发消息了"的通知,没有
-  停止原因(用户 stop / 线程被删 / 进程退出),插件无法做差异化清理。
+- **`session_start`**(reason: `"new"` / `"resume"`)— 已实现,由 `DiscordGateway` 在
+  `handle_start_command` / `resume_active_sessions` 里紧跟 `PluginManager.start_session()`
+  之后 emit,插件可感知"会话开始/恢复"及区分两者。
+- **`session_end`**(reason: `"user_stop"`)— 已实现,`handle_stop_command` 在
+  `session_stop` 之后、`stop_session()` 之前 emit。范围小于 Pi:目前只覆盖用户主动
+  `/agent_stop` 这一种 reason,"线程被删"(resume 时 fetch 失败,session 从未真正建起,
+  没有 bus 可 emit)和"进程退出"(`DiscordGateway.stop()` 目前不遍历 `self._sessions` 发
+  任何事件)仍是空白——若要补全,后者是可行的后续小改动。
 
-### 2. Step / 工具执行的对称性(优先级:高)
+### 2. Step / 工具执行的对称性(优先级:高)部分已实现
 
-- **`step_end`** — 有 `step_start` 没有 `step_end`,想统计单个 Step 耗时/用量的插件无处挂钩。
-- **`tool_execution_start` / `tool_execution_end`** — Conic 的 `before_tool_call`(策略检查)和
-  `tool_result`(结果观察)之间没有"实际开始执行/执行结束"的通知,无法区分
-  "被策略放行"与"真正开始跑"(例如想在 bash 长时间运行时在 Discord 里提示进度)。
-- **`tool_execution_update`(进度流)** — 工具执行期间无中间进度事件。bash 60s 超时期间
-  用户在 Discord 侧完全无反馈(只有 typing indicator)。
+- **`step_end`** ✅ 已实现 — 与 `step_start` 成对,由 `ReactLoopPlugin` 在每个 Step 的
+  两个退出路径(最终回答 / 工具调用处理完)分别 emit,`step_index` 与该 Step 的
+  `step_start` 一致。注意:Step 因 `AbortTurn` 中止时不会补发 `step_end`(与现有
+  `turn_start`/`turn_end` 在出错时也不补发 `turn_end`、改用 `error` 事件收尾的既有
+  约定一致,视为有意为之)。
+- **`tool_execution_start` / `tool_execution_end`** ✅ 已实现 — 括住 `bus.request(tool_call, ...)`
+  实际派发,`tool_execution_end` 携带派发得到的原始 `ToolCallResult`(在 `tool_result`
+  观察/改写链跑之前)。已知边界:若工具执行本身抛出未捕获异常(内置四个工具都不会,
+  只有会异常的第三方工具插件才会触发),会走到外层 `except Exception`,此时
+  `tool_execution_end` 不会补发——目前是设计上未覆盖的边界情况,不是本轮范围。
+- **`tool_execution_update`(进度流)** — 仍未实现。需要工具执行本身支持非阻塞/可
+  流式上报进度,目前 `bash` 等工具是同步 `await` 到底,没有中间点可以 emit。
 
 ### 3. 消息流式事件(优先级:中,受阻于非流式后端)
 
@@ -123,18 +133,26 @@ Conic 缺失的事件,以及不适用于 Conic 形态(Discord bot,非终端 TUI)
   整个事件层没有 partial message 概念。要支持 Discord 消息渐进式编辑,需要
   先让 backend 支持 streaming,再补这两个事件。
 
-### 4. 上下文压缩(Summarize)前后钩子(优先级:中)
+### 4. 上下文压缩(Summarize)前后钩子(优先级:中)✅ 已实现
 
-- **`session_before_compact`(可取消/自定义指令)** — Conic 的 `summarize` 是
-  TokenBudget 直接触发的 request,插件不能取消或定制摘要指令。
-- **`session_compact` / `session_compact_failed`** — 摘要完成/失败后无通知事件,
-  无法记录压缩历史或在失败时告警。
+- **`before_summarize`(可取消/自定义指令)** ✅ 已实现 — 对应 Pi 的
+  `session_before_compact`。`TokenBudgetPlugin.apply` 在触发 `summarize` request
+  之前先链式 emit `BeforeSummarize(request, cancelled=False)`;钩子可改写
+  `request.instructions` 定制摘要提示词,或把 `cancelled` 置 `True` 跳过本次摘要
+  (`apply` 直接返回 `None`,历史不变)。
+- **`summarize_done` / `summarize_failed`** ✅ 已实现 — 对应 Pi 的
+  `session_compact` / `session_compact_failed`。成功时携带 `SummarizeResult` emit
+  `summarize_done`;失败时先 emit `summarize_failed`(带异常)再重新抛出——
+  "摘要失败中止本轮 Turn"的既有行为不变,只是现在失败前多了一次可观测的通知。
 
-### 5. 输入拦截(优先级:中)
+### 5. 输入拦截(优先级:中)✅ 已实现
 
-- **`input`(continue / transform / handled)** — Conic 的 `user_input` 直达 ReactLoop,
-  没有前置拦截层。想实现文本命令(如 `!status`)、输入改写、或让某条消息不进入
-  agent loop,目前只能改 gateway 代码。
+- **`input`(continue / transform / handled)** ✅ 已实现 — `DiscordGateway.handle_message`
+  在把文本交给 `UserInputEvent` 之前,先链式 emit `Input(text, handled=False)`。
+  钩子可返回改写过 `text` 的 `Input`(继续走 ReactLoop,但用改写后的文本),或把
+  `handled` 置 `True` 完全拦下(`UserInputEvent` 不会发出)。目前还没有任何插件
+  真正挂在这个事件上——`!status` 之类的文本命令插件仍待实现,这里只是补齐了
+  挂载点本身。
 
 ### 6. Provider / 模型层钩子(优先级:低)
 
@@ -163,11 +181,11 @@ Conic 缺失的事件,以及不适用于 Conic 形态(Discord bot,非终端 TUI)
 
 ## 四、建议落地顺序
 
-1. `session_start`(带 reason:new/resume)+ `session_end`(带 reason)— 改动小,补齐会话感知。
-2. `step_end` + `tool_execution_start/end` — 纯粹在 `react_loop.py` 补 emit,即刻可用。
-3. `before_summarize` / `summarize_done` / `summarize_failed` — 围绕现有 `summarize` request 包一层。
-4. `input` 拦截事件 — 在 gateway 把 `user_input` 交给 loop 之前加一个可拦截的链式 emit。
-5. streaming(`message_update`)与 provider 层钩子 — 依赖后端改造,放到最后。
+1. ✅ `session_start`(带 reason:new/resume)+ `session_end`(带 reason)— 已实现(`session_end` 目前只有 `user_stop` 一种 reason)。
+2. ✅ `step_end` + `tool_execution_start/end` — 已实现。
+3. ✅ `before_summarize` / `summarize_done` / `summarize_failed` — 已实现。
+4. ✅ `input` 拦截事件 — 已实现(挂载点已就绪,尚无插件使用它)。
+5. streaming(`message_update`)与 provider 层钩子 — 仍待做,依赖后端改造,放到最后。
 
 ---
 

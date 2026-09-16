@@ -105,21 +105,30 @@ class Gateway(Protocol):
 
 | Topic (meta.py) | Verb | Payload | 处理者 |
 |---|---|---|---|
+| `InputEvent` | emit | `Input` | 无默认订阅者（拦截点，供未来文本命令插件使用） |
 | `UserInputEvent` | emit | `UserInput` | LoopPlugin |
+| `SessionStartEvent` | emit | `SessionStart` | 无默认订阅者（会话开始通知，reason: new/resume） |
 | `TurnStartEvent` | emit | `TurnStart` | DiscordThreadPlugin（typing indicator） |
-| `StepStartEvent` | emit | `StepStart` | StepLimitPlugin |
+| `StepStartEvent` | emit | `StepStart` | StepLimitPlugin、DiscordThreadPlugin（续接 typing indicator） |
 | `BeforeModelCallEvent` | emit | `BeforeModelCall` | SystemPromptPlugin → TruncatorPlugin → TokenBudgetPlugin |
+| `BeforeSummarizeEvent` | emit | `BeforeSummarize` | 无默认订阅者（可改写 `instructions` 或置 `cancelled=True`） |
 | `SummarizeEvent` | request | `SummarizeRequest` → `SummarizeResult` | SummarizerPlugin |
+| `SummarizeDoneEvent` | emit | `SummarizeDone` | 无默认订阅者 |
+| `SummarizeFailedEvent` | emit | `SummarizeFailed` | 无默认订阅者（emit 后异常仍会重新抛出） |
 | `ModelRequestEvent` | request | `ModelRequest` → `ModelResponse` | OpenRouterBackendPlugin |
 | `ModelResponseEvent` | emit | `ModelResponse` | 无默认订阅者 |
 | `ToolCallEvent` | emit | `ToolCall` | PermissionPolicyPlugin |
+| `ToolExecutionStartEvent` | emit | `ToolExecutionStart` | 无默认订阅者 |
 | `ToolCallRequestEvent` | request | tool payload → `ToolCallResult` | 对应 ToolPlugin |
+| `ToolExecutionEndEvent` | emit | `ToolExecutionEnd` | 无默认订阅者（携带派发得到的原始 `ToolCallResult`） |
 | `ToolCallResultEvent` | emit | `ToolCallResult` | 无默认订阅者 |
+| `StepEndEvent` | emit | `StepEnd` | 无默认订阅者 |
 | `AssistantMessageEvent` | emit | `AssistantMessage` | DiscordThreadPlugin |
 | `ErrorEvent` | emit | `Error` | DiscordThreadPlugin |
 | `TurnEndEvent` | emit | `TurnEnd` | DiscordThreadPlugin（停止 typing） |
 | `BuildSystemPromptEvent` | emit | `BuildSystemPrompt` | Section 插件链 |
-| `SessionStopEvent` | emit | `TurnEnd` | DiscordThreadPlugin（标记停止） |
+| `SessionStopEvent` | emit | `TurnEnd` | DiscordThreadPlugin（标记停止，先于 `SessionEndEvent`） |
+| `SessionEndEvent` | emit | `SessionEnd` | 无默认订阅者（会话结束通知，目前 reason 只有 `user_stop`） |
 
 ## 7. 系统提示词（System Prompt）
 
@@ -145,6 +154,8 @@ class Gateway(Protocol):
 - 构造时除 `tool_schemas` 外还持有 `tool_payload_map: dict[str, type]`——工具的 `llm_name` → 该工具 `execute()` 参数类型（由 `PluginManager` 用 `infer_payload_type` 从签名自动推断），用于把模型返回的 `ToolCallSpec.args`（dict）转换成对应工具的 dataclass payload，再走 `bus.request(ToolCallRequestEvent, payload)`。
 - 系统提示词不落库：每个 Step 都从 `storage.load_history()` 取纯对话历史（不含 system），再交给 `BeforeModelCallEvent` 链（`SystemPromptPlugin` 会重新拼一份 system 消息临时前置），因此 system prompt 内容可以随 workspace/runtime 等运行时信息逐 Step 刷新，但不会污染持久化历史。
 - 单次工具调用若在 `ToolCallEvent`/`ToolCallRequestEvent`/`ToolCallResultEvent` 任一环节抛出普通异常，Loop 会捕获并把 `f"Error: {exc}"` 作为该 `tool_call_id` 的回复内容写回历史（保留原始 `call.id`，不中断整个 Turn）；`AbortTurn` 是这个局部 catch 的显式例外——即使在这三个环节里抛出（例如 `PermissionPolicyPlugin` 在 `before_tool_call` 里拒绝一次调用），也会先被 `except AbortTurn: raise` 放行，穿透到外层，和 `StepLimitPlugin` 那种在 `StepStartEvent` 抛出的 `AbortTurn` 一样，终止整个 Turn 并发 `ErrorEvent`。
+- 每个 Step 结束时（不论走"最终回答"分支还是"处理完所有工具调用"分支）都会 emit `StepEndEvent`，`step_index` 与该 Step 的 `StepStartEvent` 一致；Step 因 `AbortTurn` 中止时不会补发（与 `TurnEndEvent` 在出错时也不补发、改由 `ErrorEvent` 收尾的既有约定一致）。
+- `ToolExecutionStartEvent`/`ToolExecutionEndEvent` 括住 `bus.request(ToolCallRequestEvent, payload)` 这次实际派发：前者在 `before_tool_call` 策略检查通过、`payload` 构造完成后 emit；后者携带派发拿到的原始 `ToolCallResult`（在 `ToolCallResultEvent` 观察/改写链跑之前），用于区分"策略放行"与"真正开始执行"。两者都在同一个 `try` 块内，不改变 `AbortTurn`/普通异常的传播路径。
 
 ### 8.2 BackendPlugin — OpenRouterBackendPlugin
 唯一应答 `model_request`，用 openai SDK 调用 OpenRouter API。
@@ -160,6 +171,9 @@ class Gateway(Protocol):
 ### 8.4 DiscordGateway（Core Service，实现 `Gateway` Protocol）
 进程级 discord.py 连接持有者，维护 `{thread_id: SessionScope}` 路由表。在 `conic/discord/gateway.py`。
 
+- 会话生命周期事件由 **Gateway 自己 emit，不是 `PluginManager`**：`handle_start_command`/`resume_active_sessions` 在 `PluginManager.start_session()` 返回后立刻 `scope.bus.emit(SessionStartEvent, SessionStart(reason="new"/"resume"))`；`handle_stop_command` 在 `scope.lock` 内、`SessionStopEvent` 之后、`PluginManager.stop_session()` 之前 emit `SessionEndEvent(reason="user_stop")`。选择让 Gateway 而不是 `PluginManager` emit，是因为"reason"是调用方（Gateway）才知道的信息，这样 `PluginManager.start_session`/`stop_session` 保持同步、无需改造。`resume_active_sessions` 里线程确实丢失（`fetch_thread` 失败）的分支没有 bus 可 emit——session 从未真正建起。
+- `handle_message` 在把文本转成 `UserInputEvent` 之前，先在同一把 `scope.lock` 内链式 emit `InputEvent(Input(text=text))`：钩子可返回改写过 `text` 的 `Input`（继续走 loop，但用新文本），或把 `handled` 置 `True` 完全拦下（`UserInputEvent` 不发出，方法直接返回）。
+
 ### 8.5 DiscordThreadPlugin（Plugin）
 每会话一份，订阅 `AssistantMessageEvent`/`ErrorEvent`/`TurnStartEvent`/`StepStartEvent`/`TurnEndEvent`/`SessionStopEvent`。TurnStart/StepStart 时启动或续接 typing indicator（`TYPING_INTERVAL=8s` 刷新一次 `thread.typing()`，`TYPING_TIMEOUT=20s` 兜底超时自动停止单段任务），TurnEnd/Error/SessionStop 时停止。由于单段任务有 20s 上限，多 Step 的长 Turn 靠每个 `StepStartEvent` 重新拉起一个新任务（若旧任务已超时结束）来续接，避免指示器在 Turn 中途消失。在 `conic/plugins/channels/discord.py`。
 
@@ -173,7 +187,7 @@ class Gateway(Protocol):
 ### 8.7 Context 插件链
 - `SystemPromptPlugin`：emit `BuildSystemPromptEvent` 收集 sections 并组装系统消息；仅当 `ctx.messages[0]` 还不是 `system` 角色时才前置（防御性判断，正常流程下每个 Step 都会重新拼一份）
 - `TruncatorPlugin`：非 system 消息数超过 `keep_last_n`（默认 40）时，从尾部保留最近 N 条，system 消息始终保留
-- `TokenBudgetPlugin`：用 `core/tokencount.estimate_tokens`（`总字符数 // 4`的粗略估算，不依赖 tokenizer）统计 token 数，超预算时通过 `SummarizeEvent` 触发摘要
+- `TokenBudgetPlugin`：用 `core/tokencount.estimate_tokens`（`总字符数 // 4`的粗略估算，不依赖 tokenizer）统计 token 数，超预算时先链式 emit `BeforeSummarizeEvent(BeforeSummarize(request, cancelled=False))`——钩子可改写 `request.instructions` 定制摘要提示词，或把 `cancelled` 置 `True` 跳过本次摘要（`apply()` 直接返回 `None`）；未取消则用（可能被改写的）`request` 发起 `SummarizeEvent`，成功后 emit `SummarizeDoneEvent(SummarizeDone(result))`，失败则先 emit `SummarizeFailedEvent(SummarizeFailed(exc))` 再重新抛出（摘要失败仍会中止整个 Turn，这一行为不变，只是失败前多了一次可观测通知）
 
 Truncator 和 Summarizer 的裁切点都要经过 `core/messagealign.align_cut(messages, cut_index)`：如果提议的裁切点落在一条 `role: "tool"` 消息上（即会把某个 `tool_calls` 消息和它对应的工具回复截断成孤儿），就把裁切点持续前移，直到落在完整的 assistant+tool回复 消息组之前，保证任何被保留的 `tool` 消息都能在保留区间内找到它所回复的 assistant 消息。
 
