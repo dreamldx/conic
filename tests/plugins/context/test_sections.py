@@ -1,5 +1,5 @@
 from conic.core.bus import MessageBus
-from conic.core.messages import BuildSystemPrompt
+from conic.types.messages import BuildSystemPrompt
 from conic.plugins.context.sections.tooling import ToolingSectionPlugin
 
 

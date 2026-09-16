@@ -3,7 +3,7 @@ from dataclasses import dataclass
 import pytest
 
 from conic.core.bus import MessageBus, infer_payload_type
-from conic.core.errors import DuplicateResponderError, NoResponderError
+from conic.types.errors import DuplicateResponderError, NoResponderError
 
 
 @dataclass

@@ -3,7 +3,7 @@ import json
 from loguru import logger
 from openai import AsyncOpenAI
 
-from conic.core.messages import ModelRequest, ModelResponse, ToolCallSpec
+from conic.types.messages import ModelRequest, ModelResponse, ToolCallSpec
 from conic.plugins import meta
 
 

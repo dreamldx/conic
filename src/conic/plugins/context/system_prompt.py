@@ -1,4 +1,4 @@
-from conic.core.messages import BeforeModelCall, BuildSystemPrompt
+from conic.types.messages import BeforeModelCall, BuildSystemPrompt
 from conic.plugins import meta
 
 SECTION_ORDER = ["identity", "tooling", "workspace", "runtime", "execution"]

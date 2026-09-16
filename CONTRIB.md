@@ -45,7 +45,7 @@ Use `loguru` — `logger.info()`, `logger.debug()`, `logger.warning()`, `logger.
 
 ### Error Handling
 
-- Framework-level exceptions in `src/conic/core/errors.py`
+- Framework-level exceptions in `src/conic/types/errors.py`
 - Tool errors returned as `ToolCallResult(error=...)`, not raised
 - Context/policy plugins mutate and return payloads; return `None` for no-op
 
@@ -61,7 +61,8 @@ Use `loguru` — `logger.info()`, `logger.debug()`, `logger.warning()`, `logger.
 
 ```
 src/conic/
-  core/           # MessageBus, SessionScope, PluginManager, messages
+  core/           # MessageBus, PluginManager
+  types/          # pure type definitions: messages, errors, Gateway protocol, SessionScope
   discord/        # Discord gateway + adapter
   plugins/
     tools/        # bash, read_file, write_file, edit_file
@@ -77,6 +78,7 @@ src/conic/
   entry.py        # application entry point
 tests/
   core/
+  types/
   discord/
   plugins/
   services/

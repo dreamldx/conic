@@ -1,7 +1,7 @@
 import inspect
 from typing import Any, Callable, get_type_hints
 
-from conic.core.errors import DuplicateResponderError, NoResponderError
+from conic.types.errors import DuplicateResponderError, NoResponderError
 
 
 def infer_payload_type(handler: Callable) -> type:

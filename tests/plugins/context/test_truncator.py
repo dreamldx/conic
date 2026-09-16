@@ -1,4 +1,4 @@
-from conic.core.messages import BeforeModelCall
+from conic.types.messages import BeforeModelCall
 from conic.plugins.context.truncator import TruncatorPlugin
 
 

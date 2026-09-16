@@ -1,5 +1,5 @@
-from conic.core.errors import AbortTurn, NoResponderError, DuplicateResponderError
-from conic.core.messages import (
+from conic.types.errors import AbortTurn, NoResponderError, DuplicateResponderError
+from conic.types.messages import (
     UserInput, TurnStart, TurnEnd, StepStart, BeforeModelCall, ModelRequest,
     ToolCallSpec, ModelResponse, ToolCall, ToolCallResult, AssistantMessage,
     Error, SummarizeRequest, SummarizeResult,

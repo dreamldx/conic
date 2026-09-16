@@ -1,7 +1,7 @@
 import pytest
 
 from conic.core.bus import MessageBus
-from conic.core.messages import (
+from conic.types.messages import (
     BeforeModelCall, BeforeSummarize, SummarizeDone, SummarizeFailed,
     SummarizeRequest, SummarizeResult,
 )

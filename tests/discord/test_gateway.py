@@ -10,7 +10,7 @@ class FakePluginManagerRecorder:
 
     def start_session(self, channel, native_id, channel_plugin_factory):
         from conic.core.bus import MessageBus
-        from conic.core.session import SessionScope
+        from conic.types.session import SessionScope
         from conic.services.models import Session
         from datetime import datetime, timezone
 
@@ -46,7 +46,7 @@ class FakePluginManagerFixedScope:
 
 def make_fixed_scope(native_id="333"):
     from conic.core.bus import MessageBus
-    from conic.core.session import SessionScope
+    from conic.types.session import SessionScope
     from conic.services.models import Session
     from datetime import datetime, timezone
 
@@ -144,7 +144,7 @@ async def test_resume_active_sessions_does_not_mark_ended_when_thread_exists_but
 
 
 async def test_handle_start_command_emits_session_start_with_reason_new():
-    from conic.core.messages import SessionStart
+    from conic.types.messages import SessionStart
 
     bus, scope = make_fixed_scope()
     starts = []
@@ -171,7 +171,7 @@ async def test_handle_start_command_emits_session_start_with_reason_new():
 
 
 async def test_resume_active_sessions_emits_session_start_with_reason_resume(tmp_path):
-    from conic.core.messages import SessionStart
+    from conic.types.messages import SessionStart
 
     storage = make_storage(tmp_path)
     storage.get_or_create(channel="discord", native_id="111")
@@ -197,7 +197,7 @@ async def test_resume_active_sessions_emits_session_start_with_reason_resume(tmp
 
 
 async def test_handle_stop_command_emits_session_end_with_reason_user_stop():
-    from conic.core.messages import SessionEnd
+    from conic.types.messages import SessionEnd
 
     manager = FakePluginManagerRecorder()
     gateway = DiscordGateway(bot_token="t", plugin_manager=manager, storage=None)
@@ -226,7 +226,7 @@ async def test_handle_message_routes_to_known_session():
     gateway._sessions[222] = scope
 
     received = []
-    from conic.core.messages import UserInput
+    from conic.types.messages import UserInput
 
     async def on_user_input(msg: UserInput) -> None:
         received.append(msg.text)
@@ -249,7 +249,7 @@ async def test_handle_message_serializes_concurrent_messages_for_the_same_thread
     scope = manager.start_session("discord", "222", lambda: object())
     gateway._sessions[222] = scope
 
-    from conic.core.messages import UserInput
+    from conic.types.messages import UserInput
 
     events = []
 
@@ -331,7 +331,7 @@ async def test_handle_stop_command_waits_for_an_in_flight_turn_to_finish():
     scope = manager.start_session("discord", "444", lambda: object())
     gateway._sessions[444] = scope
 
-    from conic.core.messages import UserInput
+    from conic.types.messages import UserInput
 
     events = []
 
@@ -365,7 +365,7 @@ async def test_handle_stop_command_on_unknown_thread_is_a_noop():
 
 
 async def test_handle_message_input_hook_can_transform_text_before_user_input():
-    from conic.core.messages import Input, UserInput
+    from conic.types.messages import Input, UserInput
 
     manager = FakePluginManagerRecorder()
     gateway = DiscordGateway(bot_token="t", plugin_manager=manager, storage=None)
@@ -389,7 +389,7 @@ async def test_handle_message_input_hook_can_transform_text_before_user_input():
 
 
 async def test_handle_message_input_hook_can_mark_handled_and_short_circuit():
-    from conic.core.messages import Input, UserInput
+    from conic.types.messages import Input, UserInput
 
     manager = FakePluginManagerRecorder()
     gateway = DiscordGateway(bot_token="t", plugin_manager=manager, storage=None)

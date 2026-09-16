@@ -1,7 +1,7 @@
 import pytest
 
-from conic.core.errors import AbortTurn
-from conic.core.messages import StepStart
+from conic.types.errors import AbortTurn
+from conic.types.messages import StepStart
 from conic.plugins.policy.step_limit import StepLimitPlugin
 
 

@@ -1,5 +1,5 @@
 from conic.core.messagealign import align_cut
-from conic.core.messages import ModelRequest, SummarizeRequest, SummarizeResult
+from conic.types.messages import ModelRequest, SummarizeRequest, SummarizeResult
 from conic.plugins import meta
 
 

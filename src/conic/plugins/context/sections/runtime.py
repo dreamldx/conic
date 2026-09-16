@@ -1,7 +1,7 @@
 import platform
 from datetime import datetime, timezone
 
-from conic.core.messages import BuildSystemPrompt
+from conic.types.messages import BuildSystemPrompt
 from conic.plugins import meta
 
 

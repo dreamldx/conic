@@ -1,4 +1,4 @@
-from conic.core.messages import ToolCall
+from conic.types.messages import ToolCall
 from conic.plugins import meta
 
 

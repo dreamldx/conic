@@ -1,5 +1,5 @@
 from conic.core.bus import MessageBus
-from conic.core.messages import ModelRequest, ModelResponse, SummarizeRequest
+from conic.types.messages import ModelRequest, ModelResponse, SummarizeRequest
 from conic.plugins.context.summarizer import SummarizerPlugin
 
 

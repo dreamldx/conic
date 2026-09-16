@@ -1,4 +1,4 @@
-from conic.core.messages import ToolCall, ToolCallSpec
+from conic.types.messages import ToolCall, ToolCallSpec
 from conic.plugins.policy.permission import PermissionPolicyPlugin
 
 

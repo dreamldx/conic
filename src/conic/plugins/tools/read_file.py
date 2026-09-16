@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 
-from conic.core.messages import ToolCallResult
+from conic.types.messages import ToolCallResult
 from conic.plugins.tools.base import WorkspaceEscapeError, resolve_within_workspace
 from conic.plugins import meta
 

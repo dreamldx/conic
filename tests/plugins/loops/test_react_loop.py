@@ -3,8 +3,8 @@ from dataclasses import dataclass
 import pytest
 
 from conic.core.bus import MessageBus
-from conic.core.errors import AbortTurn
-from conic.core.messages import (
+from conic.types.errors import AbortTurn
+from conic.types.messages import (
     AssistantMessage, Error, ModelRequest, ModelResponse, StepEnd, StepStart,
     ToolCall, ToolCallResult, ToolCallSpec, ToolExecutionEnd, ToolExecutionStart,
     TurnEnd, UserInput,

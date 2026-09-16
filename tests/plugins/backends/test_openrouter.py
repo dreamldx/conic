@@ -2,7 +2,7 @@ import json
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 
-from conic.core.messages import ModelRequest
+from conic.types.messages import ModelRequest
 from conic.plugins.backends.openrouter import OpenRouterBackendPlugin
 
 

@@ -3,7 +3,7 @@ import asyncio
 import pytest
 
 from conic.core.bus import MessageBus
-from conic.core.messages import AssistantMessage, Error, StepStart, TurnStart
+from conic.types.messages import AssistantMessage, Error, StepStart, TurnStart
 from conic.plugins import meta
 from conic.plugins.channels.discord import DiscordThreadPlugin
 

@@ -4,7 +4,7 @@ from typing import Callable
 from loguru import logger
 
 from conic.core.bus import MessageBus, infer_payload_type
-from conic.core.session import SessionScope
+from conic.types.session import SessionScope
 
 
 @dataclass

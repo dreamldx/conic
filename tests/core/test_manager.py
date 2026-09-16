@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from conic.core.manager import PluginManager, PluginSet
-from conic.core.messages import (
+from conic.types.messages import (
     AssistantMessage, BeforeModelCall, ModelRequest, ModelResponse,
     StepStart, SummarizeRequest, SummarizeResult, ToolCallResult,
 )
@@ -102,7 +102,7 @@ async def test_start_session_assembles_a_working_bus(tmp_path):
         channel="discord", native_id="1", channel_plugin_factory=lambda: channel_plugin
     )
 
-    from conic.core.messages import UserInput
+    from conic.types.messages import UserInput
     await scope.bus.emit("user_input", UserInput(text="hi"))
 
     assert channel_plugin.received == ["ack"]

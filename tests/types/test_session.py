@@ -2,8 +2,8 @@ import asyncio
 from datetime import datetime, timezone
 
 from conic.core.bus import MessageBus
-from conic.core.gateway import Gateway
-from conic.core.session import SessionScope
+from conic.types.gateway import Gateway
+from conic.types.session import SessionScope
 from conic.services.models import Session
 
 

@@ -3,7 +3,7 @@ from dataclasses import dataclass
 
 from loguru import logger
 
-from conic.core.messages import ToolCallResult
+from conic.types.messages import ToolCallResult
 from conic.plugins import meta
 
 

@@ -87,7 +87,7 @@ plugin_manager.start_session(
 
 ### 5.1 进程启动与会话恢复流程
 
-`Gateway` 通用接口（放在 `core/gateway.py`）：
+`Gateway` 通用接口（放在 `types/gateway.py`）：
 ```python
 class Gateway(Protocol):
     name: str
@@ -256,12 +256,13 @@ conic/                     # 项目根（main.py 与 pyproject.toml 同级，不
     core/
       bus.py              # MessageBus
       manager.py          # PluginManager, PluginSet
+      messagealign.py     # align_cut：截断对齐，防止 orphan tool replies
+      tokencount.py       # estimate_tokens：字符数 // 4 的粗略估算
+    types/                 # 纯类型定义（dataclass / Protocol / 异常类），无行为逻辑
       gateway.py          # Gateway Protocol
       session.py          # SessionScope（含 per-session asyncio.Lock）
       messages.py         # 所有消息 dataclass
       errors.py           # AbortTurn、NoResponderError、DuplicateResponderError
-      messagealign.py     # align_cut：截断对齐，防止 orphan tool replies
-      tokencount.py       # estimate_tokens：字符数 // 4 的粗略估算
     plugins/
       meta.py             # 总线 topic 名称常量 (*Event)
       registry.py         # build_plugin_set()：组装 PluginSet，泛化加载 prompts/*.md

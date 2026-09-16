@@ -1,6 +1,6 @@
 import asyncio
 
-from conic.core.messages import AssistantMessage, Error, StepStart, TurnStart, TurnEnd
+from conic.types.messages import AssistantMessage, Error, StepStart, TurnStart, TurnEnd
 from conic.plugins import meta
 
 DISCORD_MESSAGE_LIMIT = 2000
