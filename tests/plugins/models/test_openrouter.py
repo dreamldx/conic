@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from conic.core.bus import MessageBus
 from conic.types.messages import MessageDeltaUpdate, ModelRequest
 from conic.plugins import meta
-from conic.plugins.backends.openrouter import OpenRouterBackendPlugin
+from conic.plugins.models.openrouter import OpenRouterModelPlugin
 
 
 class FakeCompletions:
@@ -43,7 +43,7 @@ def make_response(message, usage=None):
 async def test_complete_returns_text_response_with_no_tool_calls():
     message = make_message(content="hello there")
     client = FakeClient(FakeCompletions(make_response(message)))
-    backend = OpenRouterBackendPlugin(api_key="k", model="test-model", client=client)
+    backend = OpenRouterModelPlugin(api_key="k", model="test-model", client=client)
 
     result = await backend.complete(ModelRequest(messages=[{"role": "user", "content": "hi"}], tools=[]))
 
@@ -57,7 +57,7 @@ async def test_complete_parses_tool_calls():
     tool_call = SimpleNamespace(id="call_1", function=fn)
     message = make_message(content=None, tool_calls=[tool_call])
     client = FakeClient(FakeCompletions(make_response(message)))
-    backend = OpenRouterBackendPlugin(api_key="k", model="test-model", client=client)
+    backend = OpenRouterModelPlugin(api_key="k", model="test-model", client=client)
 
     result = await backend.complete(ModelRequest(messages=[], tools=[]))
 
@@ -70,7 +70,7 @@ async def test_complete_records_token_usage_into_session_variables():
     message = make_message(content="hello there")
     usage = SimpleNamespace(prompt_tokens=10, completion_tokens=5, total_tokens=15)
     client = FakeClient(FakeCompletions(make_response(message, usage=usage)))
-    backend = OpenRouterBackendPlugin(api_key="k", model="test-model", client=client)
+    backend = OpenRouterModelPlugin(api_key="k", model="test-model", client=client)
 
     variables = {"session": {"tokens_used": 0}}
     await backend.complete(
@@ -84,7 +84,7 @@ async def test_complete_accumulates_token_usage_across_calls():
     message = make_message(content="hello there")
     usage = SimpleNamespace(prompt_tokens=10, completion_tokens=5, total_tokens=15)
     client = FakeClient(FakeCompletions(make_response(message, usage=usage)))
-    backend = OpenRouterBackendPlugin(api_key="k", model="test-model", client=client)
+    backend = OpenRouterModelPlugin(api_key="k", model="test-model", client=client)
 
     variables = {"session": {"tokens_used": 100}}
     await backend.complete(
@@ -97,7 +97,7 @@ async def test_complete_accumulates_token_usage_across_calls():
 async def test_complete_without_usage_or_session_does_not_raise():
     message = make_message(content="hello there")
     client = FakeClient(FakeCompletions(make_response(message)))
-    backend = OpenRouterBackendPlugin(api_key="k", model="test-model", client=client)
+    backend = OpenRouterModelPlugin(api_key="k", model="test-model", client=client)
 
     result = await backend.complete(ModelRequest(messages=[], tools=[]))
 
@@ -105,7 +105,7 @@ async def test_complete_without_usage_or_session_does_not_raise():
 
 
 def test_register_wires_model_request():
-    backend = OpenRouterBackendPlugin(
+    backend = OpenRouterModelPlugin(
         api_key="k", model="m", client=FakeClient(FakeCompletions(make_response(make_message())))
     )
     bus = MessageBus()
@@ -147,7 +147,7 @@ async def test_streaming_complete_assembles_text_and_emits_deltas():
         make_chunk(make_delta(content=None)),
     ]
     client = FakeClient(FakeStreamingCompletions(chunks))
-    backend = OpenRouterBackendPlugin(api_key="k", model="m", client=client)
+    backend = OpenRouterModelPlugin(api_key="k", model="m", client=client)
     bus = MessageBus()
     backend.register(bus)
 
@@ -174,7 +174,7 @@ async def test_streaming_complete_assembles_tool_call_from_fragments():
         make_chunk(make_delta(tool_calls=[make_tool_call_delta(0, arguments=': "ls"}')])),
     ]
     client = FakeClient(FakeStreamingCompletions(chunks))
-    backend = OpenRouterBackendPlugin(api_key="k", model="m", client=client)
+    backend = OpenRouterModelPlugin(api_key="k", model="m", client=client)
     bus = MessageBus()
     backend.register(bus)
 
@@ -205,7 +205,7 @@ async def test_streaming_complete_orders_parallel_tool_calls_by_index():
         ])),
     ]
     client = FakeClient(FakeStreamingCompletions(chunks))
-    backend = OpenRouterBackendPlugin(api_key="k", model="m", client=client)
+    backend = OpenRouterModelPlugin(api_key="k", model="m", client=client)
     bus = MessageBus()
     backend.register(bus)
 
@@ -219,7 +219,7 @@ async def test_streaming_complete_defaults_empty_arguments_to_empty_dict():
         make_chunk(make_delta(tool_calls=[make_tool_call_delta(0, id="call_1", name="ls", arguments=None)])),
     ]
     client = FakeClient(FakeStreamingCompletions(chunks))
-    backend = OpenRouterBackendPlugin(api_key="k", model="m", client=client)
+    backend = OpenRouterModelPlugin(api_key="k", model="m", client=client)
     bus = MessageBus()
     backend.register(bus)
 
@@ -234,7 +234,7 @@ async def test_streaming_complete_skips_chunks_with_no_choices():
         make_chunk(make_delta(content="ok")),
     ]
     client = FakeClient(FakeStreamingCompletions(chunks))
-    backend = OpenRouterBackendPlugin(api_key="k", model="m", client=client)
+    backend = OpenRouterModelPlugin(api_key="k", model="m", client=client)
     bus = MessageBus()
     backend.register(bus)
 
@@ -250,7 +250,7 @@ async def test_streaming_complete_records_usage_from_final_chunk():
         SimpleNamespace(choices=[], usage=usage),
     ]
     client = FakeClient(FakeStreamingCompletions(chunks))
-    backend = OpenRouterBackendPlugin(api_key="k", model="m", client=client)
+    backend = OpenRouterModelPlugin(api_key="k", model="m", client=client)
     bus = MessageBus()
     backend.register(bus)
 
@@ -267,11 +267,11 @@ async def test_streaming_deltas_only_reach_the_registering_bus_not_other_session
     chunks = [make_chunk(make_delta(content="secret"))]
     client = FakeClient(FakeStreamingCompletions(chunks))
 
-    backend_a = OpenRouterBackendPlugin(api_key="k", model="m", client=client)
+    backend_a = OpenRouterModelPlugin(api_key="k", model="m", client=client)
     bus_a = MessageBus()
     backend_a.register(bus_a)
 
-    backend_b = OpenRouterBackendPlugin(api_key="k", model="m", client=client)
+    backend_b = OpenRouterModelPlugin(api_key="k", model="m", client=client)
     bus_b = MessageBus()
     backend_b.register(bus_b)
 

@@ -119,12 +119,12 @@ async def test_start_session_assembles_a_working_bus(tmp_path):
 def test_start_session_gives_each_session_fresh_plugin_instances_including_backend(tmp_path):
     """Context/policy plugins, the summarizer, AND the backend must all be
     fresh per-session instances (isolation) -- a plugin that captures its
-    session's bus in register() (like OpenRouterBackendPlugin does, to emit
+    session's bus in register() (like OpenRouterModelPlugin does, to emit
     streaming deltas) breaks silently if the same instance is shared across
     sessions, since the captured bus would end up wired to whichever session
     registered last. The backend factory shares one underlying resource
     (e.g. an HTTP client) across those per-session instances, matching how
-    OpenRouterBackendPlugin shares one AsyncOpenAI client via its `client`
+    OpenRouterModelPlugin shares one AsyncOpenAI client via its `client`
     constructor parameter."""
     storage, manager = make_manager(tmp_path)
 

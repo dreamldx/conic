@@ -74,11 +74,11 @@ BuildSystemPromptEvent = "build_system_prompt"
 # instead of the cached, session-stable system message (see BuildSystemPromptEvent)
 BuildDynamicPromptEvent = "build_dynamic_prompt"
 
-# ── Plugin: ReactLoopPlugin / OpenRouterBackendPlugin ─────────────────────
+# ── Plugin: ReactLoopPlugin / OpenRouterModelPlugin ─────────────────────
 # emitted by ReactLoopPlugin to wholesale-replace the current live status
 # text (e.g. "thinking", a tool-status line)
 MessageUpdateEvent = "message_update"
-# emitted by OpenRouterBackendPlugin per streaming chunk when
+# emitted by OpenRouterModelPlugin per streaming chunk when
 # ModelRequest.stream_updates is True; carries only visible text, never
 # tool-call argument fragments
 MessageDeltaUpdateEvent = "message_delta_update"

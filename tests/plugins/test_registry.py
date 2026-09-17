@@ -1,11 +1,11 @@
 from conic.config import Config
-from conic.plugins.backends.openrouter import OpenRouterBackendPlugin
 from conic.plugins.context.extra_prompt import ExtraPromptPlugin
 from conic.plugins.context.summarizer import SummarizerPlugin
 from conic.plugins.context.system_prompt import SystemPromptPlugin
 from conic.plugins.context.token_budget import TokenBudgetPlugin
 from conic.plugins.context.truncator import TruncatorPlugin
 from conic.plugins.context.variables import TurnVariableUpdaterPlugin
+from conic.plugins.models.openrouter import OpenRouterModelPlugin
 from conic.plugins.policy.permission import PermissionPolicyPlugin
 from conic.plugins.policy.step_limit import StepLimitPlugin
 from conic.plugins.registry import build_plugin_set
@@ -44,7 +44,7 @@ def test_build_plugin_set_wires_bash_tool_with_configured_timeout():
 def test_build_plugin_set_wires_backend_with_configured_model():
     plugin_set = build_plugin_set(make_config())
     backend = plugin_set.backend()
-    assert isinstance(backend, OpenRouterBackendPlugin)
+    assert isinstance(backend, OpenRouterModelPlugin)
     assert backend.model == "test-model"
 
 

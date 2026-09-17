@@ -563,7 +563,7 @@ async def test_session_variables_persisted_after_generic_exception():
 
 
 async def test_session_variables_reflect_mutations_made_during_the_turn():
-    """OpenRouterBackendPlugin (or any handler) mutating session["tokens_used"]
+    """OpenRouterModelPlugin (or any handler) mutating session["tokens_used"]
     in place during the turn must be reflected in what gets persisted, since
     save_variables() is called after the turn body runs."""
     handle = FakeStorageHandle()

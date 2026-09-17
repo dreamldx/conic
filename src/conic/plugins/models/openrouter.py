@@ -7,7 +7,7 @@ from conic.types.messages import MessageDeltaUpdate, ModelRequest, ModelResponse
 from conic.plugins import meta
 
 
-class OpenRouterBackendPlugin:
+class OpenRouterModelPlugin:
     def __init__(self, api_key: str, model: str, client: AsyncOpenAI | None = None):
         self.model = model
         self._client = client or AsyncOpenAI(base_url="https://openrouter.ai/api/v1", api_key=api_key)

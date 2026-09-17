@@ -10,8 +10,8 @@ Conic 是 Python 的 Discord-thread agent 引擎,两者形态不同,部分差异
 
 | Pi | Conic 现状 |
 |---|---|
-| 统一多 provider LLM API(OpenAI / Anthropic / Google / 自定义 provider / OAuth 订阅登录 / llama.cpp 本地模型) | 只有 OpenRouter 一个后端(`plugins/backends/openrouter.py`),靠 OpenRouter 间接多模型 |
-| 流式输出(message_start/update/end 事件流) | ✅ 已实现:`ModelRequest.stream_updates=True` 时 `OpenRouterBackendPlugin` 走 SDK `stream=True`,逐 chunk emit `MessageDeltaUpdateEvent`(增量追加);`ReactLoopPlugin` 在 Step/工具状态切换时另 emit `MessageUpdateEvent`(整体替换);`DiscordThreadPlugin` 把两者渲染成同一条 Discord 消息的实时编辑(节流 1 次/秒)。范围小于 Pi:只有驱动主循环的调用开流式,`SummarizerPlugin` 内部摘要请求仍非流式(不应驱动 UI 更新)。 |
+| 统一多 provider LLM API(OpenAI / Anthropic / Google / 自定义 provider / OAuth 订阅登录 / llama.cpp 本地模型) | 只有 OpenRouter 一个后端(`plugins/models/openrouter.py`),靠 OpenRouter 间接多模型 |
+| 流式输出(message_start/update/end 事件流) | ✅ 已实现:`ModelRequest.stream_updates=True` 时 `OpenRouterModelPlugin` 走 SDK `stream=True`,逐 chunk emit `MessageDeltaUpdateEvent`(增量追加);`ReactLoopPlugin` 在 Step/工具状态切换时另 emit `MessageUpdateEvent`(整体替换);`DiscordThreadPlugin` 把两者渲染成同一条 Discord 消息的实时编辑(节流 1 次/秒)。范围小于 Pi:只有驱动主循环的调用开流式,`SummarizerPlugin` 内部摘要请求仍非流式(不应驱动 UI 更新)。 |
 | 运行时切换模型、thinking level 选择 | 模型仅由环境变量 `OPENROUTER_MODEL` 固定 |
 
 ## 工具与扩展
@@ -98,7 +98,7 @@ Conic 的历史是线性 append-only:无分支、无导出、无重试/回退某
 4. **多后端抽象兑现** — 至少直连 Anthropic/OpenAI,支持运行时切换模型;
 5. **会话分支/重试** — bus 事件模型已支持,存储层给 `messages` 加 `parent_id` 即可起步
    (即 Pi 会话格式 v1→v2 走过的路径)。
-6. **真实 token usage 接回预算判断** — `OpenRouterBackendPlugin` 已经从
+6. **真实 token usage 接回预算判断** — `OpenRouterModelPlugin` 已经从
    `response.usage`/流式最后一个 chunk 拿到真实用量,但目前只喂给
    `session.tokens_used`(供 prompt 模板展示,见"模型层"对比);`TokenBudgetPlugin.apply()`
    判断是否触发摘要仍然只看 `estimate_tokens`(chars//4 粗估),两条数据没打通。
@@ -163,7 +163,7 @@ Pi 约有 35 个生命周期事件;Conic 目前有 27 个总线主题(原 15 个
 ### 3. 消息流式事件(优先级:中)✅ 已实现
 
 - **`message_update`** ✅ 已实现,对应 Conic 的 `MessageDeltaUpdateEvent`(增量追加,
-  由 `OpenRouterBackendPlugin` 在 `ModelRequest.stream_updates=True` 时逐 chunk emit)
+  由 `OpenRouterModelPlugin` 在 `ModelRequest.stream_updates=True` 时逐 chunk emit)
   + `MessageUpdateEvent`(整体替换,由 `ReactLoopPlugin` 在 Step/工具状态切换时 emit)。
   事件名和 Pi 不完全一一对应(Pi 是单一 `message_update` 事件,Conic 拆成"追加"/
   "替换"两种语义分开的事件),但覆盖的能力(渐进式编辑同一条消息)是等价的,
@@ -421,7 +421,7 @@ Turn 依次执行。消息不丢,但**运行中无法插话**——agent 跑偏�
 
 - 模型响应 `finish_reason == "length"`(输出被 token 上限截断)时,消息里的
   tool call 参数可能残缺,应全部判失败而不执行(Conic 目前会照常解析执行)。
-  流式路径(`OpenRouterBackendPlugin._complete_streaming`)同样没有读取每个
+  流式路径(`OpenRouterModelPlugin._complete_streaming`)同样没有读取每个
   chunk 的 `finish_reason`,这个检查非流式/流式两条路径都要补。
 
 ---
@@ -437,7 +437,7 @@ Turn 依次执行。消息不丢,但**运行中无法插话**——agent 跑偏�
 |---|---|---|
 | 触发条件 | `contextTokens > 窗口 − reserve(16384)`,按模型窗口动态计算,可按模型覆盖 | 固定阈值 `CONTEXT_TOKEN_BUDGET=50000`,与实际模型窗口无关 |
 | 检查位置 | 三处:tool 结果回填后、请求前、新输入前 | 一处:`before_model_call` |
-| token 计数 | 用 provider 返回的真实用量校准 | 触发摘要的**预算检查**仍是 `chars//4` 粗估(对中文严重低估),未改;`OpenRouterBackendPlugin` 现在**会**从 `response.usage`/流式最后一个 chunk 拿真实 usage,但只用来累加 `session.tokens_used`(展示/模板用途),还没接回 `TokenBudgetPlugin` 的预算判断——是否触发摘要依然看 chars//4 的估算 |
+| token 计数 | 用 provider 返回的真实用量校准 | 触发摘要的**预算检查**仍是 `chars//4` 粗估(对中文严重低估),未改;`OpenRouterModelPlugin` 现在**会**从 `response.usage`/流式最后一个 chunk 拿真实 usage,但只用来累加 `session.tokens_used`(展示/模板用途),还没接回 `TokenBudgetPlugin` 的预算判断——是否触发摘要依然看 chars//4 的估算 |
 | 保留策略 | 最近 `keepRecentTokens=20000` **token** | 最近 `keep_recent=5` **条消息**——一条超长 bash 输出就能让保留部分超预算 |
 | 切点对齐 | 不切开 tool call/result 组;单 turn 超预算时劈开生成双摘要再合并 | `align_cut` 同样不拆 tool 组(已对齐);无劈 turn 处理 |
 | 摘要提示词 | 结构化模板:Goal / Constraints / Progress / Key Decisions / Next Steps / Critical Context + `<read-files>` `<modified-files>` | 一句 "Summarize the following conversation history concisely" |
@@ -468,7 +468,7 @@ Pi 没有这个问题——压缩是单一管线。建议把两者合并:Truncat
    处理改动,成本极低;
 3. **keep 按 token 而非按条数**,并理顺 Truncator 与 Summarizer 的关系
    (合并为单一压缩管线);
-4. **token 估算校准** — `OpenRouterBackendPlugin` 已经在拿真实 usage(见上表,
+4. **token 估算校准** — `OpenRouterModelPlugin` 已经在拿真实 usage(见上表,
    累加进 `session.tokens_used`),但 `TokenBudgetPlugin.apply()` 判断是否超预算
    仍用 `estimate_tokens`(chars//4),两者没打通;把已有的真实 usage 接回预算
    判断本身(而不是仅用于展示),是这条剩下的工作量。

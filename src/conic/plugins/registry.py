@@ -6,7 +6,6 @@ from openai import AsyncOpenAI
 
 from conic.config import Config
 from conic.core.manager import PluginSet
-from conic.plugins.backends.openrouter import OpenRouterBackendPlugin
 from conic.plugins.context.extra_prompt import ExtraPromptPlugin
 from conic.plugins.context.sections.dynamic_state import DynamicStateSectionPlugin
 from conic.plugins.context.sections.execution import ExecutionBiasSectionPlugin
@@ -20,6 +19,7 @@ from conic.plugins.context.token_budget import TokenBudgetPlugin
 from conic.plugins.context.truncator import TruncatorPlugin
 from conic.plugins.context.variables import TurnVariableUpdaterPlugin
 from conic.plugins.loops.react_loop import ReactLoopPlugin
+from conic.plugins.models.openrouter import OpenRouterModelPlugin
 from conic.plugins.policy.permission import PermissionPolicyPlugin
 from conic.plugins.policy.step_limit import StepLimitPlugin
 from conic.plugins.tools.bash import BashToolPlugin
@@ -53,7 +53,7 @@ def build_plugin_set(config: Config, global_variables: dict | None = None) -> Pl
 
     return PluginSet(
         tool_classes=(ConfiguredBashToolPlugin, ReadFileToolPlugin, WriteFileToolPlugin, EditFileToolPlugin),
-        backend=lambda: OpenRouterBackendPlugin(
+        backend=lambda: OpenRouterModelPlugin(
             api_key=config.openrouter_api_key, model=config.openrouter_model, client=shared_client,
         ),
         context_plugins=(

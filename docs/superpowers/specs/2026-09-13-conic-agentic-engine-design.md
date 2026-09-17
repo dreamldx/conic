@@ -85,7 +85,7 @@ plugin_manager.start_session(
 )
 ```
 
-`PluginManager.start_session()` 内部按固定顺序把插件挂到新建的 `MessageBus` 上：4 个 ToolPlugin（各自绑定 `workspace_dir`）→ BackendPlugin → context 插件链（system_prompt → truncator → token_budget）→ policy 插件（permission → step_limit）→ SummarizerPlugin → ReactLoopPlugin → channel 插件。`PluginSet.backend` 和其余插件一样也是**工厂闭包**，确保每会话独立实例——`OpenRouterBackendPlugin.register()` 会捕获本会话的 `bus`（流式分支要用它 emit `MessageDeltaUpdateEvent`），如果跨会话共享同一个实例，后一个会话的 `register()` 会覆盖前一个会话捕获的 `bus`，导致流式 token 错发到别的会话/线程（曾经的真实 bug，已修复）。`registry.py` 里这个工厂闭包共享同一个 `AsyncOpenAI` 连接实例，只是插件对象本身（连同它捕获的 `bus`）各会话独立，避免为每个会话重复建立 HTTP 连接。`SessionScope` 额外持有一把 `asyncio.Lock`：`DiscordGateway.handle_message()` 在 `async with scope.lock` 内才 `emit(UserInputEvent, ...)`，避免同一线程内并发消息互相打断同一个 Turn；`handle_stop_command()`（`agent_stop` 命令）同样在 pop 掉路由表条目后用同一把锁包住 `emit(SessionStopEvent) + stop_session()`，确保它会等一个正在跑的 Turn 释放锁之后才停止/归档会话，而不是与之竞态。
+`PluginManager.start_session()` 内部按固定顺序把插件挂到新建的 `MessageBus` 上：4 个 ToolPlugin（各自绑定 `workspace_dir`）→ BackendPlugin → context 插件链（system_prompt → truncator → token_budget）→ policy 插件（permission → step_limit）→ SummarizerPlugin → ReactLoopPlugin → channel 插件。`PluginSet.backend` 和其余插件一样也是**工厂闭包**，确保每会话独立实例——`OpenRouterModelPlugin.register()` 会捕获本会话的 `bus`（流式分支要用它 emit `MessageDeltaUpdateEvent`），如果跨会话共享同一个实例，后一个会话的 `register()` 会覆盖前一个会话捕获的 `bus`，导致流式 token 错发到别的会话/线程（曾经的真实 bug，已修复）。`registry.py` 里这个工厂闭包共享同一个 `AsyncOpenAI` 连接实例，只是插件对象本身（连同它捕获的 `bus`）各会话独立，避免为每个会话重复建立 HTTP 连接。`SessionScope` 额外持有一把 `asyncio.Lock`：`DiscordGateway.handle_message()` 在 `async with scope.lock` 内才 `emit(UserInputEvent, ...)`，避免同一线程内并发消息互相打断同一个 Turn；`handle_stop_command()`（`agent_stop` 命令）同样在 pop 掉路由表条目后用同一把锁包住 `emit(SessionStopEvent) + stop_session()`，确保它会等一个正在跑的 Turn 释放锁之后才停止/归档会话，而不是与之竞态。
 
 ### 5.1 进程启动与会话恢复流程
 
@@ -117,8 +117,8 @@ class Gateway(Protocol):
 | `SummarizeEvent` | request | `SummarizeRequest` → `SummarizeResult` | SummarizerPlugin |
 | `SummarizeDoneEvent` | emit | `SummarizeDone` | 无默认订阅者 |
 | `SummarizeFailedEvent` | emit | `SummarizeFailed` | 无默认订阅者（emit 后异常仍会重新抛出） |
-| `ModelRequestEvent` | request | `ModelRequest` → `ModelResponse` | OpenRouterBackendPlugin |
-| `MessageDeltaUpdateEvent` | emit | `MessageDeltaUpdate` | DiscordThreadPlugin（追加缓冲区 + 节流 edit）；仅当 `ModelRequest.stream_updates=True` 时由 OpenRouterBackendPlugin 逐 chunk emit |
+| `ModelRequestEvent` | request | `ModelRequest` → `ModelResponse` | OpenRouterModelPlugin |
+| `MessageDeltaUpdateEvent` | emit | `MessageDeltaUpdate` | DiscordThreadPlugin（追加缓冲区 + 节流 edit）；仅当 `ModelRequest.stream_updates=True` 时由 OpenRouterModelPlugin 逐 chunk emit |
 | `ModelResponseEvent` | emit | `ModelResponse` | 无默认订阅者 |
 | `ToolCallEvent` | emit | `ToolCall` | PermissionPolicyPlugin |
 | `ToolExecutionStartEvent` | emit | `ToolExecutionStart` | 无默认订阅者；ReactLoopPlugin 紧接着 emit `MessageUpdateEvent`（工具状态行） |
@@ -163,7 +163,7 @@ class Gateway(Protocol):
 | 作用域 | 生命周期 | 建立时机 | 键 | 更新者 |
 |---|---|---|---|---|
 | `global` | 与进程/`PluginSet` 同寿命，所有 session 共享同一份引用 | `build_plugin_set()` 调用时 | `model`（`config.openrouter_model`）、`platform`（`platform.system() + platform.release()`）、`timezone`（`datetime.now().astimezone().tzinfo`），加上调用方可选传入的 `global_variables: dict`（覆盖同名默认键） | `registry.py::build_plugin_set()`，一次性计算，之后只读 |
-| `session` | 与一次 Discord 会话（一个 `ReactLoopPlugin` 实例）同寿命 | `ReactLoopPlugin.__init__()` 构造时 | `workspace_dir`；`tokens_used`（初值 0）；`turn_count`（初值 0） | `workspace_dir` 由 `__init__` 一次性写入；`tokens_used` 由 `OpenRouterBackendPlugin` 在每次 `ModelRequestEvent` 完成后累加（阻塞/流式路径都支持，流式通过 `stream_options={"include_usage": True}` 从最后一个 chunk 拿 usage），跨 Turn 累计不清零；`turn_count` 由 `ReactLoopPlugin.handle_user_input()` 在方法一开始（`variables` 字典构造之前）`self._session_variables["turn_count"] += 1`，因此本 Turn 内读到的值就是"这是第几轮对话"（1-based），累计不清零 |
+| `session` | 与一次 Discord 会话（一个 `ReactLoopPlugin` 实例）同寿命 | `ReactLoopPlugin.__init__()` 构造时 | `workspace_dir`；`tokens_used`（初值 0）；`turn_count`（初值 0） | `workspace_dir` 由 `__init__` 一次性写入；`tokens_used` 由 `OpenRouterModelPlugin` 在每次 `ModelRequestEvent` 完成后累加（阻塞/流式路径都支持，流式通过 `stream_options={"include_usage": True}` 从最后一个 chunk 拿 usage），跨 Turn 累计不清零；`turn_count` 由 `ReactLoopPlugin.handle_user_input()` 在方法一开始（`variables` 字典构造之前）`self._session_variables["turn_count"] += 1`，因此本 Turn 内读到的值就是"这是第几轮对话"（1-based），累计不清零 |
 | `turn` | 一次 Turn（一次 `handle_user_input()` 调用） | 每次 `handle_user_input()` 开始时新建空 dict | `now`（UTC ISO8601，精确到秒，由 `TurnVariableUpdaterPlugin` 在 `TurnStartEvent` 上写入）；`step_count`（当前 Step 序号，0-based，由 `ReactLoopPlugin` 在每次进入 while 循环体时写入，与该次 `StepStart.step_index` 一致） | `TurnVariableUpdaterPlugin`（`now`）、`ReactLoopPlugin.handle_user_input()`（`step_count`）；任何 Turn 内事件的订阅者都可以继续往 `turn` 里写 |
 
 `ReactLoopPlugin.handle_user_input()` 在 Turn 开始时创建：
@@ -176,7 +176,7 @@ variables: dict = {
 }
 ```
 
-并把同一个 `variables` 引用传给该 Turn 内所有 Turn/Step/工具生命周期事件的 payload（`TurnStart`/`TurnEnd`/`StepStart`/`StepEnd`/`BeforeModelCall`/`ToolCall`/`ToolExecutionStart`/`ToolExecutionEnd`/`AssistantMessage`/`Error`，均带 `variables: dict = field(default_factory=dict)` 字段），以及 `ModelRequest`（同样带 `variables` 字段，专门为了让 `OpenRouterBackendPlugin` 能回写 `session.tokens_used`，见下）。因为 `global`/`session`/`turn` 三个子 dict 都是引用（不是逐次拷贝），任何事件订阅者往 `msg.variables["turn"]` 里写入的键，本 Turn 后续事件的订阅者都能读到；`global`/`session` 也会被订阅者原地修改——`OpenRouterBackendPlugin` 就是这么更新 `session["tokens_used"]` 的（见下）。除 `ModelRequest` 外，其余请求/响应类 payload（`ModelResponse`/`ToolCallSpec`/`ToolCallResult`/`SummarizeRequest`/`SummarizeResult` 等）以及非 Turn 生命周期事件（`BuildSystemPrompt` 等）仍不携带 `variables`。
+并把同一个 `variables` 引用传给该 Turn 内所有 Turn/Step/工具生命周期事件的 payload（`TurnStart`/`TurnEnd`/`StepStart`/`StepEnd`/`BeforeModelCall`/`ToolCall`/`ToolExecutionStart`/`ToolExecutionEnd`/`AssistantMessage`/`Error`，均带 `variables: dict = field(default_factory=dict)` 字段），以及 `ModelRequest`（同样带 `variables` 字段，专门为了让 `OpenRouterModelPlugin` 能回写 `session.tokens_used`，见下）。因为 `global`/`session`/`turn` 三个子 dict 都是引用（不是逐次拷贝），任何事件订阅者往 `msg.variables["turn"]` 里写入的键，本 Turn 后续事件的订阅者都能读到；`global`/`session` 也会被订阅者原地修改——`OpenRouterModelPlugin` 就是这么更新 `session["tokens_used"]` 的（见下）。除 `ModelRequest` 外，其余请求/响应类 payload（`ModelResponse`/`ToolCallSpec`/`ToolCallResult`/`SummarizeRequest`/`SummarizeResult` 等）以及非 Turn 生命周期事件（`BuildSystemPrompt` 等）仍不携带 `variables`。
 
 `TurnVariableUpdaterPlugin`（`plugins/context/variables.py`，无构造参数）订阅 `TurnStartEvent`，只做一件事：`msg.variables["turn"]["now"] = ...`。它在 `registry.py` 的 `context_plugins` 元组里排第一位，保证同一 Turn 后续任何事件读取 `variables["turn"]["now"]` 时这个键已经存在。`turn.step_count` 不经过插件，直接由 `ReactLoopPlugin.handle_user_input()` 在 while 循环体顶部（`this_step = step_index` 之后）写入 `variables["turn"]["step_count"] = this_step`，与该次 `StepStartEvent` 的 `step_index` 保持一致，因此 `BeforeModelCallEvent` 渲染系统提示词时总能读到当前 Step 序号。
 
@@ -184,13 +184,13 @@ variables: dict = {
 - `registry.py::build_plugin_set(config, global_variables=None)` 计算 `resolved_global_variables = {"model": ..., "platform": ..., "timezone": ..., **(global_variables or {})}`，通过闭包捕获进 `loop_factory`；
 - `PluginSet.loop_factory` 签名是 `Callable[[handle, tool_schemas, tool_payload_map, workspace_dir, persisted_session_variables], object]`（比原来多了 `workspace_dir` 和 `persisted_session_variables` 两个参数），`core/manager.py::PluginManager.start_session()` 调用时传入 `row.workspace_dir` 和 `row.variables`（后者来自 storage，见下）；
 - `ReactLoopPlugin.__init__(..., workspace_dir="", global_variables=None, persisted_session_variables=None)` 建立 `self._session_variables = {"tokens_used": 0, "turn_count": 0, **(persisted_session_variables or {}), "workspace_dir": workspace_dir}`——先给默认值，再用持久化值覆盖（找回上次的 `tokens_used`/`turn_count` 等），最后强制用本次构造传入的 `workspace_dir` 覆盖（不信任持久化里的旧路径，永远以当前会话的实际路径为准）；
-- `OpenRouterBackendPlugin.complete()`（阻塞与流式两条路径都会调用同一个 `_record_usage(msg, usage)` 辅助方法）在拿到模型响应的 `usage`（阻塞路径读 `response.usage`；流式路径给 `create()` 传 `stream_options={"include_usage": True}`，从不含 `choices` 的最后一个 chunk 读 `chunk.usage`）后，把 `usage.total_tokens` 累加进 `msg.variables["session"]["tokens_used"]`——因为 `session` 子 dict 和 `ReactLoopPlugin` 持有的是同一个引用，这个累加值跨 Turn 持续到会话结束都不会被重置。`usage` 为 `None`（如 fake/未启用用量统计的响应）或 `variables` 里没有 `session` key 时静默跳过，不抛异常。
+- `OpenRouterModelPlugin.complete()`（阻塞与流式两条路径都会调用同一个 `_record_usage(msg, usage)` 辅助方法）在拿到模型响应的 `usage`（阻塞路径读 `response.usage`；流式路径给 `create()` 传 `stream_options={"include_usage": True}`，从不含 `choices` 的最后一个 chunk 读 `chunk.usage`）后，把 `usage.total_tokens` 累加进 `msg.variables["session"]["tokens_used"]`——因为 `session` 子 dict 和 `ReactLoopPlugin` 持有的是同一个引用，这个累加值跨 Turn 持续到会话结束都不会被重置。`usage` 为 `None`（如 fake/未启用用量统计的响应）或 `variables` 里没有 `session` key 时静默跳过，不抛异常。
 
 **持久化：** `session` 变量每个 Turn 结束都会写入 storage，会话恢复时从 storage 读回，跨进程重启也不丢：
 - Schema：`sessions` 表新增 `variables VARCHAR DEFAULT '{}'` 列（JSON 序列化的 `dict`）。新建表（`queries.create_sessions_table_sql()`）直接带这一列；已存在的旧库靠 `StorageService.startup()` 里额外执行的 `queries.add_sessions_variables_column_sql()`（`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS variables VARCHAR DEFAULT '{}'`，DuckDB 支持该语法，幂等）补齐。
 - 读取：`services/models.py::Session` 新增 `variables: dict` 字段；`StorageService._session_from_row()` 把该列 `json.loads()` 回 dict（空/`None` 时给 `{}`）；`get_or_create()` 新建会话时 `variables={}`。
 - 写入：`SessionHandle.save_variables(variables: dict)`（`services/storage.py`）把整个 dict `json.dumps()` 后 `UPDATE sessions SET variables = ? WHERE session_key = ?`（`queries.set_session_variables_sql`），整体替换而不是合并。
-- 调用时机：`ReactLoopPlugin.handle_user_input()` 把 while 循环体（含两个 `except`）包在一个 `try/finally` 里，`finally: self._storage.save_variables(self._session_variables)`——无论 Turn 是正常走到 `break` 后触发 `TurnEndEvent`、被 `AbortTurn` 中止、还是被普通异常中止，这一行都会执行且只执行一次，保证"每次 Turn 结束都持久化"覆盖全部三种收尾路径。因为 `self._session_variables` 就是 `variables["session"]` 的同一个引用，Turn 期间任何写入（例如 `OpenRouterBackendPlugin` 累加的 `tokens_used`）在持久化时都已经生效。
+- 调用时机：`ReactLoopPlugin.handle_user_input()` 把 while 循环体（含两个 `except`）包在一个 `try/finally` 里，`finally: self._storage.save_variables(self._session_variables)`——无论 Turn 是正常走到 `break` 后触发 `TurnEndEvent`、被 `AbortTurn` 中止、还是被普通异常中止，这一行都会执行且只执行一次，保证"每次 Turn 结束都持久化"覆盖全部三种收尾路径。因为 `self._session_variables` 就是 `variables["session"]` 的同一个引用，Turn 期间任何写入（例如 `OpenRouterModelPlugin` 累加的 `tokens_used`）在持久化时都已经生效。
 - 恢复时机：`PluginManager.start_session()` 每次都会调用 `storage.get_or_create()`（新会话或恢复已有会话都走这条路径），把拿到的 `row.variables` 传给 `loop_factory` 再传给 `ReactLoopPlugin.__init__`；对新会话这就是 `{}`（用默认值 `tokens_used=0`），对恢复的会话则是上次持久化的值。
 
 模板渲染发生在 `SystemPromptPlugin.apply()`（`BeforeModelCallEvent` 的第一个订阅者）里，在 `_assemble()` 把所有 section 拼成纯文本之后：
@@ -287,9 +287,9 @@ return BeforeModelCall(messages=[*system, *kept], tools=ctx.tools, variables=ctx
 - 每个 Step 结束时（不论走"最终回答"分支还是"处理完所有工具调用"分支）都会 emit `StepEndEvent`，`step_index` 与该 Step 的 `StepStartEvent` 一致；Step 因 `AbortTurn` 中止时不会补发（与 `TurnEndEvent` 在出错时也不补发、改由 `ErrorEvent` 收尾的既有约定一致）。
 - `ToolExecutionStartEvent`/`ToolExecutionEndEvent` 括住 `bus.request(ToolCallRequestEvent, payload)` 这次实际派发：前者在 `before_tool_call` 策略检查通过、`payload` 构造完成后 emit；后者携带派发拿到的原始 `ToolCallResult`（在 `ToolCallResultEvent` 观察/改写链跑之前），用于区分"策略放行"与"真正开始执行"。两者都在同一个 `try` 块内，不改变 `AbortTurn`/普通异常的传播路径。
 - **实时状态展示**：每次 `ToolExecutionStartEvent` 之后紧跟着 emit `MessageUpdateEvent(MessageUpdate(text=self._format_tool_status(call_ctx.call)))`，其中 `_format_tool_status` 是通用格式化（不区分具体工具）：`f"🔧 {call.name}(" + ", ".join(f"{k}={v!r}" for k, v in call.args.items()) + ")"`，例如 `🔧 bash(command='ls -la')`。这个 emit 只负责"当前状态该显示成什么文字"，具体怎么把文字落到 Discord 消息上是 `DiscordThreadPlugin`（8.5）的职责，Loop 本身不知道、也不关心渲染细节。**`StepStartEvent` 本身不会触发"🤔 思考中…"重置**——早期版本每个 Step 开始时都会把响应式消息打回"思考中"，但这会把上一个 Step 留下的、仍有意义的工具状态行/已流式输出文本无谓抹掉；"思考中"现在只在 `TurnStartEvent` 时由 `DiscordThreadPlugin` 发一次占位消息（见 8.5），之后完全靠 `MessageUpdateEvent`（工具状态）和 `MessageDeltaUpdateEvent`（模型流式文本）自然覆盖，Loop 不再主动"复位"。
-- 请求模型时把 `ModelRequest.stream_updates` 显式设为 `True`（`ModelRequest(messages=ctx.messages, tools=ctx.tools, stream_updates=True)`），让 `OpenRouterBackendPlugin`（8.2）对本次调用走流式路径、逐 token emit `MessageDeltaUpdateEvent`。`AssistantMessageEvent`/`ErrorEvent`/`TurnEndEvent` 的 emit 时机和内容完全不变——Loop 不需要为"把消息编辑成最终答案"做任何特殊处理，这仍然是 `DiscordThreadPlugin` 订阅这两个既有事件后自己完成的。
+- 请求模型时把 `ModelRequest.stream_updates` 显式设为 `True`（`ModelRequest(messages=ctx.messages, tools=ctx.tools, stream_updates=True)`），让 `OpenRouterModelPlugin`（8.2）对本次调用走流式路径、逐 token emit `MessageDeltaUpdateEvent`。`AssistantMessageEvent`/`ErrorEvent`/`TurnEndEvent` 的 emit 时机和内容完全不变——Loop 不需要为"把消息编辑成最终答案"做任何特殊处理，这仍然是 `DiscordThreadPlugin` 订阅这两个既有事件后自己完成的。
 
-### 8.2 BackendPlugin — OpenRouterBackendPlugin
+### 8.2 BackendPlugin — OpenRouterModelPlugin
 唯一应答 `model_request`，用 openai SDK 调用 OpenRouter API。
 
 `register()` 额外保存一份 `self._bus`（原来不需要，现在流式分支要用它 emit chunk）。`complete()` 按 `msg.stream_updates` 分两条路径：
@@ -424,7 +424,7 @@ conic/                     # 项目根（main.py 与 pyproject.toml 同级，不
       channels/
         discord.py        # DiscordThreadPlugin (Plugin)
       loops/react_loop.py
-      backends/openrouter.py
+      models/openrouter.py
       tools/
         base.py           # resolve_within_workspace / WorkspaceEscapeError（4 个工具共用）
         bash.py / read_file.py / write_file.py / edit_file.py
@@ -450,7 +450,7 @@ conic/                     # 项目根（main.py 与 pyproject.toml 同级，不
   tests/                  # 结构与 src/conic 镜像，另含 test_config.py、test_main.py
     core/
     discord/
-    plugins/{backends,channels,context,loops,policy,tools}/
+    plugins/{models,channels,context,loops,policy,tools}/
     plugins/test_registry.py
     services/
 ```

@@ -66,7 +66,7 @@ src/conic/
   discord/        # Discord gateway + adapter
   plugins/
     tools/        # bash, read_file, write_file, edit_file
-    backends/     # OpenRouter API adapter
+    models/       # OpenRouter API adapter
     context/      # system prompt assembly, truncation, summarization
       sections/   # per-section prompt contributors
     loops/        # ReAct execution loop
