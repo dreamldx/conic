@@ -4,6 +4,10 @@
 终端编码 agent 工具包:统一 LLM API + agent 运行时 + TUI + 编码 agent CLI)。
 Conic 是 Python 的 Discord-thread agent 引擎,两者形态不同,部分差异属于定位差异而非欠账。
 
+文末另有一个独立部分:《三框架 Loop 深挖》,对比对象换成 hermes-agent /
+openclaw / deepseek-harness 三个生产级 agent 框架,聚焦 loop 层的十个专题
+(重试、中断、steering、配平、并行、循环检测、压缩、超时、审批、subagent)。
+
 # 功能对比总览
 
 ## 模型层
@@ -680,3 +684,5 @@ steering 插话)。
 不值当加检测有待观察),不是本节设想的通用 `RepositionableMessage` 组件;
 如果以后做 Plan 消息或其他常驻状态展示,这一半"被顶则重发"逻辑需要单独补,
 可以借鉴响应式消息已有的节流/缓冲区设计,但不能直接复用它的代码。
+
+---
