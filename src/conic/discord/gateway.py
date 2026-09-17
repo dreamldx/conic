@@ -4,6 +4,7 @@ import discord
 from discord import app_commands
 from loguru import logger
 
+from conic.config import Config
 from conic.types.messages import Input, SessionEnd, SessionStart, TurnEnd, UserInput
 from conic.plugins.channels.discord import DiscordThreadPlugin
 from conic.plugins import meta
@@ -12,17 +13,22 @@ from conic.plugins import meta
 class DiscordGateway:
     name = "discord"
 
-    def __init__(self, bot_token: str, plugin_manager, storage):
-        self._token = bot_token
+    def __init__(self, config: Config, plugin_manager, storage):
+        self._token = config.discord_bot_token
         self._plugin_manager = plugin_manager
         self._storage = storage
         self._sessions: dict[int, object] = {}
+        self._app_name_holder = config.app_name_holder
 
         intents = discord.Intents.default()
         intents.message_content = True
         self._client = discord.Client(intents=intents)
         self._tree = app_commands.CommandTree(self._client)
         self._register_discord_wiring()
+
+    def _record_app_name(self) -> None:
+        if self._app_name_holder is not None and self._client.application is not None:
+            self._app_name_holder["name"] = self._client.application.name
 
     def _register_discord_wiring(self) -> None:
         @self._tree.command(name="agent_start", description="Start a new agent session in a thread")
@@ -48,6 +54,7 @@ class DiscordGateway:
 
         @self._client.event
         async def on_ready() -> None:
+            self._record_app_name()
             logger.info("discord gateway connected, syncing commands")
             await self._tree.sync()
             logger.info("discord commands synced, resuming active sessions")

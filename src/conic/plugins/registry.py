@@ -46,6 +46,7 @@ def build_plugin_set(config: Config, global_variables: dict | None = None) -> Pl
         "timezone": str(datetime.now().astimezone().tzinfo),
         **(global_variables or {}),
     }
+    provider_blacklist = [p.strip() for p in config.openrouter_provider_blacklist.split(",") if p.strip()]
 
     class ConfiguredBashToolPlugin(BashToolPlugin):
         def __init__(self, workspace_dir: str):
@@ -53,8 +54,10 @@ def build_plugin_set(config: Config, global_variables: dict | None = None) -> Pl
 
     return PluginSet(
         tool_classes=(ConfiguredBashToolPlugin, ReadFileToolPlugin, WriteFileToolPlugin, EditFileToolPlugin),
-        backend=lambda: OpenRouterModelPlugin(
+        backend=lambda session_key: OpenRouterModelPlugin(
             api_key=config.openrouter_api_key, model=config.openrouter_model, client=shared_client,
+            provider_blacklist=provider_blacklist, app_name_holder=config.app_name_holder,
+            session_id=session_key,
         ),
         context_plugins=(
             lambda ws, schemas: TurnVariableUpdaterPlugin(),

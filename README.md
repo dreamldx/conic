@@ -27,6 +27,7 @@ Optional (defaults shown):
 | Variable | Default | Description |
 |---|---|---|
 | `OPENROUTER_MODEL` | `anthropic/claude-sonnet-4.5` | Model used for completions. |
+| `OPENROUTER_PROVIDER_BLACKLIST` | unset | Comma-separated OpenRouter provider slugs (e.g. `novita,together`) to exclude via `provider.ignore`. OpenRouter still routes freely among every other provider. |
 | `WORKSPACE_ROOT` | `./workspace` | Root directory under which each session's workspace is created. |
 | `DUCKDB_PATH` | `./data/conic.duckdb` | Path to the DuckDB persistence file. |
 | `MAX_STEPS_PER_TURN` | `25` | Max Steps (model calls) allowed within a single Turn before it's aborted. |

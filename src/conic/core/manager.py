@@ -10,7 +10,7 @@ from conic.types.session import SessionScope
 @dataclass
 class PluginSet:
     tool_classes: tuple[type, ...]
-    backend: Callable[[], object]
+    backend: Callable[[str], object]
     context_plugins: tuple[Callable[[str, list[dict]], object], ...]
     policy_plugins: tuple[Callable[[], object], ...]
     summarizer: Callable[[], object]
@@ -37,7 +37,7 @@ class PluginManager:
         for tool_cls in self._plugin_set.tool_classes:
             tool_cls(workspace_dir=row.workspace_dir).register(bus)
 
-        self._plugin_set.backend().register(bus)
+        self._plugin_set.backend(row.session_key).register(bus)
         for ctx_plugin_factory in self._plugin_set.context_plugins:
             ctx_plugin_factory(row.workspace_dir, tool_schemas).register(bus)
         for policy_factory in self._plugin_set.policy_plugins:

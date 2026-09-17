@@ -20,7 +20,7 @@ def build_app(env: dict[str, str] | None = None) -> tuple[StorageService, Discor
     storage.startup()
     logger.info("storage started (db={})", config.duckdb_path)
     plugin_manager = PluginManager(storage, build_plugin_set(config))
-    gateway = DiscordGateway(config.discord_bot_token, plugin_manager, storage)
+    gateway = DiscordGateway(config, plugin_manager, storage)
     return storage, gateway
 
 

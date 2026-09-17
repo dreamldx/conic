@@ -6,12 +6,25 @@ from openai import AsyncOpenAI
 from conic.types.messages import MessageDeltaUpdate, ModelRequest, ModelResponse, ToolCallSpec
 from conic.plugins import meta
 
+APP_HTTP_REFERER = "https://github.com/dreamldx/conic"
+
 
 class OpenRouterModelPlugin:
-    def __init__(self, api_key: str, model: str, client: AsyncOpenAI | None = None):
+    def __init__(
+        self,
+        api_key: str,
+        model: str,
+        client: AsyncOpenAI | None = None,
+        provider_blacklist: list[str] | None = None,
+        app_name_holder: dict | None = None,
+        session_id: str | None = None,
+    ):
         self.model = model
         self._client = client or AsyncOpenAI(base_url="https://openrouter.ai/api/v1", api_key=api_key)
         self._bus = None
+        self._provider_blacklist = provider_blacklist or []
+        self._app_name_holder = app_name_holder
+        self._session_id = session_id
 
     def register(self, bus) -> None:
         self._bus = bus
@@ -21,6 +34,20 @@ class OpenRouterModelPlugin:
         if msg.stream_updates:
             return await self._complete_streaming(msg)
         return await self._complete_blocking(msg)
+
+    def _extra_body(self) -> dict | None:
+        if not self._provider_blacklist:
+            return None
+        return {"provider": {"ignore": self._provider_blacklist}}
+
+    def _extra_headers(self) -> dict:
+        headers: dict = {"HTTP-Referer": APP_HTTP_REFERER}
+        if self._session_id:
+            headers["x-session-id"] = self._session_id
+        app_name = (self._app_name_holder or {}).get("name")
+        if app_name:
+            headers["X-OpenRouter-Title"] = app_name
+        return headers
 
     def _record_usage(self, msg: ModelRequest, usage) -> None:
         if usage is None:
@@ -39,6 +66,8 @@ class OpenRouterModelPlugin:
             model=self.model,
             messages=msg.messages,
             tools=msg.tools or None,
+            extra_body=self._extra_body(),
+            extra_headers=self._extra_headers(),
         )
         self._record_usage(msg, getattr(response, "usage", None))
         message = response.choices[0].message
@@ -48,7 +77,8 @@ class OpenRouterModelPlugin:
             for tc in (message.tool_calls or [])
         ]
         logger.debug(
-            "openrouter response text_len={} tool_calls={}", len(message.content or ""), len(tool_calls)
+            "openrouter response text_len={} tool_calls={}",
+            len(message.content or ""), len(tool_calls),
         )
         return ModelResponse(text=message.content, tool_calls=tool_calls, raw_message=raw_message)
 
@@ -63,6 +93,8 @@ class OpenRouterModelPlugin:
             tools=msg.tools or None,
             stream=True,
             stream_options={"include_usage": True},
+            extra_body=self._extra_body(),
+            extra_headers=self._extra_headers(),
         )
         content_parts: list[str] = []
         tool_call_acc: dict[int, dict] = {}
@@ -103,6 +135,7 @@ class OpenRouterModelPlugin:
             ] or None,
         }
         logger.debug(
-            "openrouter streaming response text_len={} tool_calls={}", len(text or ""), len(tool_calls)
+            "openrouter streaming response text_len={} tool_calls={}",
+            len(text or ""), len(tool_calls),
         )
         return ModelResponse(text=text, tool_calls=tool_calls, raw_message=raw_message)

@@ -17,6 +17,7 @@ from conic.plugins.tools.write_file import WriteFileToolPlugin
 
 def make_config():
     return Config(
+        _env_file=None,
         PROJECT_ROOT="/tmp",
         DISCORD_BOT_TOKEN="d", OPENROUTER_API_KEY="k", OPENROUTER_MODEL="test-model",
         WORKSPACE_ROOT="./workspace", DUCKDB_PATH="./data/conic.duckdb",
@@ -43,15 +44,49 @@ def test_build_plugin_set_wires_bash_tool_with_configured_timeout():
 
 def test_build_plugin_set_wires_backend_with_configured_model():
     plugin_set = build_plugin_set(make_config())
-    backend = plugin_set.backend()
+    backend = plugin_set.backend("discord:1")
     assert isinstance(backend, OpenRouterModelPlugin)
     assert backend.model == "test-model"
 
 
+def test_build_plugin_set_wires_backend_with_the_sessions_id_for_sticky_routing():
+    plugin_set = build_plugin_set(make_config())
+    backend = plugin_set.backend("discord:123")
+    assert backend._session_id == "discord:123"
+
+
+def test_build_plugin_set_wires_backend_without_blacklist_by_default():
+    plugin_set = build_plugin_set(make_config())
+    backend = plugin_set.backend("discord:1")
+    assert backend._provider_blacklist == []
+
+
+def test_build_plugin_set_parses_configured_provider_blacklist():
+    config = Config(
+        _env_file=None,
+        PROJECT_ROOT="/tmp",
+        DISCORD_BOT_TOKEN="d", OPENROUTER_API_KEY="k", OPENROUTER_MODEL="test-model",
+        OPENROUTER_PROVIDER_BLACKLIST="novita, together ,,",
+        WORKSPACE_ROOT="./workspace", DUCKDB_PATH="./data/conic.duckdb",
+        LOG_LEVEL="DEBUG", MAX_STEPS_PER_TURN=7, CONTEXT_TOKEN_BUDGET=123, TRUNCATE_KEEP_LAST_N=9,
+        BASH_TIMEOUT=42,
+    )
+    plugin_set = build_plugin_set(config)
+    backend = plugin_set.backend("discord:1")
+    assert backend._provider_blacklist == ["novita", "together"]
+
+
+def test_build_plugin_set_threads_the_configs_app_name_holder_into_the_backend():
+    config = make_config()
+    plugin_set = build_plugin_set(config)
+    backend = plugin_set.backend("discord:1")
+    assert backend._app_name_holder is config.app_name_holder
+
+
 def test_build_plugin_set_backend_factory_produces_fresh_instances_sharing_one_client():
     plugin_set = build_plugin_set(make_config())
-    backend1 = plugin_set.backend()
-    backend2 = plugin_set.backend()
+    backend1 = plugin_set.backend("discord:1")
+    backend2 = plugin_set.backend("discord:2")
     assert backend1 is not backend2
     assert backend1._client is backend2._client
 

@@ -14,5 +14,8 @@ def test_build_app_wires_storage_and_gateway_without_connecting(tmp_path):
         assert gateway.name == "discord"
         row = storage.get_or_create(channel="discord", native_id="smoke-test")
         assert row.status == "active"
+        # app name discovery is wired end-to-end (holder shared with the
+        # backend plugin factory) without requiring a live Discord connection
+        assert gateway._app_name_holder == {"name": None}
     finally:
         storage.shutdown()

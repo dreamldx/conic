@@ -89,7 +89,7 @@ def make_manager(tmp_path):
     shared_client = object()
     plugin_set = PluginSet(
         tool_classes=(FakeToolPlugin,),
-        backend=lambda: FakeBackend(shared_client),
+        backend=lambda session_key: FakeBackend(shared_client),
         context_plugins=(FakeContextPlugin,),
         policy_plugins=(FakePolicyPlugin,),
         summarizer=FakeSummarizer,

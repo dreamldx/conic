@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from conic.core.bus import MessageBus
 from conic.types.messages import MessageDeltaUpdate, ModelRequest
 from conic.plugins import meta
-from conic.plugins.models.openrouter import OpenRouterModelPlugin
+from conic.plugins.models.openrouter import APP_HTTP_REFERER, OpenRouterModelPlugin
 
 
 class FakeCompletions:
@@ -50,6 +50,108 @@ async def test_complete_returns_text_response_with_no_tool_calls():
     assert result.text == "hello there"
     assert result.tool_calls == []
     assert client.chat.completions.last_kwargs["model"] == "test-model"
+
+
+async def test_complete_blocking_always_sends_the_http_referer_header():
+    message = make_message(content="hi")
+    client = FakeClient(FakeCompletions(make_response(message)))
+    backend = OpenRouterModelPlugin(api_key="k", model="test-model", client=client)
+
+    await backend.complete(ModelRequest(messages=[], tools=[]))
+
+    assert client.chat.completions.last_kwargs["extra_body"] is None
+    assert client.chat.completions.last_kwargs["extra_headers"] == {"HTTP-Referer": APP_HTTP_REFERER}
+
+
+async def test_complete_blocking_sends_session_id_header_for_sticky_routing():
+    message = make_message(content="hi")
+    client = FakeClient(FakeCompletions(make_response(message)))
+    backend = OpenRouterModelPlugin(api_key="k", model="test-model", client=client, session_id="discord:123")
+
+    await backend.complete(ModelRequest(messages=[], tools=[]))
+
+    assert client.chat.completions.last_kwargs["extra_headers"] == {
+        "HTTP-Referer": APP_HTTP_REFERER, "x-session-id": "discord:123",
+    }
+
+
+async def test_complete_blocking_omits_session_id_header_when_none():
+    message = make_message(content="hi")
+    client = FakeClient(FakeCompletions(make_response(message)))
+    backend = OpenRouterModelPlugin(api_key="k", model="test-model", client=client)
+
+    await backend.complete(ModelRequest(messages=[], tools=[]))
+
+    assert "x-session-id" not in client.chat.completions.last_kwargs["extra_headers"]
+
+
+async def test_complete_blocking_sends_blacklist():
+    message = make_message(content="hi")
+    client = FakeClient(FakeCompletions(make_response(message)))
+    backend = OpenRouterModelPlugin(
+        api_key="k", model="test-model", client=client, provider_blacklist=["novita", "together"],
+    )
+
+    await backend.complete(ModelRequest(messages=[], tools=[]))
+
+    assert client.chat.completions.last_kwargs["extra_body"] == {"provider": {"ignore": ["novita", "together"]}}
+
+
+async def test_complete_blocking_omits_app_title_header_when_name_unknown():
+    message = make_message(content="hi")
+    client = FakeClient(FakeCompletions(make_response(message)))
+    backend = OpenRouterModelPlugin(
+        api_key="k", model="test-model", client=client, app_name_holder={"name": None},
+    )
+
+    await backend.complete(ModelRequest(messages=[], tools=[]))
+
+    assert "X-OpenRouter-Title" not in client.chat.completions.last_kwargs["extra_headers"]
+
+
+async def test_complete_blocking_adds_app_title_header_when_name_known():
+    message = make_message(content="hi")
+    client = FakeClient(FakeCompletions(make_response(message)))
+    backend = OpenRouterModelPlugin(
+        api_key="k", model="test-model", client=client, app_name_holder={"name": "Conic"},
+    )
+
+    await backend.complete(ModelRequest(messages=[], tools=[]))
+
+    assert client.chat.completions.last_kwargs["extra_headers"] == {
+        "HTTP-Referer": APP_HTTP_REFERER, "X-OpenRouter-Title": "Conic",
+    }
+
+
+async def test_complete_blocking_app_name_holder_is_read_live_not_at_construction():
+    """The holder is a mutable dict shared with DiscordGateway, which only
+    fills in the name after its client logs in -- well after
+    OpenRouterModelPlugin is constructed. Each call must read the current
+    value, not a snapshot taken at __init__ time."""
+    message = make_message(content="hi")
+    client = FakeClient(FakeCompletions(make_response(message)))
+    holder = {"name": None}
+    backend = OpenRouterModelPlugin(api_key="k", model="test-model", client=client, app_name_holder=holder)
+
+    await backend.complete(ModelRequest(messages=[], tools=[]))
+    assert "X-OpenRouter-Title" not in client.chat.completions.last_kwargs["extra_headers"]
+
+    holder["name"] = "Conic"
+    await backend.complete(ModelRequest(messages=[], tools=[]))
+
+    assert client.chat.completions.last_kwargs["extra_headers"] == {
+        "HTTP-Referer": APP_HTTP_REFERER, "X-OpenRouter-Title": "Conic",
+    }
+
+
+async def test_complete_blocking_no_blacklist_sends_no_extra_body():
+    message = make_message(content="hi")
+    client = FakeClient(FakeCompletions(make_response(message)))
+    backend = OpenRouterModelPlugin(api_key="k", model="test-model", client=client, provider_blacklist=[])
+
+    await backend.complete(ModelRequest(messages=[], tools=[]))
+
+    assert client.chat.completions.last_kwargs["extra_body"] is None
 
 
 async def test_complete_parses_tool_calls():
@@ -165,6 +267,18 @@ async def test_streaming_complete_assembles_text_and_emits_deltas():
     assert result.raw_message == {"role": "assistant", "content": "Hello", "tool_calls": None}
     assert deltas == ["Hel", "lo"]
     assert client.chat.completions.last_kwargs["stream"] is True
+
+
+async def test_streaming_complete_sends_session_id_header():
+    chunks = [make_chunk(make_delta(content="hi"))]
+    client = FakeClient(FakeStreamingCompletions(chunks))
+    backend = OpenRouterModelPlugin(api_key="k", model="m", client=client, session_id="discord:1")
+    bus = MessageBus()
+    backend.register(bus)
+
+    await backend.complete(ModelRequest(messages=[], tools=[], stream_updates=True))
+
+    assert client.chat.completions.last_kwargs["extra_headers"]["x-session-id"] == "discord:1"
 
 
 async def test_streaming_complete_assembles_tool_call_from_fragments():

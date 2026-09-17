@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 from conic.discord.gateway import DiscordGateway
 from conic.services.storage import StorageService
 from conic.plugins import meta
@@ -68,11 +70,45 @@ def make_storage(tmp_path):
     return storage
 
 
+_UNSET = object()
+
+
+def make_config(app_name_holder=_UNSET):
+    holder = {"name": None} if app_name_holder is _UNSET else app_name_holder
+    return SimpleNamespace(discord_bot_token="t", app_name_holder=holder)
+
+
+def test_record_app_name_stores_the_discord_applications_name():
+    holder = {"name": None}
+    gateway = DiscordGateway(make_config(holder), FakePluginManagerRecorder(), storage=None)
+    gateway._client._application = SimpleNamespace(name="Conic")
+
+    gateway._record_app_name()
+
+    assert holder["name"] == "Conic"
+
+
+def test_record_app_name_is_a_noop_without_a_holder():
+    gateway = DiscordGateway(make_config(app_name_holder=None), FakePluginManagerRecorder(), storage=None)
+    gateway._client._application = SimpleNamespace(name="Conic")
+
+    gateway._record_app_name()  # must not raise
+
+
+def test_record_app_name_is_a_noop_before_login():
+    holder = {"name": None}
+    gateway = DiscordGateway(make_config(holder), FakePluginManagerRecorder(), storage=None)
+
+    gateway._record_app_name()
+
+    assert holder["name"] is None
+
+
 async def test_resume_active_sessions_rebuilds_scope_for_each_active_row(tmp_path):
     storage = make_storage(tmp_path)
     storage.get_or_create(channel="discord", native_id="111")
     manager = FakePluginManagerRecorder()
-    gateway = DiscordGateway(bot_token="t", plugin_manager=manager, storage=storage)
+    gateway = DiscordGateway(make_config(), plugin_manager=manager, storage=storage)
 
     async def fake_fetch_thread(native_id: str):
         return object()
@@ -93,7 +129,7 @@ async def test_resume_active_sessions_continues_past_a_dead_thread(tmp_path):
     storage.get_or_create(channel="discord", native_id="222")
     storage.get_or_create(channel="discord", native_id="333")
     manager = FakePluginManagerRecorder()
-    gateway = DiscordGateway(bot_token="t", plugin_manager=manager, storage=storage)
+    gateway = DiscordGateway(make_config(), plugin_manager=manager, storage=storage)
 
     async def flaky_fetch_thread(native_id: str):
         if native_id == "222":
@@ -128,7 +164,7 @@ async def test_resume_active_sessions_does_not_mark_ended_when_thread_exists_but
             return super().start_session(channel, native_id, channel_plugin_factory)
 
     manager = FailingPluginManager()
-    gateway = DiscordGateway(bot_token="t", plugin_manager=manager, storage=storage)
+    gateway = DiscordGateway(make_config(), plugin_manager=manager, storage=storage)
 
     async def fake_fetch_thread(native_id: str):
         return object()
@@ -155,7 +191,7 @@ async def test_handle_start_command_emits_session_start_with_reason_new():
     bus.on(meta.SessionStartEvent, on_session_start)
 
     manager = FakePluginManagerFixedScope(scope)
-    gateway = DiscordGateway(bot_token="t", plugin_manager=manager, storage=None)
+    gateway = DiscordGateway(make_config(), plugin_manager=manager, storage=None)
 
     async def fake_create_thread():
         class FakeThread:
@@ -185,7 +221,7 @@ async def test_resume_active_sessions_emits_session_start_with_reason_resume(tmp
     bus.on(meta.SessionStartEvent, on_session_start)
 
     manager = FakePluginManagerFixedScope(scope)
-    gateway = DiscordGateway(bot_token="t", plugin_manager=manager, storage=storage)
+    gateway = DiscordGateway(make_config(), plugin_manager=manager, storage=storage)
 
     async def fake_fetch_thread(native_id: str):
         return object()
@@ -200,7 +236,7 @@ async def test_handle_stop_command_emits_session_end_with_reason_user_stop():
     from conic.types.messages import SessionEnd
 
     manager = FakePluginManagerRecorder()
-    gateway = DiscordGateway(bot_token="t", plugin_manager=manager, storage=None)
+    gateway = DiscordGateway(make_config(), plugin_manager=manager, storage=None)
     scope = manager.start_session("discord", "444", lambda: object())
     gateway._sessions[444] = scope
 
@@ -221,7 +257,7 @@ async def test_handle_stop_command_emits_session_end_with_reason_user_stop():
 
 async def test_handle_message_routes_to_known_session():
     manager = FakePluginManagerRecorder()
-    gateway = DiscordGateway(bot_token="t", plugin_manager=manager, storage=None)
+    gateway = DiscordGateway(make_config(), plugin_manager=manager, storage=None)
     scope = manager.start_session("discord", "222", lambda: object())
     gateway._sessions[222] = scope
 
@@ -245,7 +281,7 @@ async def test_handle_message_serializes_concurrent_messages_for_the_same_thread
     import asyncio
 
     manager = FakePluginManagerRecorder()
-    gateway = DiscordGateway(bot_token="t", plugin_manager=manager, storage=None)
+    gateway = DiscordGateway(make_config(), plugin_manager=manager, storage=None)
     scope = manager.start_session("discord", "222", lambda: object())
     gateway._sessions[222] = scope
 
@@ -276,14 +312,14 @@ async def test_handle_message_serializes_concurrent_messages_for_the_same_thread
 
 async def test_handle_message_ignores_unknown_thread():
     manager = FakePluginManagerRecorder()
-    gateway = DiscordGateway(bot_token="t", plugin_manager=manager, storage=None)
+    gateway = DiscordGateway(make_config(), plugin_manager=manager, storage=None)
 
     await gateway.handle_message(thread_id=999, text="hello")  # must not raise
 
 
 async def test_handle_start_command_registers_new_session():
     manager = FakePluginManagerRecorder()
-    gateway = DiscordGateway(bot_token="t", plugin_manager=manager, storage=None)
+    gateway = DiscordGateway(make_config(), plugin_manager=manager, storage=None)
 
     responses = []
 
@@ -304,7 +340,7 @@ async def test_handle_start_command_registers_new_session():
 
 async def test_handle_stop_command_removes_session_and_calls_stop_session():
     manager = FakePluginManagerRecorder()
-    gateway = DiscordGateway(bot_token="t", plugin_manager=manager, storage=None)
+    gateway = DiscordGateway(make_config(), plugin_manager=manager, storage=None)
     scope = manager.start_session("discord", "444", lambda: object())
     gateway._sessions[444] = scope
 
@@ -327,7 +363,7 @@ async def test_handle_stop_command_waits_for_an_in_flight_turn_to_finish():
     import asyncio
 
     manager = FakePluginManagerRecorder()
-    gateway = DiscordGateway(bot_token="t", plugin_manager=manager, storage=None)
+    gateway = DiscordGateway(make_config(), plugin_manager=manager, storage=None)
     scope = manager.start_session("discord", "444", lambda: object())
     gateway._sessions[444] = scope
 
@@ -355,7 +391,7 @@ async def test_handle_stop_command_waits_for_an_in_flight_turn_to_finish():
 
 async def test_handle_stop_command_on_unknown_thread_is_a_noop():
     manager = FakePluginManagerRecorder()
-    gateway = DiscordGateway(bot_token="t", plugin_manager=manager, storage=None)
+    gateway = DiscordGateway(make_config(), plugin_manager=manager, storage=None)
 
     async def fake_archive():
         raise AssertionError("should not be called")
@@ -368,7 +404,7 @@ async def test_handle_message_input_hook_can_transform_text_before_user_input():
     from conic.types.messages import Input, UserInput
 
     manager = FakePluginManagerRecorder()
-    gateway = DiscordGateway(bot_token="t", plugin_manager=manager, storage=None)
+    gateway = DiscordGateway(make_config(), plugin_manager=manager, storage=None)
     scope = manager.start_session("discord", "222", lambda: object())
     gateway._sessions[222] = scope
 
@@ -392,7 +428,7 @@ async def test_handle_message_input_hook_can_mark_handled_and_short_circuit():
     from conic.types.messages import Input, UserInput
 
     manager = FakePluginManagerRecorder()
-    gateway = DiscordGateway(bot_token="t", plugin_manager=manager, storage=None)
+    gateway = DiscordGateway(make_config(), plugin_manager=manager, storage=None)
     scope = manager.start_session("discord", "222", lambda: object())
     gateway._sessions[222] = scope
 

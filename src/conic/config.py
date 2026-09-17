@@ -15,6 +15,7 @@ class Config(BaseSettings):
     discord_bot_token: str = Field(alias="DISCORD_BOT_TOKEN")
     openrouter_api_key: str = Field(alias="OPENROUTER_API_KEY")
     openrouter_model: str = Field(default="anthropic/claude-sonnet-4.5", alias="OPENROUTER_MODEL")
+    openrouter_provider_blacklist: str = Field(default="", alias="OPENROUTER_PROVIDER_BLACKLIST")
     workspace_root: str = Field(default="", alias="WORKSPACE_ROOT")
     duckdb_path: str = Field(default="", alias="DUCKDB_PATH")
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
@@ -22,6 +23,7 @@ class Config(BaseSettings):
     context_token_budget: int = Field(default=50000, ge=1, alias="CONTEXT_TOKEN_BUDGET")
     truncate_keep_last_n: int = Field(default=40, ge=1, alias="TRUNCATE_KEEP_LAST_N")
     bash_timeout: float = Field(default=60.0, ge=1, alias="BASH_TIMEOUT")
+    app_name_holder: dict = Field(default_factory=lambda: {"name": None})
 
     @model_validator(mode="after")
     def _resolve_paths(self):
