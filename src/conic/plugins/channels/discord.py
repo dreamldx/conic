@@ -94,7 +94,7 @@ class DiscordThreadPlugin:
         if not force and (now - self._last_edit_time) < STREAM_EDIT_INTERVAL:
             return
         self._last_edit_time = now
-        content = self._buffer
+        content = self._buffer or THINKING_TEXT
         if len(content) > DISCORD_MESSAGE_LIMIT:
             content = "…" + content[-(DISCORD_MESSAGE_LIMIT - 1):]
         try:
