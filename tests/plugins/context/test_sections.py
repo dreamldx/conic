@@ -24,6 +24,7 @@ async def test_runtime_section_contributes_global_only_jinja_placeholders():
     assert "runtime" in result.sections
     assert "{{ global.model }}" in result.sections["runtime"]
     assert "{{ global.platform }}" in result.sections["runtime"]
+    assert "{{ global.shell }}" in result.sections["runtime"]
     assert "{{ global.timezone }}" in result.sections["runtime"]
     # Only global-scope placeholders belong here: this section is rendered once
     # and cached by SystemPromptPlugin, so it must not reference session/turn

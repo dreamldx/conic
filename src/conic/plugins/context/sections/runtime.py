@@ -9,7 +9,7 @@ class RuntimeSectionPlugin:
     async def contribute(self, msg: BuildSystemPrompt) -> BuildSystemPrompt:
         msg.sections["runtime"] = (
             "Platform: {{ global.platform }}\n"
-            "Shell: PowerShell 5.1\n"
+            "Shell: {{ global.shell }}\n"
             "Model: {{ global.model }}\n"
             "Timezone: {{ global.timezone }}"
         )

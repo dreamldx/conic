@@ -1,3 +1,5 @@
+import shellingham
+
 from conic.config import Config
 from conic.plugins.context.extra_prompt import ExtraPromptPlugin
 from conic.plugins.context.summarizer import SummarizerPlugin
@@ -8,7 +10,7 @@ from conic.plugins.context.variables import TurnVariableUpdaterPlugin
 from conic.plugins.models.openrouter import OpenRouterModelPlugin
 from conic.plugins.policy.permission import PermissionPolicyPlugin
 from conic.plugins.policy.step_limit import StepLimitPlugin
-from conic.plugins.registry import build_plugin_set
+from conic.plugins.registry import _detect_shell, build_plugin_set
 from conic.plugins.tools.bash import BashToolPlugin
 from conic.plugins.tools.edit_file import EditFileToolPlugin
 from conic.plugins.tools.read_file import ReadFileToolPlugin
@@ -161,3 +163,34 @@ def test_build_plugin_set_merges_caller_supplied_global_variables():
     loop = plugin_set.loop_factory(object(), [], {}, "/tmp/ws", {})
     assert loop._global_variables["deployment"] == "staging"
     assert loop._global_variables["model"] == "test-model"
+
+
+def test_build_plugin_set_wires_the_detected_shell_into_global_variables():
+    plugin_set = build_plugin_set(make_config())
+    loop = plugin_set.loop_factory(object(), [], {}, "/tmp/ws", {})
+    assert loop._global_variables["shell"] == _detect_shell()
+
+
+def test_detect_shell_uses_shellingham_when_detection_succeeds(monkeypatch):
+    monkeypatch.setattr(
+        "conic.plugins.registry.shellingham.detect_shell", lambda: ("bash", "/bin/bash")
+    )
+    assert _detect_shell() == "bash"
+
+
+def test_detect_shell_falls_back_to_cmd_on_windows_when_detection_fails(monkeypatch):
+    def raise_failure():
+        raise shellingham.ShellDetectionFailure()
+
+    monkeypatch.setattr("conic.plugins.registry.shellingham.detect_shell", raise_failure)
+    monkeypatch.setattr("conic.plugins.registry.platform.system", lambda: "Windows")
+    assert _detect_shell() == "cmd.exe"
+
+
+def test_detect_shell_falls_back_to_bin_sh_on_posix_when_detection_fails(monkeypatch):
+    def raise_failure():
+        raise shellingham.ShellDetectionFailure()
+
+    monkeypatch.setattr("conic.plugins.registry.shellingham.detect_shell", raise_failure)
+    monkeypatch.setattr("conic.plugins.registry.platform.system", lambda: "Linux")
+    assert _detect_shell() == "/bin/sh"
