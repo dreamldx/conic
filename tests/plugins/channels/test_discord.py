@@ -7,7 +7,7 @@ from conic.types.messages import (
     AssistantMessage, BuildSystemPrompt, Error, MessageDeltaUpdate, MessageUpdate, StepStart, TurnStart,
 )
 from conic.plugins import meta
-from conic.plugins.channels.discord import DiscordThreadPlugin
+from conic.plugins.channels.discord import THINKING_TEXTS, DiscordThreadPlugin
 
 
 class FakeMessage:
@@ -115,7 +115,24 @@ async def test_turn_start_sends_a_placeholder_message():
 
     await bus.emit(meta.TurnStartEvent, TurnStart())
 
-    assert thread.sent == ["🤔 思考中…"]
+    assert len(thread.sent) == 1
+    assert thread.sent[0] in THINKING_TEXTS
+
+
+async def test_turn_start_picks_from_the_full_placeholder_pool():
+    """Not a strict randomness proof, just a sanity check that repeated Turns
+    don't always land on the same placeholder -- i.e. this isn't secretly
+    always THINKING_TEXTS[0]."""
+    seen = set()
+    for _ in range(200):
+        thread = FakeThread()
+        plugin = DiscordThreadPlugin(thread)
+        bus = MessageBus()
+        plugin.register(bus)
+        await bus.emit(meta.TurnStartEvent, TurnStart())
+        seen.add(thread.sent[0])
+
+    assert len(seen) > 1
 
 
 async def test_message_delta_update_appends_to_the_placeholder_and_edits_immediately():
@@ -200,7 +217,7 @@ async def test_message_update_with_empty_text_falls_back_to_thinking_placeholder
 
     await bus.emit(meta.MessageUpdateEvent, MessageUpdate(text=""))
 
-    assert placeholder.edits[-1] == "🤔 思考中…"
+    assert placeholder.edits[-1] == thread.sent[0]
 
 
 async def test_first_delta_update_with_empty_delta_falls_back_to_thinking_placeholder():
@@ -214,7 +231,7 @@ async def test_first_delta_update_with_empty_delta_falls_back_to_thinking_placeh
 
     await bus.emit(meta.MessageDeltaUpdateEvent, MessageDeltaUpdate(text_delta=""))
 
-    assert placeholder.edits[-1] == "🤔 思考中…"
+    assert placeholder.edits[-1] == thread.sent[0]
 
 
 async def test_assistant_message_finalizes_by_editing_the_placeholder():
@@ -258,7 +275,7 @@ async def test_finalize_edits_first_chunk_and_sends_the_overflow():
 
     await bus.emit(meta.AssistantMessageEvent, AssistantMessage(text=long_text))
 
-    assert thread.sent[0] == "🤔 思考中…"
+    assert thread.sent[0] in THINKING_TEXTS
     assert thread.messages[0].edits[-1] == "x" * 2000
     assert thread.sent[1] == "x" * 500
 

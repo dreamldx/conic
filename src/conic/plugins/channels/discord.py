@@ -1,4 +1,5 @@
 import asyncio
+import random
 import time
 from typing import Callable
 
@@ -26,7 +27,48 @@ DISCORD_MESSAGE_LIMIT = 2000
 TYPING_INTERVAL = 8
 TYPING_TIMEOUT = 20
 STREAM_EDIT_INTERVAL = 1.0
-THINKING_TEXT = "🤔 思考中…"
+THINKING_TEXTS = (
+    "🤔 脑子在转，请稍等…",
+    "🧠 神经元触突中…",
+    "⚙️ 咔哒咔哒运转中…",
+    "🔍 眯眼看代码中…",
+    "💭 让我盘一盘…",
+    "🛠️ 搬砖中，别催…",
+    "📝 打草稿中…",
+    "🔄 缓冲区加载中…",
+    "🧩 拼图差一块…",
+    "🕵️ 蹲坑找 bug 中…",
+    "📡 正在联系外星智慧…",
+    "🧮 掐指一算…",
+    "🗂️ 翻箱倒柜找资料中…",
+    "🔧 拧螺丝中…",
+    "🌀 大脑正在 loading…",
+    "🧵 理线头中，别急…",
+    "🎯 瞄准问题中…",
+    "📊 画个图表压压惊…",
+    "🚀 火箭升空倒计时…",
+    "⏳ 泡杯茶的功夫…",
+    "😏 已经想到答案了，先晾你一会儿…",
+    "🖤 心里有数，嘴上不说…",
+    "😈 邪恶计划酝酿中…",
+    "🕶️ 一切尽在掌握…",
+    "😌 别急，就是想看你等…",
+    "🃏 底牌已经摸好…",
+    "🐍 悄悄盘算中…",
+    "😼 笑而不语，思考中…",
+    "🍵 一边喝茶一边看戏…",
+    "🎭 演都不演了，思考中…",
+    "😏 你猜我在想什么…",
+    "🖤 黑化进度加载中…",
+    "😈 坏主意正在成型…",
+    "🕸️ 布局中，勿扰…",
+    "😌 稳，都在计划之中…",
+    "🐱 眯眼盯着代码，心里已经笑了…",
+    "😏 答案藏好了，等会儿给你个惊喜（惊吓）…",
+    "🎯 已经看穿一切，先不说破…",
+    "😈 表面淡定，内心疯狂吐槽中…",
+    "🖤 心机运转中，勿慌…",
+)
 
 
 class DiscordThreadPlugin:
@@ -37,6 +79,7 @@ class DiscordThreadPlugin:
         self._stopped = False
         self._status_message = None
         self._buffer = ""
+        self._thinking_text = THINKING_TEXTS[0]
         self._awaiting_first_delta = False
         self._last_edit_time = float("-inf")
 
@@ -61,7 +104,8 @@ class DiscordThreadPlugin:
 
     async def on_turn_start(self, _msg: TurnStart) -> None:
         self._ensure_typing()
-        self._buffer = THINKING_TEXT
+        self._thinking_text = random.choice(THINKING_TEXTS)
+        self._buffer = self._thinking_text
         self._awaiting_first_delta = True
         self._last_edit_time = float("-inf")
         self._status_message = await self._thread.send(self._buffer)
@@ -94,7 +138,7 @@ class DiscordThreadPlugin:
         if not force and (now - self._last_edit_time) < STREAM_EDIT_INTERVAL:
             return
         self._last_edit_time = now
-        content = self._buffer or THINKING_TEXT
+        content = self._buffer or self._thinking_text
         if len(content) > DISCORD_MESSAGE_LIMIT:
             content = "…" + content[-(DISCORD_MESSAGE_LIMIT - 1):]
         try:
