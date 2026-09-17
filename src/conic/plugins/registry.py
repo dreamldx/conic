@@ -1,8 +1,8 @@
+import os
 import platform
 from datetime import datetime
 from pathlib import Path
 
-import shellingham
 from openai import AsyncOpenAI
 
 from conic.config import Config
@@ -38,11 +38,12 @@ def _load_prompts(prompts_dir: Path) -> dict[str, str]:
 
 
 def _detect_shell() -> str:
-    try:
-        name, _path = shellingham.detect_shell()
-        return name
-    except shellingham.ShellDetectionFailure:
-        return "cmd.exe" if platform.system() == "Windows" else "/bin/sh"
+    # Matches what asyncio.create_subprocess_shell (used by BashToolPlugin) actually
+    # invokes under shell=True: %ComSpec% on Windows, always /bin/sh on POSIX --
+    # not the interactive shell conic's own process happens to be running under.
+    if platform.system() == "Windows":
+        return Path(os.environ.get("ComSpec", r"C:\Windows\System32\cmd.exe")).name
+    return "/bin/sh"
 
 
 def build_plugin_set(config: Config, global_variables: dict | None = None) -> PluginSet:
