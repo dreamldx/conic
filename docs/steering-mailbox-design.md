@@ -105,24 +105,23 @@ async def run_loop():
    - `chain StepStart`
    - `ctx = BeforeModelCall` → `response = await wait_for(bus.request(ModelRequest), model_timeout=120)`
      - **超时**:不进 history,`raise AbortTurn(reason=ModelTimeout)`;`_run_turn` 内 catch 住并处理 `ErrorEvent`(告知用户)→ 补发 `TurnEndEvent`,再重新 raise 同一个 `AbortTurn` 让异常传到 `run_loop`;`reason.ends_session=False` → `run_loop` 捕获后不 return,直接回空闲循环(会话存活,不自动重试)
-   - **终答判定(检查点 3)**:模型返回后,**先 drain high**:
-     - 含 abort → 走 §3.2 abort 路径
-     - high 非空且无 tool_calls → **先 append 助手回答入 history,再注入 high 条目,不 break**(强制再走一步,否则已返回的答案在插入新要求后丢失)→ `continue`
-     - high 为空且无 tool_calls → 终答 break
-     - high 非空且有 tool_calls → **先把已 drain 出的 high 条目注入 history**,再进入下面的 tool_calls 分支(不 continue,本步继续执行工具;否则这批 high 条目会被静默丢弃)
-   - 有 tool_calls:append raw_message → 逐个执行工具
-     - 工具 >5s 转后台,见 §3.3;返回 placeholder
-     - **每次工具完成后(检查点 2):drain high(仅 high)**:
-       - 含 abort → 走 §3.2 abort 路径(丢弃同批其余 high 条目,**中止后续工具执行**,不再继续本 step 剩余的 tool_calls)
-       - 非空且无 abort → 注入 history,继续执行下一个工具
+   - 模型返回(`chain ModelResponseEvent`)后按有无 tool_calls 分两条路径,**都在本 step 的工作做完之后才 drain high 一次**——不在生成答案/执行工具的过程中检查,好处是不会把已经做完的工作因为一次 abort 就扔掉,代价见 §7:
+     - **无 tool_calls(终答判定)**:**先 append 助手回答入 history**,再 drain high:
+       - 含 abort → 走 §3.2 abort 路径(回答已经留在 history 里,不会被 abort 冲掉)
+       - 非空且无 abort → 注入 high 条目,不 break(强制再走一步,否则已返回的答案在插入新要求后丢失)→ `continue`
+       - 为空 → 终答 break
+     - **有 tool_calls**:append raw_message → 逐个执行工具,**全部**执行完(每个都已有对应 tool_result 写入 history)→ drain high:
+       - 工具 >5s 转后台,见 §3.3;返回 placeholder
+       - 含 abort → 走 §3.2 abort 路径(丢弃同批其余 high 条目)——此时本 step 的 tool_calls 已全部执行完、结果已配对写入 history,不会出现 tool_calls/tool_result 配对不完整的情况
+       - 非空且无 abort → 注入 history
    - `chain StepEnd`
 3. `chain TurnEndEvent`;**TurnEnd 后 drain low**(可能多条;若同时有 high → 下次唤醒合并为一个新 Turn)。
 
 **abort 语义**
 
 - 批次中**任一条目 is_turn_abort → 丢弃同批其余 high 条目**,直接走中止路径。
-- 该检测适用于**每一处 drain high 的位置**(检查点 2、检查点 3),不只是终答判定那一刻;检查点 2 若漏查会导致 `/agent_stop` 在工具执行期间被静默吞掉(注入成一条普通 history 消息)而不真正生效。
-- Turn 内 abort:检测点(检查点 2/3)`raise AbortTurn(reason=UserAbort)`;`_run_turn` 内 catch 住,干净中止当前 Turn(**不 chain ErrorEvent**)→ 补发 `TurnEndEvent`,再重新 raise 让异常传到 `run_loop`。
+- 该检测适用于**每一处 drain high 的位置**(无 tool_calls 分支 append 回答之后、有 tool_calls 分支全部工具执行完之后),不只是某一个特定分支;漏查任一处都会导致 `/agent_stop` 在那条路径上被静默吞掉(注入成一条普通 history 消息)而不真正生效。
+- Turn 内 abort:检测点(上述两处 drain high 位置之一)`raise AbortTurn(reason=UserAbort)`;`_run_turn` 内 catch 住,干净中止当前 Turn(**不 chain ErrorEvent**)→ 补发 `TurnEndEvent`,再重新 raise 让异常传到 `run_loop`。
 - **协程退出的落点在 `run_loop`,不在 `_run_turn` 内部**:`run_loop` catch 到 `AbortTurn` 后,按 `reason.ends_session` 分流 ——`UserAbort` → 调 `_finalize_session()`(内部 `chain SessionEndEvent`)并 `return`,真正终止 `run_loop` 协程;`ModelTimeout` 等非终止性 reason → 不 return,直接回空闲循环等待下一批 steering。`_run_turn` 本身**不**调用 `_finalize_session()`,也不直接 return 到外层 —— 必须靠异常传播,否则 `run_loop` 会在处理完 abort 后又绕回 `wait_multiply_mailbox` 卡死(此时 gateway 早已 pop 路由表,不会再有新消息唤醒它;而 `bus.close()` 又被要求在 `gather()` 完成之后才能调用,`gather()` 反过来要等 `run_loop` 先 return —— 若退出信号没有正确从 `_run_turn` 传播到 `run_loop`,这里会构成死锁,会话永远卡在未 `ended` 状态)。
 - idle abort:不启动 Turn,直接在 `run_loop` 里调 `_finalize_session()` → `SessionEndEvent` → `return`,与 Turn 内 abort 共用同一个 `_finalize_session()`,但触发点不同(idle 在外层循环直接命中,不经过异常传播)。
 - `AbortTurn` 带 `Reason` 枚举(`ModelTimeout` / `UserAbort` / ...),`Reason` 需要暴露 `ends_session: bool`,由 `run_loop` 据此决定是否 `return`。
@@ -193,7 +192,7 @@ stop_session / 收尾(由 PluginManager 自身 join,不设独立 supervisor):
 ## 4. 关键时序
 
 ### 4.1 中途介入(steering.high)
-用户中途发消息 → gateway plugin post high → loop 当前模型返回(检查点 3)→ drain high 非空 → 先 append 助手已答答案 → 注入 high → `continue` 强制再走一步。
+用户中途发消息 → gateway plugin post high → loop 当前模型返回终答(无 tool_calls)→ 先 append 助手已答答案入 history → 这才 drain high,非空 → 注入 high → `continue` 强制再走一步。
 
 ### 4.2 后台任务回流
 bash 5s 放弃返回 placeholder → 进程完成 → monitor post low → 场景 A:loop 空闲被 low 唤醒 → 开新 Turn;场景 B:TurnEnd 后 drain low 命中 → 下一 Turn 起点。等待唤醒依赖 `wait_multiply_mailbox(high, low)`(只等 high 或只等 low 都会漏)。
@@ -233,14 +232,14 @@ bash 5s 放弃返回 placeholder → 进程完成 → monitor post low → 场�
 4. **流式模型超时**:120s 为单次请求、不含流式返回;当前总是 `stream_updates=True`,流式请求实际无超时上限,存在"loop 等不到检查点"的悬挂风险——需在实现期评估:要么流式也加总时长,要么为流式加 idle 探测。
 5. **单事件循环**:先不做多线程;若未来 gateway 真开线程,需 `loop.call_soon_threadsafe` + 锁(`asyncio.Event`/`Lock` 非线程安全)。
 6. **idle abort 丢弃同批 low**:`run_loop` 外层循环在 idle 唤醒时若同一批里既有 abort 又有 low(如后台任务结果恰好和 `/agent_stop` 同时到达),`low` 条目不会被传给 `_run_turn`,直接随 `_finalize_session()` 一起丢弃,用户看不到这次后台任务的输出(不处理:会话本就要结束)。
-7. **检查点 2 abort 会留下配不上的 tool_calls**:检查点 3 判定"有 tool_calls"时会先把整条含 N 个 tool_calls 的助手消息 `append` 进 history;若中间某次工具完成后(检查点 2)drain high 命中 abort,会"中止后续工具执行",导致后面 N-k 个 tool_calls 永远不会有对应 tool_result 写入 history——history 在会话结束时停在一个 tool_calls/tool_result 配对不完整的状态。只要以后没有路径会重新读取/续用这份 history(展示历史、恢复会话、喂给下一个 session 当上下文等),就不影响功能;暂不处理,但如果将来出现"读取历史会话"类需求,需要重新评估(方案:给被跳过的 tool_calls 补一条 cancelled 占位 tool_result,或在读取时做容错)。
+7. **drain high 只在 step 工作做完后检查,响应会滞后**:`/agent_stop` 在本 step 的 tool_calls 全部跑完前不会生效——如果一个 step 里堆了很多个、或有慢的 tool_calls,中止会被推迟到这批全部跑完;终答分支同理,答案已经生成完才会检查(不过这条本来也没有"半路打断"的空间)。换来的是 tool_calls/tool_result 在 history 里永远配对完整、模型已经生成的答案不会被白白扔掉,不会出现半吊子状态(不处理:这是本次改动主动选择的取舍)。
 
 ## 8. 落地顺序
 
 1. `bus`:mailbox 三原语 + `wait_multiply_mailbox` + `closed`(含 post 内原子检查)。
 2. `SteeringItem` 抽象基类 + `SteeringUserMessage` / `SteeringBackgroundResult` / `SteeringStopCommand`。
 3. Gateway 双层改造(单例路由 + per-session 协程,轮询退出),`InputEvent` 链保留。
-4. Loop 重写 `run_loop` + 三检查点 + `AbortTurn(Reason)` + 120s 模型超时。
+4. Loop 重写 `run_loop` + 每 step 工作完成后的 drain high 检查点 + `AbortTurn(Reason)` + 120s 模型超时。
 5. monitor(轮询、task 状态表、closing 优先、60s 总时限)+ bash 改造(request 建任务、5s 等待窗口、placeholder)。
 6. PluginManager 装配 `create_task`、join 三协程、兜底补发 SessionEnd、storage ended、`bus.close()`。
 7. 配置迁移(`bash_fast_window` / `bash_task_timeout` / `model_timeout`),移除旧 `bash_timeout`。

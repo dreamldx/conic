@@ -639,7 +639,7 @@ async def test_turn_start_injects_the_full_high_and_low_batch_into_history():
     assert handle.messages[1]["role"] == "user"
 
 
-async def test_checkpoint_3_high_message_with_no_tool_calls_forces_another_step():
+async def test_checkpoint_high_message_with_no_tool_calls_forces_another_step():
     """A steering.high message that arrives exactly when the model returns a
     final (no tool_calls) answer must not be dropped: the assistant's answer
     is appended, the high item is injected, and the loop takes one more step
@@ -673,12 +673,15 @@ async def test_checkpoint_3_high_message_with_no_tool_calls_forces_another_step(
     assert handle.messages[-1] == {"role": "assistant", "content": "second answer"}
 
 
-async def test_checkpoint_3_abort_ends_turn_without_error_event_and_reraises():
-    """A SteeringStopCommand drained right after the model responds must abort
-    the turn: TurnEndEvent fires, ErrorEvent does not, and AbortTurn(reason=
-    USER_ABORT) propagates out for run_loop to handle."""
+async def test_checkpoint_abort_after_final_answer_keeps_the_answer_and_ends_turn():
+    """A SteeringStopCommand posted while the model is producing a final (no
+    tool_calls) answer no longer gets checked until after that answer is
+    appended to history — the model's completed answer isn't thrown away just
+    because a stop arrived at the same moment. TurnEndEvent still fires,
+    ErrorEvent does not, and AbortTurn(reason=USER_ABORT) propagates out for
+    run_loop to handle."""
     handle = FakeStorageHandle()
-    responses = [ModelResponse(text="unreachable", tool_calls=[], raw_message={})]
+    responses = [ModelResponse(text="final answer", tool_calls=[], raw_message={})]
     bus, loop = make_loop(handle, responses)
 
     async def inject_stop(msg: ModelResponse) -> ModelResponse:
@@ -705,12 +708,15 @@ async def test_checkpoint_3_abort_ends_turn_without_error_event_and_reraises():
     assert exc_info.value.reason is AbortReason.USER_ABORT
     assert errors == []
     assert len(turn_ends) == 1
-    assert not any(m.get("role") == "assistant" for m in handle.messages)
+    assert {"role": "assistant", "content": "final answer"} in handle.messages
 
 
-async def test_checkpoint_2_abort_stops_after_current_tool_and_skips_the_rest():
-    """A SteeringStopCommand drained right after one tool call completes must
-    abort before the next tool call in the same step runs."""
+async def test_checkpoint_abort_only_takes_effect_after_all_tools_in_the_step_finish():
+    """A SteeringStopCommand posted while the first of two tool calls in the
+    same step is running must NOT cut off the second tool call — the
+    checkpoint only drains steering.high once, after the whole step's
+    tool_calls have all completed (and all have matching tool_result entries
+    in history), so the abort is only noticed then."""
     handle = FakeStorageHandle()
     call_1 = ToolCallSpec(id="call_1", name="bash", args={"command": "one"})
     call_2 = ToolCallSpec(id="call_2", name="bash", args={"command": "two"})
@@ -756,11 +762,13 @@ async def test_checkpoint_2_abort_stops_after_current_tool_and_skips_the_rest():
         await loop._run_turn([SteeringUserMessage("run both")], [])
 
     assert exc_info.value.reason is AbortReason.USER_ABORT
-    assert executed == ["one"]
+    assert executed == ["one", "two"]
     assert len(turn_ends) == 1
+    tool_messages = [m for m in handle.messages if m.get("role") == "tool"]
+    assert [m["tool_call_id"] for m in tool_messages] == ["call_1", "call_2"]
 
 
-async def test_checkpoint_2_high_message_is_injected_without_aborting_remaining_tools():
+async def test_checkpoint_high_message_is_injected_without_aborting_remaining_tools():
     handle = FakeStorageHandle()
     call_1 = ToolCallSpec(id="call_1", name="bash", args={"command": "one"})
     call_2 = ToolCallSpec(id="call_2", name="bash", args={"command": "two"})

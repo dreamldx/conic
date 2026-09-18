@@ -112,17 +112,20 @@ class ReactLoopPlugin:
 
                 response = await bus.chain(meta.ModelResponseEvent, response)
 
-                # checkpoint 3: drain high as soon as the model has responded
-                drained_high = await bus.drain("steering.high")
-                if any(item.is_turn_abort() for item in drained_high):
-                    raise AbortTurn("user requested stop", reason=AbortReason.USER_ABORT)
-
                 if not response.tool_calls:
                     out = await bus.chain(
                         meta.AssistantMessageEvent,
                         AssistantMessage(text=response.text or "", variables=variables),
                     )
                     self._storage.append_message({"role": "assistant", "content": out.text})
+
+                    # checkpoint: drain high once the answer is already in
+                    # history, so a stop that lands right as the model
+                    # finishes doesn't throw the completed answer away.
+                    drained_high = await bus.drain("steering.high")
+                    if any(item.is_turn_abort() for item in drained_high):
+                        raise AbortTurn("user requested stop", reason=AbortReason.USER_ABORT)
+
                     if drained_high:
                         self._inject(drained_high)
                         await bus.chain(meta.StepEndEvent, StepEnd(step_index=this_step, variables=variables))
@@ -130,8 +133,6 @@ class ReactLoopPlugin:
                     await bus.chain(meta.StepEndEvent, StepEnd(step_index=this_step, variables=variables))
                     break
 
-                if drained_high:
-                    self._inject(drained_high)
                 self._storage.append_message(response.raw_message)
                 for call in response.tool_calls:
                     original_id = call.id
@@ -165,11 +166,14 @@ class ReactLoopPlugin:
                         {"role": "tool", "tool_call_id": original_id, "content": content}
                     )
 
-                    # checkpoint 2: drain high after each tool call completes
-                    tool_high = await bus.drain("steering.high")
-                    if any(item.is_turn_abort() for item in tool_high):
-                        raise AbortTurn("user requested stop", reason=AbortReason.USER_ABORT)
-                    self._inject(tool_high)
+                # checkpoint: drain high once every tool_call in this step has
+                # finished and has a matching tool_result in history (never
+                # mid-loop, so an abort here never leaves a dangling
+                # tool_calls/tool_result pairing).
+                tool_high = await bus.drain("steering.high")
+                if any(item.is_turn_abort() for item in tool_high):
+                    raise AbortTurn("user requested stop", reason=AbortReason.USER_ABORT)
+                self._inject(tool_high)
 
                 await bus.chain(meta.StepEndEvent, StepEnd(step_index=this_step, variables=variables))
         except AbortTurn as exc:
