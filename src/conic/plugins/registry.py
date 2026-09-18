@@ -43,14 +43,17 @@ def _load_prompts(prompts_dir: Path) -> dict[str, str]:
 
 def _detect_shell() -> str:
     # Matches what asyncio.create_subprocess_shell (used by BashToolPlugin) actually
-    # invokes under shell=True: %ComSpec% on Windows, always /bin/sh on POSIX --
-    # not the interactive shell conic's own process happens to be running under.
+    # invokes under shell=True: %ComSpec% on Windows, /bin/sh on POSIX -- not the
+    # interactive shell conic's own process happens to be running under. On macOS
+    # /bin/sh is bash in sh mode (via /var/select/sh), so report the real thing.
     if platform.system() == "Windows":
         # PureWindowsPath (not Path) because this parses a Windows-style
         # backslash path per Windows rules regardless of the host OS --
         # plain Path resolves to PosixPath on a POSIX host and would treat
         # the whole backslash string as one component, breaking .name.
         return PureWindowsPath(os.environ.get("ComSpec", r"C:\Windows\System32\cmd.exe")).name
+    if platform.system() == "Darwin":
+        return "/bin/bash"
     return "/bin/sh"
 
 

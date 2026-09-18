@@ -1,3 +1,7 @@
+import sys
+
+import pytest
+
 from conic.config import Config
 from conic.plugins.context.extra_prompt import ExtraPromptPlugin
 from conic.plugins.context.summarizer import SummarizerPlugin
@@ -195,16 +199,23 @@ def test_build_plugin_set_wires_the_detected_shell_into_global_variables():
     assert loop._global_variables["shell"] == _detect_shell()
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Path parses ComSpec backslashes only on Windows")
 def test_detect_shell_uses_comspec_basename_on_windows(monkeypatch):
     monkeypatch.setattr("conic.plugins.registry.platform.system", lambda: "Windows")
     monkeypatch.setenv("ComSpec", r"C:\Windows\System32\cmd.exe")
     assert _detect_shell() == "cmd.exe"
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Path parses ComSpec backslashes only on Windows")
 def test_detect_shell_falls_back_to_default_comspec_when_unset_on_windows(monkeypatch):
     monkeypatch.setattr("conic.plugins.registry.platform.system", lambda: "Windows")
     monkeypatch.delenv("ComSpec", raising=False)
     assert _detect_shell() == "cmd.exe"
+
+
+def test_detect_shell_is_bin_bash_on_macos(monkeypatch):
+    monkeypatch.setattr("conic.plugins.registry.platform.system", lambda: "Darwin")
+    assert _detect_shell() == "/bin/bash"
 
 
 def test_detect_shell_is_bin_sh_on_posix(monkeypatch):
