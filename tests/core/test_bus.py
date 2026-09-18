@@ -1,10 +1,16 @@
+import asyncio
 from dataclasses import dataclass
 
 import pytest
 from loguru import logger
 
 from conic.core.bus import MessageBus, infer_payload_type
-from conic.types.errors import DuplicateResponderError, NoResponderError
+from conic.types.errors import (
+    DuplicateMailboxError,
+    DuplicateResponderError,
+    NoResponderError,
+    UnknownMailboxError,
+)
 
 
 @dataclass
@@ -178,3 +184,138 @@ async def test_emit_does_not_log_when_all_handlers_match():
         logger.remove(sink_id)
 
     assert logged == []
+
+
+# --- mailbox primitives (create_mailbox / post / drain / wait_multiply_mailbox / close) ---
+
+
+def test_create_mailbox_rejects_duplicate_registration_for_same_name():
+    bus = MessageBus()
+    bus.create_mailbox("steering.high", Ping)
+    with pytest.raises(DuplicateMailboxError):
+        bus.create_mailbox("steering.high", Ping)
+
+
+async def test_post_raises_for_unregistered_mailbox():
+    bus = MessageBus()
+    with pytest.raises(UnknownMailboxError):
+        await bus.post("steering.high", Ping(n=1))
+
+
+async def test_drain_raises_for_unregistered_mailbox():
+    bus = MessageBus()
+    with pytest.raises(UnknownMailboxError):
+        await bus.drain("steering.high")
+
+
+async def test_wait_multiply_mailbox_raises_for_unregistered_mailbox():
+    bus = MessageBus()
+    bus.create_mailbox("steering.high", Ping)
+    with pytest.raises(UnknownMailboxError):
+        await bus.wait_multiply_mailbox("steering.high", "steering.low")
+
+
+async def test_post_rejects_mismatched_payload_type():
+    bus = MessageBus()
+    bus.create_mailbox("steering.high", Ping)
+    with pytest.raises(TypeError):
+        await bus.post("steering.high", Pong(n=1))
+
+
+async def test_drain_returns_posted_items_in_order():
+    bus = MessageBus()
+    bus.create_mailbox("steering.high", Ping)
+    await bus.post("steering.high", Ping(n=1))
+    await bus.post("steering.high", Ping(n=2))
+    result = await bus.drain("steering.high")
+    assert result == [Ping(n=1), Ping(n=2)]
+
+
+async def test_drain_empties_the_mailbox():
+    bus = MessageBus()
+    bus.create_mailbox("steering.high", Ping)
+    await bus.post("steering.high", Ping(n=1))
+    await bus.drain("steering.high")
+    assert await bus.drain("steering.high") == []
+
+
+async def test_drain_on_empty_mailbox_returns_empty_list():
+    bus = MessageBus()
+    bus.create_mailbox("steering.high", Ping)
+    assert await bus.drain("steering.high") == []
+
+
+async def test_wait_multiply_mailbox_returns_immediately_when_mailbox_already_has_items():
+    bus = MessageBus()
+    bus.create_mailbox("steering.high", Ping)
+    bus.create_mailbox("steering.low", Ping)
+    await bus.post("steering.high", Ping(n=1))
+
+    await asyncio.wait_for(bus.wait_multiply_mailbox("steering.high", "steering.low"), timeout=0.1)
+
+
+async def test_wait_multiply_mailbox_blocks_until_matching_mailbox_is_posted_to():
+    bus = MessageBus()
+    bus.create_mailbox("steering.high", Ping)
+    bus.create_mailbox("steering.low", Ping)
+
+    waiter = asyncio.ensure_future(bus.wait_multiply_mailbox("steering.high", "steering.low"))
+    await asyncio.sleep(0)
+    assert not waiter.done()
+
+    await bus.post("steering.low", Ping(n=1))
+    await asyncio.wait_for(waiter, timeout=0.1)
+
+
+async def test_wait_multiply_mailbox_ignores_posts_to_mailboxes_not_being_waited_on():
+    bus = MessageBus()
+    bus.create_mailbox("steering.high", Ping)
+    bus.create_mailbox("steering.low", Ping)
+    bus.create_mailbox("other", Ping)
+
+    waiter = asyncio.ensure_future(bus.wait_multiply_mailbox("steering.high", "steering.low"))
+    await asyncio.sleep(0)
+    await bus.post("other", Ping(n=1))
+    await asyncio.sleep(0)
+    assert not waiter.done()
+
+    waiter.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await waiter
+
+
+async def test_wait_multiply_mailbox_returns_immediately_after_close():
+    bus = MessageBus()
+    bus.create_mailbox("steering.high", Ping)
+    await bus.close()
+
+    await asyncio.wait_for(bus.wait_multiply_mailbox("steering.high"), timeout=0.1)
+
+
+async def test_wait_multiply_mailbox_unblocks_when_bus_closes_while_waiting():
+    bus = MessageBus()
+    bus.create_mailbox("steering.high", Ping)
+
+    waiter = asyncio.ensure_future(bus.wait_multiply_mailbox("steering.high"))
+    await asyncio.sleep(0)
+    assert not waiter.done()
+
+    await bus.close()
+    await asyncio.wait_for(waiter, timeout=0.1)
+
+
+async def test_post_after_close_is_a_noop_and_logs_warning():
+    bus = MessageBus()
+    bus.create_mailbox("steering.high", Ping)
+    await bus.close()
+
+    logged = []
+    sink_id = logger.add(lambda msg: logged.append(msg.record["message"]), level="WARNING")
+    try:
+        await bus.post("steering.high", Ping(n=1))
+    finally:
+        logger.remove(sink_id)
+
+    assert await bus.drain("steering.high") == []
+    assert len(logged) == 1
+    assert "steering.high" in logged[0]
