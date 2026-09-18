@@ -67,8 +67,8 @@ def build_plugin_set(config: Config, global_variables: dict | None = None) -> Pl
         tool_classes=(ConfiguredBashToolPlugin, ReadFileToolPlugin, WriteFileToolPlugin, EditFileToolPlugin),
         backend=lambda session_key: OpenRouterModelPlugin(
             api_key=config.openrouter_api_key, model=config.openrouter_model, client=shared_client,
-            provider_blacklist=provider_blacklist, app_name_holder=config.app_name_holder,
-            session_id=session_key,
+            provider_blacklist=provider_blacklist,
+            session_id=session_key, app_name=config.project_name,
         ),
         context_plugins=(
             lambda ws, schemas: TurnVariableUpdaterPlugin(),

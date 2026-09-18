@@ -16,15 +16,15 @@ class OpenRouterModelPlugin:
         model: str,
         client: AsyncOpenAI | None = None,
         provider_blacklist: list[str] | None = None,
-        app_name_holder: dict | None = None,
         session_id: str | None = None,
+        app_name: str | None = None,
     ):
         self.model = model
         self._client = client or AsyncOpenAI(base_url="https://openrouter.ai/api/v1", api_key=api_key)
         self._bus = None
         self._provider_blacklist = provider_blacklist or []
-        self._app_name_holder = app_name_holder
         self._session_id = session_id
+        self._app_name = app_name
 
     def register(self, bus) -> None:
         self._bus = bus
@@ -44,9 +44,8 @@ class OpenRouterModelPlugin:
         headers: dict = {"HTTP-Referer": APP_HTTP_REFERER}
         if self._session_id:
             headers["x-session-id"] = self._session_id
-        app_name = (self._app_name_holder or {}).get("name")
-        if app_name:
-            headers["X-OpenRouter-Title"] = app_name
+        if self._app_name:
+            headers["X-OpenRouter-Title"] = self._app_name
         return headers
 
     def _record_usage(self, msg: ModelRequest, usage) -> None:

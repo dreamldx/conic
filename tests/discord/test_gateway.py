@@ -70,38 +70,8 @@ def make_storage(tmp_path):
     return storage
 
 
-_UNSET = object()
-
-
-def make_config(app_name_holder=_UNSET):
-    holder = {"name": None} if app_name_holder is _UNSET else app_name_holder
-    return SimpleNamespace(discord_bot_token="t", app_name_holder=holder)
-
-
-def test_record_app_name_stores_the_discord_applications_name():
-    holder = {"name": None}
-    gateway = DiscordGateway(make_config(holder), FakePluginManagerRecorder(), storage=None)
-    gateway._client._application = SimpleNamespace(name="Conic")
-
-    gateway._record_app_name()
-
-    assert holder["name"] == "Conic"
-
-
-def test_record_app_name_is_a_noop_without_a_holder():
-    gateway = DiscordGateway(make_config(app_name_holder=None), FakePluginManagerRecorder(), storage=None)
-    gateway._client._application = SimpleNamespace(name="Conic")
-
-    gateway._record_app_name()  # must not raise
-
-
-def test_record_app_name_is_a_noop_before_login():
-    holder = {"name": None}
-    gateway = DiscordGateway(make_config(holder), FakePluginManagerRecorder(), storage=None)
-
-    gateway._record_app_name()
-
-    assert holder["name"] is None
+def make_config():
+    return SimpleNamespace(discord_bot_token="t")
 
 
 async def test_resume_active_sessions_rebuilds_scope_for_each_active_row(tmp_path):

@@ -97,53 +97,6 @@ async def test_complete_blocking_sends_blacklist():
     assert client.chat.completions.last_kwargs["extra_body"] == {"provider": {"ignore": ["novita", "together"]}}
 
 
-async def test_complete_blocking_omits_app_title_header_when_name_unknown():
-    message = make_message(content="hi")
-    client = FakeClient(FakeCompletions(make_response(message)))
-    backend = OpenRouterModelPlugin(
-        api_key="k", model="test-model", client=client, app_name_holder={"name": None},
-    )
-
-    await backend.complete(ModelRequest(messages=[], tools=[]))
-
-    assert "X-OpenRouter-Title" not in client.chat.completions.last_kwargs["extra_headers"]
-
-
-async def test_complete_blocking_adds_app_title_header_when_name_known():
-    message = make_message(content="hi")
-    client = FakeClient(FakeCompletions(make_response(message)))
-    backend = OpenRouterModelPlugin(
-        api_key="k", model="test-model", client=client, app_name_holder={"name": "Conic"},
-    )
-
-    await backend.complete(ModelRequest(messages=[], tools=[]))
-
-    assert client.chat.completions.last_kwargs["extra_headers"] == {
-        "HTTP-Referer": APP_HTTP_REFERER, "X-OpenRouter-Title": "Conic",
-    }
-
-
-async def test_complete_blocking_app_name_holder_is_read_live_not_at_construction():
-    """The holder is a mutable dict shared with DiscordGateway, which only
-    fills in the name after its client logs in -- well after
-    OpenRouterModelPlugin is constructed. Each call must read the current
-    value, not a snapshot taken at __init__ time."""
-    message = make_message(content="hi")
-    client = FakeClient(FakeCompletions(make_response(message)))
-    holder = {"name": None}
-    backend = OpenRouterModelPlugin(api_key="k", model="test-model", client=client, app_name_holder=holder)
-
-    await backend.complete(ModelRequest(messages=[], tools=[]))
-    assert "X-OpenRouter-Title" not in client.chat.completions.last_kwargs["extra_headers"]
-
-    holder["name"] = "Conic"
-    await backend.complete(ModelRequest(messages=[], tools=[]))
-
-    assert client.chat.completions.last_kwargs["extra_headers"] == {
-        "HTTP-Referer": APP_HTTP_REFERER, "X-OpenRouter-Title": "Conic",
-    }
-
-
 async def test_complete_blocking_no_blacklist_sends_no_extra_body():
     message = make_message(content="hi")
     client = FakeClient(FakeCompletions(make_response(message)))

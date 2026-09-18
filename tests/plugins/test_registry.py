@@ -76,11 +76,11 @@ def test_build_plugin_set_parses_configured_provider_blacklist():
     assert backend._provider_blacklist == ["novita", "together"]
 
 
-def test_build_plugin_set_threads_the_configs_app_name_holder_into_the_backend():
+def test_build_plugin_set_wires_config_project_name_as_backend_app_name():
     config = make_config()
     plugin_set = build_plugin_set(config)
     backend = plugin_set.backend("discord:1")
-    assert backend._app_name_holder is config.app_name_holder
+    assert backend._app_name == config.project_name
 
 
 def test_build_plugin_set_backend_factory_produces_fresh_instances_sharing_one_client():

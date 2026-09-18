@@ -11,7 +11,7 @@ def test_load_config_applies_defaults():
     assert config.openrouter_api_key == "or-key"
     assert config.openrouter_model == "anthropic/claude-sonnet-4.5"
     assert config.openrouter_provider_blacklist == ""
-    assert config.app_name_holder == {"name": None}
+    assert config.project_name == "Conic"
     assert config.workspace_root.endswith("workspace")
     assert config.duckdb_path.endswith("conic.duckdb")
     assert config.log_level == "INFO"
@@ -30,23 +30,14 @@ def test_load_config_reads_overrides():
         "OPENROUTER_PROVIDER_BLACKLIST": "novita,together",
         "MAX_STEPS_PER_TURN": "10",
         "BASH_TIMEOUT": "15",
+        "PROJECT_NAME": "MyAgent",
     }
     config = load_config(env)
     assert config.openrouter_model == "openai/gpt-4o"
     assert config.openrouter_provider_blacklist == "novita,together"
     assert config.max_steps_per_turn == 10
     assert config.bash_timeout == 15.0
-
-
-def test_app_name_holder_is_a_fresh_dict_per_config_instance():
-    env = {"PROJECT_ROOT": "/tmp/conic", "DISCORD_BOT_TOKEN": "d-token", "OPENROUTER_API_KEY": "or-key"}
-    first = load_config(env)
-    second = load_config(env)
-
-    assert first.app_name_holder is not second.app_name_holder
-
-    first.app_name_holder["name"] = "Conic"
-    assert second.app_name_holder["name"] is None
+    assert config.project_name == "MyAgent"
 
 
 def test_load_config_raises_when_project_root_missing():
