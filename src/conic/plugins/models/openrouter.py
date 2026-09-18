@@ -31,9 +31,13 @@ class OpenRouterModelPlugin:
         bus.on_request(meta.ModelRequestEvent, self.complete)
 
     async def complete(self, msg: ModelRequest) -> ModelResponse:
-        if msg.stream_updates:
-            return await self._complete_streaming(msg)
-        return await self._complete_blocking(msg)
+        try:
+            if msg.stream_updates:
+                return await self._complete_streaming(msg)
+            return await self._complete_blocking(msg)
+        except Exception as exc:
+            logger.debug("openrouter request failed model={} error={}", self.model, exc)
+            raise
 
     def _extra_body(self) -> dict | None:
         if not self._provider_blacklist:

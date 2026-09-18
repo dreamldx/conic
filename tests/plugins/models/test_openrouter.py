@@ -2,6 +2,9 @@ import json
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 
+import pytest
+from loguru import logger
+
 from conic.core.bus import MessageBus
 from conic.types.messages import MessageDeltaUpdate, ModelRequest
 from conic.plugins import meta
@@ -157,6 +160,25 @@ async def test_complete_without_usage_or_session_does_not_raise():
     result = await backend.complete(ModelRequest(messages=[], tools=[]))
 
     assert result.text == "hello there"
+
+
+async def test_complete_blocking_logs_debug_and_reraises_on_failure():
+    class FailingCompletions:
+        async def create(self, **kwargs):
+            raise RuntimeError("network blew up")
+
+    client = FakeClient(FailingCompletions())
+    backend = OpenRouterModelPlugin(api_key="k", model="test-model", client=client)
+
+    logged = []
+    sink_id = logger.add(lambda msg: logged.append(msg.record["message"]), level="DEBUG")
+    try:
+        with pytest.raises(RuntimeError, match="network blew up"):
+            await backend.complete(ModelRequest(messages=[], tools=[]))
+    finally:
+        logger.remove(sink_id)
+
+    assert any("network blew up" in m for m in logged)
 
 
 def test_register_wires_model_request():
@@ -328,6 +350,27 @@ async def test_streaming_complete_records_usage_from_final_chunk():
 
     assert variables["session"]["tokens_used"] == 28
     assert client.chat.completions.last_kwargs["stream_options"] == {"include_usage": True}
+
+
+async def test_complete_streaming_logs_debug_and_reraises_on_failure():
+    class FailingStreamingCompletions:
+        async def create(self, **kwargs):
+            raise RuntimeError("stream blew up")
+
+    client = FakeClient(FailingStreamingCompletions())
+    backend = OpenRouterModelPlugin(api_key="k", model="m", client=client)
+    bus = MessageBus()
+    backend.register(bus)
+
+    logged = []
+    sink_id = logger.add(lambda msg: logged.append(msg.record["message"]), level="DEBUG")
+    try:
+        with pytest.raises(RuntimeError, match="stream blew up"):
+            await backend.complete(ModelRequest(messages=[], tools=[], stream_updates=True))
+    finally:
+        logger.remove(sink_id)
+
+    assert any("stream blew up" in m for m in logged)
 
 
 async def test_streaming_deltas_only_reach_the_registering_bus_not_other_sessions():
