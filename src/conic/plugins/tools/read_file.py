@@ -36,7 +36,7 @@ class ReadFileToolPlugin:
 
     def register(self, bus) -> None:
         bus.on_request(meta.ToolCallRequestEvent, self.execute)
-        bus.on(meta.BuildSystemPromptEvent, self.contribute_workspace_restriction)
+        bus.on_chain(meta.BuildSystemPromptEvent, self.contribute_workspace_restriction)
 
     async def contribute_workspace_restriction(self, msg: BuildSystemPrompt) -> BuildSystemPrompt:
         msg.sections["read_file"] = (

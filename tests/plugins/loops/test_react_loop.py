@@ -68,9 +68,9 @@ async def test_single_step_turn_with_no_tool_calls_emits_assistant_message():
     async def on_assistant_message(msg: AssistantMessage) -> None:
         received.append(msg.text)
 
-    bus.on("assistant_message", on_assistant_message)
+    bus.on_chain("assistant_message", on_assistant_message)
 
-    await bus.emit("user_input", UserInput(text="hello"))
+    await bus.chain("user_input", UserInput(text="hello"))
 
     assert received == ["hi there"]
     assert handle.messages[0] == {"role": "user", "content": "hello"}
@@ -91,9 +91,9 @@ async def test_multi_step_turn_executes_tool_then_returns_final_answer():
     async def on_step_start(msg: StepStart) -> None:
         steps.append(msg.step_index)
 
-    bus.on("step_start", on_step_start)
+    bus.on_chain("step_start", on_step_start)
 
-    await bus.emit("user_input", UserInput(text="run ls"))
+    await bus.chain("user_input", UserInput(text="run ls"))
 
     assert steps == [0, 1]
     tool_messages = [m for m in handle.messages if m.get("role") == "tool"]
@@ -110,9 +110,9 @@ async def test_step_end_emitted_with_matching_step_index_on_final_step():
     async def on_step_end(msg: StepEnd) -> None:
         ends.append(msg.step_index)
 
-    bus.on("step_end", on_step_end)
+    bus.on_chain("step_end", on_step_end)
 
-    await bus.emit("user_input", UserInput(text="hello"))
+    await bus.chain("user_input", UserInput(text="hello"))
 
     assert ends == [0]
 
@@ -131,9 +131,9 @@ async def test_step_end_emitted_once_per_step_with_matching_index():
     async def on_step_end(msg: StepEnd) -> None:
         ends.append(msg.step_index)
 
-    bus.on("step_end", on_step_end)
+    bus.on_chain("step_end", on_step_end)
 
-    await bus.emit("user_input", UserInput(text="run ls"))
+    await bus.chain("user_input", UserInput(text="run ls"))
 
     assert ends == [0, 1]
 
@@ -164,12 +164,12 @@ async def test_tool_execution_start_and_end_bracket_the_actual_tool_dispatch():
     async def on_tool_result(msg: ToolCallResult) -> None:
         order.append("tool_result")
 
-    bus.on("before_tool_call", on_before_tool_call)
-    bus.on("tool_execution_start", on_execution_start)
-    bus.on("tool_execution_end", on_execution_end)
-    bus.on("tool_result", on_tool_result)
+    bus.on_chain("before_tool_call", on_before_tool_call)
+    bus.on_chain("tool_execution_start", on_execution_start)
+    bus.on_chain("tool_execution_end", on_execution_end)
+    bus.on_chain("tool_result", on_tool_result)
 
-    await bus.emit("user_input", UserInput(text="run ls"))
+    await bus.chain("user_input", UserInput(text="run ls"))
 
     assert order == ["before_tool_call", "tool_execution_start", "tool_execution_end", "tool_result"]
 
@@ -191,10 +191,10 @@ async def test_tool_execution_end_carries_raw_result_before_tool_result_mutation
     async def mutate_result(msg: ToolCallResult) -> ToolCallResult:
         return ToolCallResult(output="mutated", error=None)
 
-    bus.on("tool_execution_end", on_execution_end)
-    bus.on("tool_result", mutate_result)
+    bus.on_chain("tool_execution_end", on_execution_end)
+    bus.on_chain("tool_result", mutate_result)
 
-    await bus.emit("user_input", UserInput(text="run ls"))
+    await bus.chain("user_input", UserInput(text="run ls"))
 
     assert captured == ["ran ls"]
     tool_messages = [m for m in handle.messages if m.get("role") == "tool"]
@@ -209,16 +209,16 @@ async def test_abort_turn_from_a_hook_emits_error_and_stops_the_loop():
     async def always_abort(msg: StepStart) -> None:
         raise AbortTurn("blocked by policy")
 
-    bus.on("step_start", always_abort)
+    bus.on_chain("step_start", always_abort)
 
     errors = []
 
     async def on_error(msg: Error) -> None:
         errors.append(str(msg.exc))
 
-    bus.on("error", on_error)
+    bus.on_chain("error", on_error)
 
-    await bus.emit("user_input", UserInput(text="hello"))
+    await bus.chain("user_input", UserInput(text="hello"))
 
     assert errors == ["blocked by policy"]
     assert not any(m.get("role") == "assistant" for m in handle.messages)
@@ -240,16 +240,16 @@ async def test_abort_turn_from_before_tool_call_hook_stops_the_turn():
     async def deny(tc: ToolCall) -> ToolCall:
         raise AbortTurn("denied by policy")
 
-    bus.on("before_tool_call", deny)
+    bus.on_chain("before_tool_call", deny)
 
     errors = []
 
     async def on_error(msg: Error) -> None:
         errors.append(str(msg.exc))
 
-    bus.on("error", on_error)
+    bus.on_chain("error", on_error)
 
-    await bus.emit("user_input", UserInput(text="run rm -rf /"))
+    await bus.chain("user_input", UserInput(text="run rm -rf /"))
 
     assert errors == ["denied by policy"]
     assert not any(m.get("role") == "tool" for m in handle.messages)
@@ -269,10 +269,10 @@ async def test_turn_end_emitted_after_final_assistant_message():
     async def on_turn_end(msg: TurnEnd) -> None:
         order.append("turn_end")
 
-    bus.on("assistant_message", on_assistant_message)
-    bus.on("turn_end", on_turn_end)
+    bus.on_chain("assistant_message", on_assistant_message)
+    bus.on_chain("turn_end", on_turn_end)
 
-    await bus.emit("user_input", UserInput(text="hello"))
+    await bus.chain("user_input", UserInput(text="hello"))
 
     assert order == ["assistant_message", "turn_end"]
 
@@ -301,10 +301,10 @@ async def test_non_aborttturn_exception_from_model_request_is_reported_as_error(
     async def on_error(msg: Error) -> None:
         errors.append(msg.exc)
 
-    bus.on("error", on_error)
+    bus.on_chain("error", on_error)
 
     # Must not raise out of emit — the loop's own except Exception clause must catch it.
-    await bus.emit("user_input", UserInput(text="hello"))
+    await bus.chain("user_input", UserInput(text="hello"))
 
     assert len(errors) == 1
     assert isinstance(errors[0], ValueError)
@@ -324,7 +324,7 @@ async def test_unknown_tool_name_does_not_corrupt_history_and_continues_next_ste
     ]
     bus, loop = make_loop(handle, responses)
 
-    await bus.emit("user_input", UserInput(text="run unknown tool"))
+    await bus.chain("user_input", UserInput(text="run unknown tool"))
 
     tool_messages = [m for m in handle.messages if m.get("role") == "tool"]
     assert len(tool_messages) == 1
@@ -353,9 +353,9 @@ async def test_tool_call_id_preserved_when_hook_mutates_call_id():
             args=tc.call.args
         ))
 
-    bus.on("before_tool_call", mutating_hook)
+    bus.on_chain("before_tool_call", mutating_hook)
 
-    await bus.emit("user_input", UserInput(text="run ls"))
+    await bus.chain("user_input", UserInput(text="run ls"))
 
     # The tool-role message should use the ORIGINAL call id, not the mutated one
     tool_messages = [m for m in handle.messages if m.get("role") == "tool"]
@@ -382,9 +382,9 @@ async def test_message_update_fires_only_for_tool_status_not_a_per_step_thinking
     async def on_update(msg: MessageUpdate) -> None:
         updates.append(msg.text)
 
-    bus.on("message_update", on_update)
+    bus.on_chain("message_update", on_update)
 
-    await bus.emit("user_input", UserInput(text="run ls"))
+    await bus.chain("user_input", UserInput(text="run ls"))
 
     assert updates == ["🔧 bash(command='ls')"]
 
@@ -407,7 +407,7 @@ async def test_model_request_opts_into_streaming():
     )
     loop.register(bus)
 
-    await bus.emit("user_input", UserInput(text="hello"))
+    await bus.chain("user_input", UserInput(text="hello"))
 
     assert captured == [True]
 
@@ -429,10 +429,10 @@ async def test_variables_dict_is_shared_across_turn_scoped_events():
     async def observe(msg: BeforeModelCall) -> None:
         seen.append(msg.variables["turn"].get("injected"))
 
-    bus.on("turn_start", contribute)
-    bus.on("before_model_call", observe)
+    bus.on_chain("turn_start", contribute)
+    bus.on_chain("before_model_call", observe)
 
-    await bus.emit("user_input", UserInput(text="hello"))
+    await bus.chain("user_input", UserInput(text="hello"))
 
     assert seen == ["value"]
 
@@ -451,9 +451,9 @@ async def test_turn_step_count_tracks_current_step_index():
     async def observe(msg: BeforeModelCall) -> None:
         seen_step_counts.append(msg.variables["turn"]["step_count"])
 
-    bus.on("before_model_call", observe)
+    bus.on_chain("before_model_call", observe)
 
-    await bus.emit("user_input", UserInput(text="run ls"))
+    await bus.chain("user_input", UserInput(text="run ls"))
 
     assert seen_step_counts == [0, 1]
 
@@ -483,9 +483,9 @@ async def test_variables_has_global_session_turn_scopes():
     async def observe(msg: BeforeModelCall) -> None:
         seen.append(msg.variables)
 
-    bus.on("before_model_call", observe)
+    bus.on_chain("before_model_call", observe)
 
-    await bus.emit("user_input", UserInput(text="hello"))
+    await bus.chain("user_input", UserInput(text="hello"))
 
     assert seen[0]["global"] == {"model": "gpt-test"}
     assert seen[0]["session"] == {"workspace_dir": "/tmp/ws", "tokens_used": 0, "turn_count": 1}
@@ -511,7 +511,7 @@ async def test_session_variables_seeded_from_persisted_values():
     )
     loop.register(bus)
 
-    await bus.emit("user_input", UserInput(text="hello"))
+    await bus.chain("user_input", UserInput(text="hello"))
 
     assert loop._session_variables == {"workspace_dir": "/tmp/ws", "tokens_used": 250, "turn_count": 1}
 
@@ -521,7 +521,7 @@ async def test_session_variables_persisted_after_successful_turn():
     responses = [ModelResponse(text="hi", tool_calls=[], raw_message={})]
     bus, loop = make_loop(handle, responses)
 
-    await bus.emit("user_input", UserInput(text="hello"))
+    await bus.chain("user_input", UserInput(text="hello"))
 
     assert handle.saved_variables == [{"workspace_dir": "", "tokens_used": 0, "turn_count": 1}]
 
@@ -534,9 +534,9 @@ async def test_session_variables_persisted_after_abort_turn():
     async def always_abort(msg: StepStart) -> None:
         raise AbortTurn("blocked by policy")
 
-    bus.on("step_start", always_abort)
+    bus.on_chain("step_start", always_abort)
 
-    await bus.emit("user_input", UserInput(text="hello"))
+    await bus.chain("user_input", UserInput(text="hello"))
 
     assert handle.saved_variables == [{"workspace_dir": "", "tokens_used": 0, "turn_count": 1}]
 
@@ -557,7 +557,7 @@ async def test_session_variables_persisted_after_generic_exception():
     )
     loop.register(bus)
 
-    await bus.emit("user_input", UserInput(text="hello"))
+    await bus.chain("user_input", UserInput(text="hello"))
 
     assert handle.saved_variables == [{"workspace_dir": "", "tokens_used": 0, "turn_count": 1}]
 
@@ -573,9 +573,9 @@ async def test_session_variables_reflect_mutations_made_during_the_turn():
     async def bump_tokens(msg: BeforeModelCall) -> None:
         msg.variables["session"]["tokens_used"] += 42
 
-    bus.on("before_model_call", bump_tokens)
+    bus.on_chain("before_model_call", bump_tokens)
 
-    await bus.emit("user_input", UserInput(text="hello"))
+    await bus.chain("user_input", UserInput(text="hello"))
 
     assert handle.saved_variables == [{"workspace_dir": "", "tokens_used": 42, "turn_count": 1}]
 
@@ -594,11 +594,11 @@ async def test_turn_count_increments_across_multiple_turns_in_the_same_session()
     async def observe(msg: BeforeModelCall) -> None:
         seen_turn_counts.append(msg.variables["session"]["turn_count"])
 
-    bus.on("before_model_call", observe)
+    bus.on_chain("before_model_call", observe)
 
-    await bus.emit("user_input", UserInput(text="hello"))
-    await bus.emit("user_input", UserInput(text="hello again"))
-    await bus.emit("user_input", UserInput(text="hello a third time"))
+    await bus.chain("user_input", UserInput(text="hello"))
+    await bus.chain("user_input", UserInput(text="hello again"))
+    await bus.chain("user_input", UserInput(text="hello a third time"))
 
     assert seen_turn_counts == [1, 2, 3]
     assert loop._session_variables["turn_count"] == 3
@@ -624,6 +624,6 @@ async def test_turn_count_seeded_from_persisted_value():
     )
     loop.register(bus)
 
-    await bus.emit("user_input", UserInput(text="hello"))
+    await bus.chain("user_input", UserInput(text="hello"))
 
     assert loop._session_variables["turn_count"] == 10

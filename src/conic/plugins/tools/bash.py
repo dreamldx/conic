@@ -36,7 +36,7 @@ class BashToolPlugin:
 
     def register(self, bus) -> None:
         bus.on_request(meta.ToolCallRequestEvent, self.execute)
-        bus.on(meta.BuildSystemPromptEvent, self.contribute_bash_guidance)
+        bus.on_chain(meta.BuildSystemPromptEvent, self.contribute_bash_guidance)
 
     async def contribute_bash_guidance(self, msg: BuildSystemPrompt) -> BuildSystemPrompt:
         msg.sections["bash"] = (

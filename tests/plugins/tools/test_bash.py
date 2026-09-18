@@ -74,7 +74,7 @@ async def test_contributes_a_bash_guidance_section_with_the_configured_timeout()
     bus = MessageBus()
     tool.register(bus)
 
-    result = await bus.emit("build_system_prompt", BuildSystemPrompt(sections={}))
+    result = await bus.chain("build_system_prompt", BuildSystemPrompt(sections={}))
 
     assert "bash" in result.sections
     assert "42" in result.sections["bash"]

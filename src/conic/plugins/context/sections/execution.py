@@ -7,7 +7,7 @@ class ExecutionBiasSectionPlugin:
         self._content = content
 
     def register(self, bus) -> None:
-        bus.on(meta.BuildSystemPromptEvent, self.contribute)
+        bus.on_chain(meta.BuildSystemPromptEvent, self.contribute)
 
     async def contribute(self, msg: BuildSystemPrompt) -> BuildSystemPrompt | None:
         msg.sections["execution"] = self._content

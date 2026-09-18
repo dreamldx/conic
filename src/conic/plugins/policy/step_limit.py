@@ -8,7 +8,7 @@ class StepLimitPlugin:
         self._max_steps = max_steps
 
     def register(self, bus) -> None:
-        bus.on(meta.StepStartEvent, self.check)
+        bus.on_chain(meta.StepStartEvent, self.check)
 
     async def check(self, msg: StepStart) -> None:
         if msg.step_index >= self._max_steps:

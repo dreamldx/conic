@@ -9,7 +9,7 @@ async def test_execution_section_adds_guidelines():
     plugin = ExecutionBiasSectionPlugin("Act on actionable requests.")
     plugin.register(bus)
     msg = BuildSystemPrompt(sections={})
-    result = await bus.emit("build_system_prompt", msg)
+    result = await bus.chain("build_system_prompt", msg)
     assert "execution" in result.sections
     assert "actionable" in result.sections["execution"]
 
@@ -20,7 +20,7 @@ async def test_runtime_section_contributes_global_only_jinja_placeholders():
     plugin = RuntimeSectionPlugin()
     plugin.register(bus)
     msg = BuildSystemPrompt(sections={})
-    result = await bus.emit("build_system_prompt", msg)
+    result = await bus.chain("build_system_prompt", msg)
     assert "runtime" in result.sections
     assert "{{ global.model }}" in result.sections["runtime"]
     assert "{{ global.platform }}" in result.sections["runtime"]
@@ -41,7 +41,7 @@ async def test_tooling_section_lists_tool_schemas():
     plugin = ToolingSectionPlugin(schemas)
     plugin.register(bus)
     msg = BuildSystemPrompt(sections={})
-    result = await bus.emit("build_system_prompt", msg)
+    result = await bus.chain("build_system_prompt", msg)
     assert "tooling" in result.sections
     assert "bash" in result.sections["tooling"]
 
@@ -51,7 +51,7 @@ async def test_tooling_section_empty_schemas_is_noop():
     plugin = ToolingSectionPlugin([])
     plugin.register(bus)
     msg = BuildSystemPrompt(sections={})
-    result = await bus.emit("build_system_prompt", msg)
+    result = await bus.chain("build_system_prompt", msg)
     assert "tooling" not in result.sections
 
 
@@ -61,6 +61,6 @@ async def test_workspace_section_adds_workspace_dir():
     plugin = WorkspaceSectionPlugin("/tmp/test-ws")
     plugin.register(bus)
     msg = BuildSystemPrompt(sections={})
-    result = await bus.emit("build_system_prompt", msg)
+    result = await bus.chain("build_system_prompt", msg)
     assert "workspace" in result.sections
     assert "/tmp/test-ws" in result.sections["workspace"]

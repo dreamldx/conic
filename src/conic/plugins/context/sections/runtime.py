@@ -4,7 +4,7 @@ from conic.plugins import meta
 
 class RuntimeSectionPlugin:
     def register(self, bus) -> None:
-        bus.on(meta.BuildSystemPromptEvent, self.contribute)
+        bus.on_chain(meta.BuildSystemPromptEvent, self.contribute)
 
     async def contribute(self, msg: BuildSystemPrompt) -> BuildSystemPrompt:
         msg.sections["runtime"] = (

@@ -38,7 +38,7 @@ def test_infer_payload_type_ignores_self():
     assert infer_payload_type(Handler.handle) is Ping
 
 
-async def test_emit_calls_handlers_in_registration_order():
+async def test_chain_calls_handlers_in_registration_order():
     bus = MessageBus()
     calls = []
 
@@ -50,13 +50,13 @@ async def test_emit_calls_handlers_in_registration_order():
         calls.append("second")
         return None
 
-    bus.on("ping", first)
-    bus.on("ping", second)
-    await bus.emit("ping", Ping(n=1))
+    bus.on_chain("ping", first)
+    bus.on_chain("ping", second)
+    await bus.chain("ping", Ping(n=1))
     assert calls == ["first", "second"]
 
 
-async def test_emit_chains_mutated_payload_to_next_handler():
+async def test_chain_chains_mutated_payload_to_next_handler():
     bus = MessageBus()
 
     async def increment(msg: Ping) -> Ping:
@@ -65,24 +65,24 @@ async def test_emit_chains_mutated_payload_to_next_handler():
     async def double(msg: Ping) -> Ping:
         return Ping(n=msg.n * 2)
 
-    bus.on("ping", increment)
-    bus.on("ping", double)
-    result = await bus.emit("ping", Ping(n=1))
+    bus.on_chain("ping", increment)
+    bus.on_chain("ping", double)
+    result = await bus.chain("ping", Ping(n=1))
     assert result.n == 4  # (1 + 1) * 2
 
 
-async def test_emit_keeps_current_payload_when_handler_returns_none():
+async def test_chain_keeps_current_payload_when_handler_returns_none():
     bus = MessageBus()
 
     async def observer(msg: Ping) -> None:
         return None
 
-    bus.on("ping", observer)
-    result = await bus.emit("ping", Ping(n=5))
+    bus.on_chain("ping", observer)
+    result = await bus.chain("ping", Ping(n=5))
     assert result.n == 5
 
 
-async def test_emit_only_calls_handlers_matching_payload_type():
+async def test_chain_only_calls_handlers_matching_payload_type():
     bus = MessageBus()
     seen = []
 
@@ -92,9 +92,9 @@ async def test_emit_only_calls_handlers_matching_payload_type():
     async def on_pong(msg: Pong):
         seen.append(("pong", msg.n))
 
-    bus.on("event", on_ping)
-    bus.on("event", on_pong)
-    await bus.emit("event", Ping(n=1))
+    bus.on_chain("event", on_ping)
+    bus.on_chain("event", on_pong)
+    await bus.chain("event", Ping(n=1))
     assert seen == [("ping", 1)]
 
 
@@ -142,7 +142,7 @@ async def test_request_raises_when_no_responder_matches():
         await bus.request("ask", Ping(n=1))
 
 
-async def test_emit_logs_info_when_a_handler_is_skipped_for_type_mismatch():
+async def test_chain_logs_info_when_a_handler_is_skipped_for_type_mismatch():
     bus = MessageBus()
 
     async def on_ping(msg: Ping):
@@ -151,13 +151,13 @@ async def test_emit_logs_info_when_a_handler_is_skipped_for_type_mismatch():
     async def on_pong(msg: Pong):
         return None
 
-    bus.on("event", on_ping)
-    bus.on("event", on_pong)
+    bus.on_chain("event", on_ping)
+    bus.on_chain("event", on_pong)
 
     logged = []
     sink_id = logger.add(lambda msg: logged.append(msg.record["message"]), level="INFO")
     try:
-        await bus.emit("event", Ping(n=1))
+        await bus.chain("event", Ping(n=1))
     finally:
         logger.remove(sink_id)
 
@@ -168,18 +168,18 @@ async def test_emit_logs_info_when_a_handler_is_skipped_for_type_mismatch():
     assert "Ping" in logged[0]
 
 
-async def test_emit_does_not_log_when_all_handlers_match():
+async def test_chain_does_not_log_when_all_handlers_match():
     bus = MessageBus()
 
     async def on_ping(msg: Ping):
         return None
 
-    bus.on("event", on_ping)
+    bus.on_chain("event", on_ping)
 
     logged = []
     sink_id = logger.add(lambda msg: logged.append(msg.record["message"]), level="INFO")
     try:
-        await bus.emit("event", Ping(n=1))
+        await bus.chain("event", Ping(n=1))
     finally:
         logger.remove(sink_id)
 

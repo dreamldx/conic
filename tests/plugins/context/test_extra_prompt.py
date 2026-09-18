@@ -85,7 +85,7 @@ async def test_emit_on_before_model_call_appends_to_last_message():
         tools=[],
         variables={"global": {}, "session": {}, "turn": {}},
     )
-    result = await bus.emit("before_model_call", ctx)
+    result = await bus.chain("before_model_call", ctx)
     assert len(result.messages) == 1
     assert result.messages[0]["role"] == "user"
     assert result.messages[0]["content"].startswith("hi")
@@ -107,7 +107,7 @@ async def test_emits_build_dynamic_prompt_event_to_collect_sections():
         msg.sections["custom"] = "custom {{ turn.now }} content"
         return msg
 
-    bus.on("build_dynamic_prompt", contribute)
+    bus.on_chain("build_dynamic_prompt", contribute)
 
     ctx = BeforeModelCall(
         messages=[{"role": "user", "content": "hi"}],
@@ -173,7 +173,7 @@ async def test_survives_after_truncation_in_the_real_registry_chain_order():
         variables=variables,
     )
 
-    result = await bus.emit(meta.BeforeModelCallEvent, ctx)
+    result = await bus.chain(meta.BeforeModelCallEvent, ctx)
 
     assert len(result.messages) == 2
     assert "T1" in result.messages[-1]["content"]
@@ -199,6 +199,6 @@ async def test_survives_after_summarization_in_the_real_registry_chain_order():
         messages=[{"role": "user", "content": "hi " * 100}], tools=[], variables=variables
     )
 
-    result = await bus.emit(meta.BeforeModelCallEvent, ctx)
+    result = await bus.chain(meta.BeforeModelCallEvent, ctx)
 
     assert "T1" in result.messages[-1]["content"]

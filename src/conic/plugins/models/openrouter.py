@@ -106,7 +106,7 @@ class OpenRouterModelPlugin:
             delta = chunk.choices[0].delta
             if delta.content:
                 content_parts.append(delta.content)
-                await self._bus.emit(meta.MessageDeltaUpdateEvent, MessageDeltaUpdate(text_delta=delta.content))
+                await self._bus.chain(meta.MessageDeltaUpdateEvent, MessageDeltaUpdate(text_delta=delta.content))
             for tc in (delta.tool_calls or []):
                 acc = tool_call_acc.setdefault(tc.index, {"id": None, "name": None, "arguments": ""})
                 if tc.id:

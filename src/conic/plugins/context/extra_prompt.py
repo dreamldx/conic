@@ -13,13 +13,13 @@ class ExtraPromptPlugin:
         self._bus = bus
         for plugin in self._section_plugins:
             plugin.register(bus)
-        bus.on(meta.BeforeModelCallEvent, self.apply)
+        bus.on_chain(meta.BeforeModelCallEvent, self.apply)
 
     async def apply(self, ctx: BeforeModelCall) -> BeforeModelCall | None:
         if not ctx.messages:
             return None
 
-        sections_msg = await self._bus.emit(
+        sections_msg = await self._bus.chain(
             meta.BuildDynamicPromptEvent, BuildDynamicPrompt(sections={})
         )
         text = self._assemble(sections_msg.sections)

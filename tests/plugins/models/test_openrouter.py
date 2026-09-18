@@ -211,7 +211,7 @@ async def test_streaming_complete_assembles_text_and_emits_deltas():
     async def on_delta(msg: MessageDeltaUpdate) -> None:
         deltas.append(msg.text_delta)
 
-    bus.on(meta.MessageDeltaUpdateEvent, on_delta)
+    bus.on_chain(meta.MessageDeltaUpdateEvent, on_delta)
 
     result = await backend.complete(ModelRequest(messages=[], tools=[], stream_updates=True))
 
@@ -250,7 +250,7 @@ async def test_streaming_complete_assembles_tool_call_from_fragments():
     async def on_delta(msg: MessageDeltaUpdate) -> None:
         deltas.append(msg.text_delta)
 
-    bus.on(meta.MessageDeltaUpdateEvent, on_delta)
+    bus.on_chain(meta.MessageDeltaUpdateEvent, on_delta)
 
     result = await backend.complete(ModelRequest(messages=[], tools=[], stream_updates=True))
 
@@ -347,7 +347,7 @@ async def test_streaming_deltas_only_reach_the_registering_bus_not_other_session
     async def on_delta(msg: MessageDeltaUpdate) -> None:
         received_on_b.append(msg.text_delta)
 
-    bus_b.on(meta.MessageDeltaUpdateEvent, on_delta)
+    bus_b.on_chain(meta.MessageDeltaUpdateEvent, on_delta)
 
     await backend_a.complete(ModelRequest(messages=[], tools=[], stream_updates=True))
 

@@ -62,7 +62,7 @@ async def test_forwards_assistant_message_to_thread():
     bus = MessageBus()
     plugin.register(bus)
 
-    await bus.emit(meta.AssistantMessageEvent, AssistantMessage(text="hello"))
+    await bus.chain(meta.AssistantMessageEvent, AssistantMessage(text="hello"))
 
     assert thread.sent == ["hello"]
 
@@ -73,7 +73,7 @@ async def test_forwards_error_to_thread_with_marker():
     bus = MessageBus()
     plugin.register(bus)
 
-    await bus.emit(meta.ErrorEvent, Error(exc=ValueError("boom")))
+    await bus.chain(meta.ErrorEvent, Error(exc=ValueError("boom")))
 
     assert len(thread.sent) == 1
     assert "boom" in thread.sent[0]
@@ -89,7 +89,7 @@ async def test_step_start_restarts_typing_after_it_has_timed_out():
     bus = MessageBus()
     plugin.register(bus)
 
-    await bus.emit(meta.TurnStartEvent, TurnStart())
+    await bus.chain(meta.TurnStartEvent, TurnStart())
     first_task = plugin._typing_task
     assert first_task is not None
 
@@ -98,7 +98,7 @@ async def test_step_start_restarts_typing_after_it_has_timed_out():
         await first_task
     assert first_task.done()
 
-    await bus.emit(meta.StepStartEvent, StepStart(step_index=1))
+    await bus.chain(meta.StepStartEvent, StepStart(step_index=1))
 
     assert plugin._typing_task is not None
     assert plugin._typing_task is not first_task
@@ -113,7 +113,7 @@ async def test_turn_start_sends_a_placeholder_message():
     bus = MessageBus()
     plugin.register(bus)
 
-    await bus.emit(meta.TurnStartEvent, TurnStart())
+    await bus.chain(meta.TurnStartEvent, TurnStart())
 
     assert len(thread.sent) == 1
     assert thread.sent[0] in THINKING_TEXTS
@@ -129,7 +129,7 @@ async def test_turn_start_picks_from_the_full_placeholder_pool():
         plugin = DiscordThreadPlugin(thread)
         bus = MessageBus()
         plugin.register(bus)
-        await bus.emit(meta.TurnStartEvent, TurnStart())
+        await bus.chain(meta.TurnStartEvent, TurnStart())
         seen.add(thread.sent[0])
 
     assert len(seen) > 1
@@ -142,12 +142,12 @@ async def test_message_delta_update_appends_to_the_placeholder_and_edits_immedia
     bus = MessageBus()
     plugin.register(bus)
 
-    await bus.emit(meta.TurnStartEvent, TurnStart())
+    await bus.chain(meta.TurnStartEvent, TurnStart())
     placeholder = thread.messages[0]
 
-    await bus.emit(meta.MessageDeltaUpdateEvent, MessageDeltaUpdate(text_delta="Hel"))
+    await bus.chain(meta.MessageDeltaUpdateEvent, MessageDeltaUpdate(text_delta="Hel"))
     clock.advance(2.0)
-    await bus.emit(meta.MessageDeltaUpdateEvent, MessageDeltaUpdate(text_delta="lo"))
+    await bus.chain(meta.MessageDeltaUpdateEvent, MessageDeltaUpdate(text_delta="lo"))
 
     assert placeholder.edits == ["Hel", "Hello"]
 
@@ -159,17 +159,17 @@ async def test_message_delta_updates_within_the_throttle_window_are_coalesced():
     bus = MessageBus()
     plugin.register(bus)
 
-    await bus.emit(meta.TurnStartEvent, TurnStart())
+    await bus.chain(meta.TurnStartEvent, TurnStart())
     placeholder = thread.messages[0]
 
-    await bus.emit(meta.MessageDeltaUpdateEvent, MessageDeltaUpdate(text_delta="Hel"))
+    await bus.chain(meta.MessageDeltaUpdateEvent, MessageDeltaUpdate(text_delta="Hel"))
     clock.advance(0.1)
-    await bus.emit(meta.MessageDeltaUpdateEvent, MessageDeltaUpdate(text_delta="lo"))
+    await bus.chain(meta.MessageDeltaUpdateEvent, MessageDeltaUpdate(text_delta="lo"))
 
     assert placeholder.edits == ["Hel"]
 
     clock.advance(1.0)
-    await bus.emit(meta.MessageDeltaUpdateEvent, MessageDeltaUpdate(text_delta="!"))
+    await bus.chain(meta.MessageDeltaUpdateEvent, MessageDeltaUpdate(text_delta="!"))
 
     assert placeholder.edits == ["Hel", "Hello!"]
 
@@ -181,11 +181,11 @@ async def test_message_update_edits_immediately_ignoring_the_throttle():
     bus = MessageBus()
     plugin.register(bus)
 
-    await bus.emit(meta.TurnStartEvent, TurnStart())
+    await bus.chain(meta.TurnStartEvent, TurnStart())
     placeholder = thread.messages[0]
 
-    await bus.emit(meta.MessageDeltaUpdateEvent, MessageDeltaUpdate(text_delta="Hel"))
-    await bus.emit(meta.MessageUpdateEvent, MessageUpdate(text="🔧 bash(command='ls')"))
+    await bus.chain(meta.MessageDeltaUpdateEvent, MessageDeltaUpdate(text_delta="Hel"))
+    await bus.chain(meta.MessageUpdateEvent, MessageUpdate(text="🔧 bash(command='ls')"))
 
     assert placeholder.edits == ["Hel", "🔧 bash(command='ls')"]
 
@@ -197,11 +197,11 @@ async def test_message_update_then_delta_clears_prior_text_instead_of_appending(
     bus = MessageBus()
     plugin.register(bus)
 
-    await bus.emit(meta.TurnStartEvent, TurnStart())
+    await bus.chain(meta.TurnStartEvent, TurnStart())
     placeholder = thread.messages[0]
 
-    await bus.emit(meta.MessageUpdateEvent, MessageUpdate(text="🔧 bash(command='ls')"))
-    await bus.emit(meta.MessageDeltaUpdateEvent, MessageDeltaUpdate(text_delta="Final answer"))
+    await bus.chain(meta.MessageUpdateEvent, MessageUpdate(text="🔧 bash(command='ls')"))
+    await bus.chain(meta.MessageDeltaUpdateEvent, MessageDeltaUpdate(text_delta="Final answer"))
 
     assert placeholder.edits[-1] == "Final answer"
 
@@ -212,10 +212,10 @@ async def test_message_update_with_empty_text_falls_back_to_thinking_placeholder
     bus = MessageBus()
     plugin.register(bus)
 
-    await bus.emit(meta.TurnStartEvent, TurnStart())
+    await bus.chain(meta.TurnStartEvent, TurnStart())
     placeholder = thread.messages[0]
 
-    await bus.emit(meta.MessageUpdateEvent, MessageUpdate(text=""))
+    await bus.chain(meta.MessageUpdateEvent, MessageUpdate(text=""))
 
     assert placeholder.edits[-1] == thread.sent[0]
 
@@ -226,10 +226,10 @@ async def test_first_delta_update_with_empty_delta_falls_back_to_thinking_placeh
     bus = MessageBus()
     plugin.register(bus)
 
-    await bus.emit(meta.TurnStartEvent, TurnStart())
+    await bus.chain(meta.TurnStartEvent, TurnStart())
     placeholder = thread.messages[0]
 
-    await bus.emit(meta.MessageDeltaUpdateEvent, MessageDeltaUpdate(text_delta=""))
+    await bus.chain(meta.MessageDeltaUpdateEvent, MessageDeltaUpdate(text_delta=""))
 
     assert placeholder.edits[-1] == thread.sent[0]
 
@@ -240,10 +240,10 @@ async def test_assistant_message_finalizes_by_editing_the_placeholder():
     bus = MessageBus()
     plugin.register(bus)
 
-    await bus.emit(meta.TurnStartEvent, TurnStart())
+    await bus.chain(meta.TurnStartEvent, TurnStart())
     placeholder = thread.messages[0]
 
-    await bus.emit(meta.AssistantMessageEvent, AssistantMessage(text="the final answer"))
+    await bus.chain(meta.AssistantMessageEvent, AssistantMessage(text="the final answer"))
 
     assert placeholder.edits[-1] == "the final answer"
     assert len(thread.sent) == 1
@@ -255,10 +255,10 @@ async def test_error_finalizes_by_editing_the_placeholder():
     bus = MessageBus()
     plugin.register(bus)
 
-    await bus.emit(meta.TurnStartEvent, TurnStart())
+    await bus.chain(meta.TurnStartEvent, TurnStart())
     placeholder = thread.messages[0]
 
-    await bus.emit(meta.ErrorEvent, Error(exc=ValueError("boom")))
+    await bus.chain(meta.ErrorEvent, Error(exc=ValueError("boom")))
 
     assert "boom" in placeholder.edits[-1]
     assert len(thread.sent) == 1
@@ -270,10 +270,10 @@ async def test_finalize_edits_first_chunk_and_sends_the_overflow():
     bus = MessageBus()
     plugin.register(bus)
 
-    await bus.emit(meta.TurnStartEvent, TurnStart())
+    await bus.chain(meta.TurnStartEvent, TurnStart())
     long_text = "x" * 2500
 
-    await bus.emit(meta.AssistantMessageEvent, AssistantMessage(text=long_text))
+    await bus.chain(meta.AssistantMessageEvent, AssistantMessage(text=long_text))
 
     assert thread.sent[0] in THINKING_TEXTS
     assert thread.messages[0].edits[-1] == "x" * 2000
@@ -287,12 +287,12 @@ async def test_streaming_preview_truncates_to_the_last_2000_chars():
     bus = MessageBus()
     plugin.register(bus)
 
-    await bus.emit(meta.TurnStartEvent, TurnStart())
+    await bus.chain(meta.TurnStartEvent, TurnStart())
     placeholder = thread.messages[0]
 
     for i in range(3):
         clock.advance(2.0)
-        await bus.emit(meta.MessageDeltaUpdateEvent, MessageDeltaUpdate(text_delta="a" * 1000))
+        await bus.chain(meta.MessageDeltaUpdateEvent, MessageDeltaUpdate(text_delta="a" * 1000))
 
     last_edit = placeholder.edits[-1]
     assert len(last_edit) == 2000
@@ -306,11 +306,11 @@ async def test_apply_edit_swallows_a_live_preview_edit_failure():
     bus = MessageBus()
     plugin.register(bus)
 
-    await bus.emit(meta.TurnStartEvent, TurnStart())
+    await bus.chain(meta.TurnStartEvent, TurnStart())
     placeholder = thread.messages[0]
     placeholder.fail_next_edits = 1
 
-    await bus.emit(meta.MessageDeltaUpdateEvent, MessageDeltaUpdate(text_delta="Hel"))  # must not raise
+    await bus.chain(meta.MessageDeltaUpdateEvent, MessageDeltaUpdate(text_delta="Hel"))  # must not raise
 
     assert placeholder.edits == []
 
@@ -321,11 +321,11 @@ async def test_finalize_falls_back_to_sending_a_new_message_when_the_edit_fails(
     bus = MessageBus()
     plugin.register(bus)
 
-    await bus.emit(meta.TurnStartEvent, TurnStart())
+    await bus.chain(meta.TurnStartEvent, TurnStart())
     placeholder = thread.messages[0]
     placeholder.fail_next_edits = 1
 
-    await bus.emit(meta.AssistantMessageEvent, AssistantMessage(text="the final answer"))
+    await bus.chain(meta.AssistantMessageEvent, AssistantMessage(text="the final answer"))
 
     assert placeholder.edits == []
     assert thread.sent[-1] == "the final answer"
@@ -337,10 +337,10 @@ async def test_finalize_substitutes_a_placeholder_for_empty_assistant_text():
     bus = MessageBus()
     plugin.register(bus)
 
-    await bus.emit(meta.TurnStartEvent, TurnStart())
+    await bus.chain(meta.TurnStartEvent, TurnStart())
     placeholder = thread.messages[0]
 
-    await bus.emit(meta.AssistantMessageEvent, AssistantMessage(text=""))
+    await bus.chain(meta.AssistantMessageEvent, AssistantMessage(text=""))
 
     assert placeholder.edits[-1] == "(empty response)"
 
@@ -351,7 +351,7 @@ async def test_contributes_an_output_requirements_section_to_the_system_prompt()
     bus = MessageBus()
     plugin.register(bus)
 
-    result = await bus.emit(meta.BuildSystemPromptEvent, BuildSystemPrompt(sections={}))
+    result = await bus.chain(meta.BuildSystemPromptEvent, BuildSystemPrompt(sections={}))
 
     assert "output" in result.sections
     assert "table" in result.sections["output"]
@@ -366,7 +366,7 @@ async def test_chunks_messages_longer_than_discord_limit():
     plugin.register(bus)
 
     long_text = "x" * 4500
-    await bus.emit(meta.AssistantMessageEvent, AssistantMessage(text=long_text))
+    await bus.chain(meta.AssistantMessageEvent, AssistantMessage(text=long_text))
 
     assert len(thread.sent) == 3
     assert all(len(chunk) <= 2000 for chunk in thread.sent)

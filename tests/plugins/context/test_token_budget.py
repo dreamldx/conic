@@ -48,7 +48,7 @@ async def test_before_summarize_hook_can_customize_instructions():
         return msg
 
     bus.on_request("summarize", fake_summarizer)
-    bus.on("before_summarize", customize)
+    bus.on_chain("before_summarize", customize)
     plugin.register(bus)
 
     ctx = BeforeModelCall(messages=[{"role": "user", "content": "hi " * 100}], tools=[])
@@ -72,7 +72,7 @@ async def test_before_summarize_hook_can_cancel_and_skip_summarization():
         return msg
 
     bus.on_request("summarize", fake_summarizer)
-    bus.on("before_summarize", cancel)
+    bus.on_chain("before_summarize", cancel)
     plugin.register(bus)
 
     ctx = BeforeModelCall(messages=[{"role": "user", "content": "hi " * 100}], tools=[])
@@ -97,7 +97,7 @@ async def test_summarize_done_emitted_with_result_on_success():
         done.append(msg.result)
 
     bus.on_request("summarize", fake_summarizer)
-    bus.on("summarize_done", on_done)
+    bus.on_chain("summarize_done", on_done)
     plugin.register(bus)
 
     ctx = BeforeModelCall(messages=[{"role": "user", "content": "hi " * 100}], tools=[])
@@ -142,7 +142,7 @@ async def test_summarize_failed_emitted_and_reraised_on_error():
         failed.append(msg.exc)
 
     bus.on_request("summarize", failing_summarizer)
-    bus.on("summarize_failed", on_failed)
+    bus.on_chain("summarize_failed", on_failed)
     plugin.register(bus)
 
     ctx = BeforeModelCall(messages=[{"role": "user", "content": "hi " * 100}], tools=[])

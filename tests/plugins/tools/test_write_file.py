@@ -55,7 +55,7 @@ async def test_contributes_a_workspace_restriction_section_to_the_system_prompt(
     bus = MessageBus()
     tool.register(bus)
 
-    result = await bus.emit("build_system_prompt", BuildSystemPrompt(sections={}))
+    result = await bus.chain("build_system_prompt", BuildSystemPrompt(sections={}))
 
     assert "write_file" in result.sections
     assert str(tmp_path) in result.sections["write_file"]

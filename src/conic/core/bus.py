@@ -28,11 +28,11 @@ class MessageBus:
         self._closed = False
         self._closed_event = asyncio.Event()
 
-    def on(self, type_name: str, handler: Callable) -> None:
+    def on_chain(self, type_name: str, handler: Callable) -> None:
         payload_cls = infer_payload_type(handler)
         self._chain.setdefault(type_name, []).append((payload_cls, handler))
 
-    async def emit(self, type_name: str, payload: Any) -> Any:
+    async def chain(self, type_name: str, payload: Any) -> Any:
         for payload_cls, handler in self._chain.get(type_name, []):
             if isinstance(payload, payload_cls):
                 result = await handler(payload)

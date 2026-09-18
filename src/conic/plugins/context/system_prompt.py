@@ -16,14 +16,14 @@ class SystemPromptPlugin:
         self._bus = bus
         for plugin in self._section_plugins:
             plugin.register(bus)
-        bus.on(meta.BeforeModelCallEvent, self.apply)
+        bus.on_chain(meta.BeforeModelCallEvent, self.apply)
 
     async def apply(self, ctx: BeforeModelCall) -> BeforeModelCall | None:
         if ctx.messages and ctx.messages[0].get("role") == "system":
             return None
 
         if self._cached_content is None:
-            sections_msg = await self._bus.emit(
+            sections_msg = await self._bus.chain(
                 meta.BuildSystemPromptEvent, BuildSystemPrompt(sections={})
             )
             system_text = self._assemble(sections_msg.sections)

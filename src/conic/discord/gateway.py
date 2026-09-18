@@ -86,7 +86,7 @@ class DiscordGateway:
                     native_id=row.native_id,
                     channel_plugin_factory=lambda t=thread: DiscordThreadPlugin(t),
                 )
-                await scope.bus.emit(meta.SessionStartEvent, SessionStart(reason="resume"))
+                await scope.bus.chain(meta.SessionStartEvent, SessionStart(reason="resume"))
             except Exception:
                 logger.exception("failed to construct session {} despite thread existing", row.session_key)
                 continue
@@ -97,10 +97,10 @@ class DiscordGateway:
         if scope is None:
             return
         async with scope.lock:
-            ctx = await scope.bus.emit(meta.InputEvent, Input(text=text))
+            ctx = await scope.bus.chain(meta.InputEvent, Input(text=text))
             if ctx.handled:
                 return
-            await scope.bus.emit(meta.UserInputEvent, UserInput(text=ctx.text))
+            await scope.bus.chain(meta.UserInputEvent, UserInput(text=ctx.text))
 
     async def handle_start_command(
         self, create_thread: Callable[[], Awaitable[object]], respond: Callable[[str], Awaitable[None]]
@@ -112,7 +112,7 @@ class DiscordGateway:
             native_id=str(thread.id),
             channel_plugin_factory=lambda: DiscordThreadPlugin(thread),
         )
-        await scope.bus.emit(meta.SessionStartEvent, SessionStart(reason="new"))
+        await scope.bus.chain(meta.SessionStartEvent, SessionStart(reason="new"))
         self._sessions[thread.id] = scope
         await respond(f"Started session in thread {thread.id}")
 
@@ -123,7 +123,7 @@ class DiscordGateway:
             return
         logger.info("stopping session in thread {}", thread_id)
         async with scope.lock:
-            await scope.bus.emit(meta.SessionStopEvent, TurnEnd())
-            await scope.bus.emit(meta.SessionEndEvent, SessionEnd(reason="user_stop"))
+            await scope.bus.chain(meta.SessionStopEvent, TurnEnd())
+            await scope.bus.chain(meta.SessionEndEvent, SessionEnd(reason="user_stop"))
             self._plugin_manager.stop_session(scope)
         await archive()

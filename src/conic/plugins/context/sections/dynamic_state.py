@@ -4,7 +4,7 @@ from conic.plugins import meta
 
 class DynamicStateSectionPlugin:
     def register(self, bus) -> None:
-        bus.on(meta.BuildDynamicPromptEvent, self.contribute)
+        bus.on_chain(meta.BuildDynamicPromptEvent, self.contribute)
 
     async def contribute(self, msg: BuildDynamicPrompt) -> BuildDynamicPrompt:
         msg.sections["state"] = (

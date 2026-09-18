@@ -8,7 +8,7 @@ class TruncatorPlugin:
         self._keep_last_n = keep_last_n
 
     def register(self, bus) -> None:
-        bus.on(meta.BeforeModelCallEvent, self.apply)
+        bus.on_chain(meta.BeforeModelCallEvent, self.apply)
 
     async def apply(self, ctx: BeforeModelCall) -> BeforeModelCall | None:
         non_system = [m for m in ctx.messages if m.get("role") != "system"]

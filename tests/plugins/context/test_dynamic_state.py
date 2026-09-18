@@ -8,7 +8,7 @@ async def test_dynamic_state_section_contributes_turn_and_session_jinja_placehol
     plugin = DynamicStateSectionPlugin()
     plugin.register(bus)
     msg = BuildDynamicPrompt(sections={})
-    result = await bus.emit("build_dynamic_prompt", msg)
+    result = await bus.chain("build_dynamic_prompt", msg)
     assert "state" in result.sections
     assert "{{ turn.now }}" in result.sections["state"]
     assert "{{ turn.step_count }}" in result.sections["state"]

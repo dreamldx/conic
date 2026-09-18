@@ -44,7 +44,7 @@ class FakeContextPlugin:
         pass
 
     def register(self, bus):
-        bus.on("before_model_call", self.apply)
+        bus.on_chain("before_model_call", self.apply)
 
     async def apply(self, ctx: BeforeModelCall) -> None:
         return None
@@ -52,7 +52,7 @@ class FakeContextPlugin:
 
 class FakePolicyPlugin:
     def register(self, bus):
-        bus.on("step_start", self.check)
+        bus.on_chain("step_start", self.check)
 
     async def check(self, msg: StepStart) -> None:
         return None
@@ -71,7 +71,7 @@ class FakeChannelPlugin:
         self.received = []
 
     def register(self, bus):
-        bus.on("assistant_message", self.on_assistant_message)
+        bus.on_chain("assistant_message", self.on_assistant_message)
 
     async def on_assistant_message(self, msg: AssistantMessage) -> None:
         self.received.append(msg.text)
@@ -109,7 +109,7 @@ async def test_start_session_assembles_a_working_bus(tmp_path):
     )
 
     from conic.types.messages import UserInput
-    await scope.bus.emit("user_input", UserInput(text="hi"))
+    await scope.bus.chain("user_input", UserInput(text="hi"))
 
     assert channel_plugin.received == ["ack"]
     assert Path(scope.row.workspace_dir) == tmp_path / "workspace" / "discord" / "1"

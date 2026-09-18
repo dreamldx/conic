@@ -7,7 +7,7 @@ class WorkspaceSectionPlugin:
         self._workspace_dir = workspace_dir
 
     def register(self, bus) -> None:
-        bus.on(meta.BuildSystemPromptEvent, self.contribute)
+        bus.on_chain(meta.BuildSystemPromptEvent, self.contribute)
 
     async def contribute(self, msg: BuildSystemPrompt) -> BuildSystemPrompt | None:
         msg.sections["workspace"] = f"Workspace directory: {self._workspace_dir}"

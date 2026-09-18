@@ -158,7 +158,7 @@ async def test_handle_start_command_emits_session_start_with_reason_new():
     async def on_session_start(msg: SessionStart) -> None:
         starts.append(msg.reason)
 
-    bus.on(meta.SessionStartEvent, on_session_start)
+    bus.on_chain(meta.SessionStartEvent, on_session_start)
 
     manager = FakePluginManagerFixedScope(scope)
     gateway = DiscordGateway(make_config(), plugin_manager=manager, storage=None)
@@ -188,7 +188,7 @@ async def test_resume_active_sessions_emits_session_start_with_reason_resume(tmp
     async def on_session_start(msg: SessionStart) -> None:
         starts.append(msg.reason)
 
-    bus.on(meta.SessionStartEvent, on_session_start)
+    bus.on_chain(meta.SessionStartEvent, on_session_start)
 
     manager = FakePluginManagerFixedScope(scope)
     gateway = DiscordGateway(make_config(), plugin_manager=manager, storage=storage)
@@ -215,7 +215,7 @@ async def test_handle_stop_command_emits_session_end_with_reason_user_stop():
     async def on_session_end(msg: SessionEnd) -> None:
         ends.append(msg.reason)
 
-    scope.bus.on(meta.SessionEndEvent, on_session_end)
+    scope.bus.on_chain(meta.SessionEndEvent, on_session_end)
 
     async def fake_archive():
         pass
@@ -237,7 +237,7 @@ async def test_handle_message_routes_to_known_session():
     async def on_user_input(msg: UserInput) -> None:
         received.append(msg.text)
 
-    scope.bus.on("user_input", on_user_input)
+    scope.bus.on_chain("user_input", on_user_input)
 
     await gateway.handle_message(thread_id=222, text="hello")
 
@@ -265,7 +265,7 @@ async def test_handle_message_serializes_concurrent_messages_for_the_same_thread
             await asyncio.sleep(0.05)
         events.append(("end", msg.text))
 
-    scope.bus.on("user_input", on_user_input)
+    scope.bus.on_chain("user_input", on_user_input)
 
     await asyncio.gather(
         gateway.handle_message(thread_id=222, text="first"),
@@ -346,7 +346,7 @@ async def test_handle_stop_command_waits_for_an_in_flight_turn_to_finish():
         await asyncio.sleep(0.05)
         events.append("turn_end")
 
-    scope.bus.on("user_input", on_user_input)
+    scope.bus.on_chain("user_input", on_user_input)
 
     async def fake_archive():
         events.append("archived")
@@ -386,8 +386,8 @@ async def test_handle_message_input_hook_can_transform_text_before_user_input():
     async def on_user_input(msg: UserInput) -> None:
         received.append(msg.text)
 
-    scope.bus.on(meta.InputEvent, upcase)
-    scope.bus.on(meta.UserInputEvent, on_user_input)
+    scope.bus.on_chain(meta.InputEvent, upcase)
+    scope.bus.on_chain(meta.UserInputEvent, on_user_input)
 
     await gateway.handle_message(thread_id=222, text="hello")
 
@@ -412,8 +412,8 @@ async def test_handle_message_input_hook_can_mark_handled_and_short_circuit():
     async def on_user_input(msg: UserInput) -> None:
         received.append(msg.text)
 
-    scope.bus.on(meta.InputEvent, handle_command)
-    scope.bus.on(meta.UserInputEvent, on_user_input)
+    scope.bus.on_chain(meta.InputEvent, handle_command)
+    scope.bus.on_chain(meta.UserInputEvent, on_user_input)
 
     await gateway.handle_message(thread_id=222, text="!status")
 

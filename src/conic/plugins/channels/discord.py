@@ -84,15 +84,15 @@ class DiscordThreadPlugin:
         self._last_edit_time = float("-inf")
 
     def register(self, bus) -> None:
-        bus.on(meta.SessionStopEvent, self.on_session_stop)
-        bus.on(meta.TurnStartEvent, self.on_turn_start)
-        bus.on(meta.StepStartEvent, self.on_step_start)
-        bus.on(meta.MessageUpdateEvent, self.on_message_update)
-        bus.on(meta.MessageDeltaUpdateEvent, self.on_message_delta_update)
-        bus.on(meta.TurnEndEvent, self.on_turn_end)
-        bus.on(meta.ErrorEvent, self.on_error)
-        bus.on(meta.AssistantMessageEvent, self.on_assistant_message)
-        bus.on(meta.BuildSystemPromptEvent, self.contribute_output_requirements)
+        bus.on_chain(meta.SessionStopEvent, self.on_session_stop)
+        bus.on_chain(meta.TurnStartEvent, self.on_turn_start)
+        bus.on_chain(meta.StepStartEvent, self.on_step_start)
+        bus.on_chain(meta.MessageUpdateEvent, self.on_message_update)
+        bus.on_chain(meta.MessageDeltaUpdateEvent, self.on_message_delta_update)
+        bus.on_chain(meta.TurnEndEvent, self.on_turn_end)
+        bus.on_chain(meta.ErrorEvent, self.on_error)
+        bus.on_chain(meta.AssistantMessageEvent, self.on_assistant_message)
+        bus.on_chain(meta.BuildSystemPromptEvent, self.contribute_output_requirements)
 
     async def contribute_output_requirements(self, msg: BuildSystemPrompt) -> BuildSystemPrompt:
         msg.sections["output"] = OUTPUT_REQUIREMENTS
