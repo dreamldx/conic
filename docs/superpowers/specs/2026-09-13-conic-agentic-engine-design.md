@@ -26,7 +26,7 @@ while True:
 
 ## 2. 核心术语
 
-- **Turn（轮）**：从一次 `UserInput` 到产生一次 `AssistantMessage`（或 `Error`）为止的完整交换。用户发一条消息、收到最终回复，中间无论循环多少次都算同一轮。
+- **Turn（轮）**：从 loop 消费一批 steering 输入（通常是一条用户消息）到产生一次 `AssistantMessage`（或 `Error`）为止的完整交换。用户发消息、收到最终回复，中间无论循环多少次都算同一轮。
 - **Step（步）**：Turn 内部 `while` 循环体的一次迭代——一次 `model_request`/`model_response`，加上该次响应里的所有工具调用。一个 Turn 由 1 个或多个 Step 组成，直到某个 Step 的模型响应不再包含工具调用为止。Step 数量不确定，由模型行为决定，因此需要 `MAX_STEPS_PER_TURN` 兜底。
 
 ## 3. 实体分类：Core Service 与 Plugin
@@ -47,7 +47,7 @@ while True:
 
 **`DiscordGateway` 同理不是 Plugin，是 Core Service**：它拥有进程里唯一的 discord.py 连接，必须在任何会话存在之前就启动（登录、注册斜杠命令、扫描存储恢复历史活跃会话），并且要在收到外部 Discord 事件时主动决定"这条消息该桥接到哪个会话的总线"。真正按会话生命周期创建/销毁、只通过总线通信的，是 `DiscordThreadPlugin`（每会话一份实例）。
 
-## 4. MessageBus：两套注册表，语义不同
+## 4. MessageBus：两套注册表 + 邮箱，语义不同
 
 ```python
 class MessageBus:
@@ -69,11 +69,13 @@ class MessageBus:
 | 订阅者数量 | 0 个或多个，按注册顺序依次处理，每个可返回修改后的 payload 传给下一个，也可 `raise AbortTurn` 中止 | 恰好 1 个；注册第二个同 `(type_name, payload类型)` 的会报错 | 每个 mailbox 名称恰好一个消费者创建，任意生产者可 `post` |
 | 用途 | 通知 + 链式加工（前置/后置钩子、审核、渠道输出） | 问答（唯一确定答案：模型补全结果、某个工具的执行结果、摘要结果） | 会话内排队输入与异步唤醒；当前用于 `steering.high` / `steering.low` |
 
+（历史命名：这两套原语最初叫 `on`/`emit`，后改名为 `on_chain`/`chain` 以和第三种原语区分；本文档正文里泛指"发出某事件"时仍会用 emit 作动词。）
+
+**Mailbox（邮箱）是第三种原语**，语义与前两者都不同：生产者随时 `post`，**唯一消费者**在自己方便的时机 `drain` 批量取走——投递和消费在时间上解耦，这正是链式调用给不了的。`create_mailbox(name, payload_type)` 由消费者注册（同名重复注册抛 `DuplicateMailboxError`）；`post` 校验 payload 类型后入队（bus 已 `close()` 后 post 是 no-op，只打 warning，不抛错——进程收尾阶段的迟到投递不该炸掉调用方）；`drain` 一次性取空并复位；`wait_multiply_mailbox(*names)` 挂起直到任意一个邮箱非空或 bus 被 `close()`。目前唯一的邮箱消费者是 `ReactLoopPlugin`，它在 `register()` 里注册 `steering.high`/`steering.low` 两个邮箱（payload 基类 `SteeringItem`，见 `types/steering.py`）；完整动机与设计见 `../../steering-mailbox-design.md`。
+
 **消息类型判定 = 字符串 topic + payload 的 Python 类型**。同一个字符串 topic 下可以有多种不同 payload 类型分别对应不同 handler。
 
 `chain()` 对每个已注册 handler 先做 `isinstance(payload, payload_cls)` 判断，只有类型匹配才会真正调用；`payload_cls` 只来自 handler 参数的类型注解，跟返回值类型无关——框架不检查"参数类型和返回值类型是否一致"，这是靠约定维持的：同一条概念上的链（比如所有订阅 `BeforeModelCallEvent` 的 handler 都该收/发 `BeforeModelCall`）如果某个 handler 返回了别的类型，链上后面注册的同类型 handler 会被 `isinstance` 检查悄悄跳过，不报错。`isinstance` 检查为 False 时 `chain()` 会打一条 `logger.info("chain interrupted: topic={} handler={} expected={} got={}", ...)`——这不代表出错（同一 topic 下多种 payload 类型互相跳过是设计内的正常情况），但如果它出现在你以为都是同一类型的一条链里，就是排查"payload 类型被意外换掉"这类隐蔽 bug 的信号。
-
-Mailbox 是总线里的第三种通信形态。`ReactLoopPlugin.register()` 创建 `steering.high` / `steering.low` 两个 mailbox，payload 类型都是 `SteeringItem`。`SessionGatewayPlugin` 把用户输入转成 `SteeringUserMessage` 投递到 `steering.high`；`/agent_stop` 把 `SteeringStopCommand` 投递到 `steering.high`；Loop 协程通过 `wait_multiply_mailbox()` 被任一 mailbox 唤醒，再 `drain()` 批量消费。`MessageBus.close()` 会唤醒等待中的 loop，使会话后台任务能结束。
 
 Payload 类型在注册时**自动从 handler 的类型注解推断**（用 `inspect.signature` + `typing.get_type_hints`），插件作者不需要重复声明。
 
@@ -90,15 +92,19 @@ Bus topic 名称通过 `src/conic/plugins/meta.py` 中的 `*Event` 常量集中�
 plugin_manager.start_session(
     channel="discord", native_id=str(discord_thread.id),
     channel_plugin_factory=lambda: DiscordThreadPlugin(discord_thread),
-    reason="new",
+    reason="new",  # 或 "resume"，透传给 SessionStartEvent
 )
 ```
 
 `PluginManager.start_session()` 内部按固定顺序把插件挂到新建的 `MessageBus` 上：当前配置启用的 ToolPlugin（各自绑定 `workspace_dir`）→ BackendPlugin → context 插件链（variables → system_prompt → truncator → token_budget → extra_prompt）→ policy 插件（permission → step_limit）→ SummarizerPlugin → ReactLoopPlugin → channel 插件 → `SessionGatewayPlugin`。ToolPlugin 数量不是固定 6 个：`bash/read_file/write_file/edit_file` 总是注册，`web_search` 仅在 `TAVILY_API_KEY` 存在时注册，`web_fetch` 仅在 `FIRECRAWL_API_KEY` 存在时注册。`PluginSet.backend` 和其余插件一样也是**工厂闭包**，确保每会话独立实例——`OpenRouterModelPlugin.register()` 会捕获本会话的 `bus`（流式分支要用它 chain `MessageDeltaUpdateEvent`），如果跨会话共享同一个实例，后一个会话的 `register()` 会覆盖前一个会话捕获的 `bus`，导致流式 token 错发到别的会话/线程（曾经的真实 bug，已修复）。`registry.py` 里这个工厂闭包共享同一个 `AsyncOpenAI` 连接实例，只是插件对象本身（连同它捕获的 `bus`）各会话独立，避免为每个会话重复建立 HTTP 连接。
 
-`PluginManager.start_session()` 在所有插件注册完成后立即 `chain(SessionStartEvent, SessionStart(reason=reason))`，然后启动两个后台任务：`ReactLoopPlugin.run_loop()` 和 `SessionGatewayPlugin.run()`。`SessionScope` 当前持有 `bus`、持久化 session row、`closing` 标记、一个 `asyncio.Queue[str]` 以及后台 task 集合；它不再用 per-session lock 直接包住每条输入。`DiscordGateway.handle_message()` 只负责把 Discord 文本放入 `scope.queue`。`SessionGatewayPlugin` 串行消费 queue，先链式运行 `InputEvent(Input(text=...))` 拦截/改写，再把未处理的文本作为 `SteeringUserMessage` 投递到 `steering.high`。`ReactLoopPlugin.run_loop()` 是唯一消费 `steering.high` / `steering.low` 的协程，因此同一会话的 Turn 自然串行执行。
+插件全部挂好后，`start_session()` 自己收尾三件事：
 
-停止流程同样走 mailbox：`DiscordGateway.handle_stop_command()` 向 `steering.high` 投递 `SteeringStopCommand`，设置 `scope.closing=True`，从路由表移除该 session，并归档/锁定线程。Loop 在下一次安全 checkpoint 消费到 stop 命令后发出 `SessionEndEvent(reason="agent_stop")`；如果后台任务异常退出且此前没有发过 `SessionEndEvent`，`PluginManager._join_and_cleanup()` 会补发 `SessionEndEvent(reason="unexpected_exit")`，随后把 session 状态置为 `ended` 并关闭 bus。
+1. `await bus.chain(SessionStartEvent, SessionStart(reason=reason))`——`reason`（"new"/"resume"）由调用方（Gateway）透传进来，所以生命周期事件可以由 `PluginManager` 统一发出，不需要每个渠道 Gateway 自己记得发。
+2. 同步注册一个 `SessionEndEvent` 标记 handler（记录"本会话是否已经有人发过 SessionEnd"），必须在任何后台任务起跑之前注册，否则可能漏记一次与 `join()` 竞态的 SessionEnd。
+3. 在 `scope.tasks` 里创建两个**每会话常驻协程**：`loop_plugin.run_loop()`（消费 steering 邮箱、驱动 Turn，见 8.1）和 `session_gateway.run()`（消费 `scope.queue`、跑 `InputEvent` 拦截链，见下），再挂一个 `_join_and_cleanup` 后台任务：`gather` 等两个常驻任务都退出后，若期间没人发过 `SessionEndEvent` 则补发 `SessionEnd(reason="unexpected_exit")`，把 storage 里该会话置为 `ended`，最后 `bus.close()`。
+
+`SessionGatewayPlugin`（`core/session_gateway.py`）是**渠道无关**的每会话协程：轮询 `scope.queue`（由渠道 Gateway 的 `handle_message` 投喂原始文本；轮询而非永久阻塞在 `queue.get()`，是因为 asyncio 没法从外部唤醒一个卡在 await 里的协程，`scope.closing` 只能靠超时 tick 检查到），对每条文本先跑 `chain(InputEvent, Input(text))` 拦截链（钩子可改写 `text` 或置 `handled=True` 完全拦下），未被拦下的包成 `SteeringUserMessage` `post` 进 `steering.high` 邮箱。并发控制不再靠锁：早期版本 `SessionScope` 里有一把 `asyncio.Lock` 串行化 `handle_message`/停止命令，mailbox 重构后消息只是入队，什么时候消费、一次消费几条由 `ReactLoopPlugin.run_loop()` 的检查点决定（见 8.1 和 `../../steering-mailbox-design.md`），锁已删除。
 
 ### 5.1 进程启动与会话恢复流程
 
@@ -120,7 +126,7 @@ class Gateway(Protocol):
 
 | Topic / channel | Verb | Payload | 处理者 |
 |---|---|---|---|
-| `InputEvent` | chain | `Input` | 无默认订阅者（`SessionGatewayPlugin` 在投递用户输入前触发的拦截点，未来文本命令插件可改写 `text` 或置 `handled=True`） |
+| `InputEvent` | chain | `Input` | 无默认订阅者（拦截点：`SessionGatewayPlugin` 在把文本 post 进 `steering.high` 之前发出，钩子可改写 `text` 或置 `handled=True` 拦下） |
 | `steering.high` | mailbox | `SteeringItem` | `ReactLoopPlugin.run_loop()`；当前接收 `SteeringUserMessage` 和 `SteeringStopCommand` |
 | `steering.low` | mailbox | `SteeringItem` | `ReactLoopPlugin.run_loop()`；当前供后台结果等低优先级输入预留 |
 | `SessionStartEvent` | chain | `SessionStart` | `PluginManager.start_session()` 注册完插件后发出；默认无订阅者（会话开始通知，reason: new/resume） |
@@ -146,7 +152,7 @@ class Gateway(Protocol):
 | `TurnEndEvent` | chain | `TurnEnd` | DiscordThreadPlugin（停止 typing） |
 | `BuildSystemPromptEvent` | chain | `BuildSystemPrompt` | Section 插件链（只在每 session 第一次 `BeforeModelCallEvent` 时 chain 一次，结果被 `SystemPromptPlugin` 缓存，见 7.1） |
 | `BuildDynamicPromptEvent` | chain | `BuildDynamicPrompt` | `DynamicStateSectionPlugin`（只在每个 Turn 的 Step 0 chain 一次，不缓存但也不逐 Step 重复，见 7.1） |
-| `SessionEndEvent` | chain | `SessionEnd` | DiscordThreadPlugin（标记停止并停止 typing）以及 PluginManager 内部的结束标记 handler；reason 可能是 `agent_stop` / `unexpected_exit` 等 |
+| `SessionEndEvent` | chain | `SessionEnd` | DiscordThreadPlugin（置 `_stopped` 并停止 typing，此后忽略一切消息输出）、`PluginManager` 内部标记 handler。发出者有两个：`ReactLoopPlugin._finalize_session()`（reason `agent_stop`，`/agent_stop` 或会话级 AbortTurn 触发）、`PluginManager._join_and_cleanup()` 兜底（reason `unexpected_exit`，常驻任务退出但没人发过 SessionEnd 时补发） |
 
 ## 7. 系统提示词（System Prompt）
 
@@ -198,7 +204,7 @@ variables: dict = {
 **踩过的坑，记录一下以免以后重踩**：曾经尝试过在 `turn` 里加一个 `context_length`，本地用 `estimate_tokens(ctx.messages)` 估算"这次发给模型的上下文大概多大"，还想把它渲染进 `state` 段给模型自己看。结果撞上先有鸡还是先有蛋的问题——`state` 段本身是 `ExtraPromptPlugin` 在 `BeforeModelCallEvent` 链的最后一步插入的，如果要在这段文字里报告"这次发了多大"，这个数字理论上得等 state 段插入完才能精确算出来，但那时候模板已经渲染完了。当时的权宜解法是接受近似（在插入 state 消息之前，用不含它自己的 `ctx.messages` 先估一个近似值），但已经整体移除了：改成更直接的方式——见下文 `session.context_usage`，直接用模型响应里 provider 自己报出来的精确 `usage.prompt_tokens`，不再本地估算，也不再费劲塞进生成前的提示词里。
 
 `global`/`session` 两层的建立入口不在 `TurnVariableUpdaterPlugin` 里，而是：
-- `registry.py::build_plugin_set(config, global_variables=None)` 计算 `resolved_global_variables = {"model": ..., "platform": ..., "shell": ..., "timezone": ..., **(global_variables or {})}`，通过闭包捕获进 `loop_factory`。`shell` 由私有函数 `_detect_shell()` 算出，故意不探测 conic 进程自己跑在哪个交互式 shell 下（那和实际执行工具调用的解释器是两回事），而是直接对齐 `BashToolPlugin.execute()` 底层 `asyncio.create_subprocess_shell`（`shell=True`）真正会 spawn 的程序：Windows 读 `ComSpec` 环境变量取文件名（未设置时回退 `"C:\Windows\System32\cmd.exe"` 的文件名 `"cmd.exe"`——CPython `subprocess.py` 的 Windows `_execute_child` 在 `shell=True` 时就是这么解析 `comspec` 并拼成 `"{comspec} /c \"{args}\""` 的，逐行读源码 + 用 `echo %ComSpec%` 这种只有 cmd.exe 才会展开 `%VAR%` 的探测命令实测验证过），其他平台固定 `"/bin/sh"`（CPython 同一份 `_execute_child` 的 POSIX 分支里 `shell=True` 固定 `args = ["/bin/sh", "-c"] + args`，不读 `$SHELL`）。`RuntimeSectionPlugin` 早期版本硬编码过 "PowerShell 5.1"，这条提示词本来就是错的（Windows 上 `shell=True` 走的是 `ComSpec`／通常是 `cmd.exe`，不是 PowerShell）；中途还试过用第三方库 `shellingham` 探测父进程链识别的交互式 shell，但那反映的是"conic 进程本身在哪个 shell 里启动"，跟"`BashToolPlugin` 的每条命令实际被哪个解释器执行"是两个不同的问题——已改回直接对齐后者；
+- `registry.py::build_plugin_set(config, global_variables=None)` 计算 `resolved_global_variables = {"model": ..., "platform": ..., "shell": ..., "timezone": ..., **(global_variables or {})}`，通过闭包捕获进 `loop_factory`。`shell` 由私有函数 `_detect_shell()` 算出，故意不探测 conic 进程自己跑在哪个交互式 shell 下（那和实际执行工具调用的解释器是两回事），而是直接对齐 `BashToolPlugin.execute()` 底层 `asyncio.create_subprocess_shell`（`shell=True`）真正会 spawn 的程序：Windows 读 `ComSpec` 环境变量取文件名（未设置时回退 `"C:\Windows\System32\cmd.exe"` 的文件名 `"cmd.exe"`——CPython `subprocess.py` 的 Windows `_execute_child` 在 `shell=True` 时就是这么解析 `comspec` 并拼成 `"{comspec} /c \"{args}\""` 的，逐行读源码 + 用 `echo %ComSpec%` 这种只有 cmd.exe 才会展开 `%VAR%` 的探测命令实测验证过），macOS（Darwin）固定返回 `"/bin/bash"`——`create_subprocess_shell` spawn 的确实是 `/bin/sh`，但 macOS 的 `/bin/sh` 经 `/var/select/sh` 实际就是 bash（3.2，sh 兼容模式），直接把真实实现告诉模型；其余 POSIX 平台固定 `"/bin/sh"`（CPython 同一份 `_execute_child` 的 POSIX 分支里 `shell=True` 固定 `args = ["/bin/sh", "-c"] + args`，不读 `$SHELL`）。`RuntimeSectionPlugin` 早期版本硬编码过 "PowerShell 5.1"，这条提示词本来就是错的（Windows 上 `shell=True` 走的是 `ComSpec`／通常是 `cmd.exe`，不是 PowerShell）；中途还试过用第三方库 `shellingham` 探测父进程链识别的交互式 shell，但那反映的是"conic 进程本身在哪个 shell 里启动"，跟"`BashToolPlugin` 的每条命令实际被哪个解释器执行"是两个不同的问题——已改回直接对齐后者；
 - `PluginSet.loop_factory` 签名是 `Callable[[handle, tool_schemas, tool_payload_map, workspace_dir, persisted_session_variables], object]`（比原来多了 `workspace_dir` 和 `persisted_session_variables` 两个参数），`core/manager.py::PluginManager.start_session()` 调用时传入 `row.workspace_dir` 和 `row.variables`（后者来自 storage，见下）；
 - `model_context_length` 由 `entry.py::build_app()` 在调 `build_plugin_set()` 之前算好、通过 `global_variables={"model_context_length": ...}` 传入（不是 `build_plugin_set()` 自己算的，因为它需要查 `StorageService`，而 `build_plugin_set()` 本身不持有 storage 引用）。`build_app()` 现在是 **`async` 函数**：`storage.startup()` 之后，先 `await sync_once(storage, config.openrouter_api_key)`（`sync_once` 参数默认是 `conic/openrouter/catalog.py::sync_catalog_once()`，见 9.1 节），再调 `storage.get_model_context_length(config.openrouter_model)`（`services/storage.py`）按 id 精确查刚同步好的 `model_catalog` 表。这个顺序是特意的：**先联网同步一次目录，再读模型元数据**——原因写在 `entry.py` 那行代码正上方的注释里，就是为了避免"库是空的，只能拿 `DEFAULT_MODEL_CONTEXT_LENGTH = 65535` 兜底"这个问题只在进程重启过至少一次之后才会消失，而是从第一次启动、第一个 session 建立之前就已经是准确值。查询仍然可能查不到（这次同步本身失败了，比如启动时没网；或者配置的模型确实不在 OpenRouter 目录里）——这种情况下才会退回 `DEFAULT_MODEL_CONTEXT_LENGTH = 65535`，bot 依然能正常启动，之后靠后台 `run_periodic_sync` 每小时重试。**这意味着 `build_app()` 不再是"零网络调用"的了**——下文（8.2 节 App 归属那段）曾经写过"build_app() 本身不做任何网络调用"这个不变式，现在不成立了，已经改写，见那里的说明。`DynamicStateSectionPlugin` 把它渲染进 `state` 段的 `Model context window: {{ global.model_context_length }} tokens` 一行。**⚠️ 待办／已知限制：这个值只在进程启动时算一次，此后不会自动刷新**（哪怕后台 `run_periodic_sync` 每小时都在更新 `model_catalog` 表，`global_variables["model_context_length"]` 这个已经算好、塞进内存的值不会跟着表一起变）——跟 `tokens_used` 那种每次读写都实时更新的 `session` 变量不同，`global_variables` 目前全程只读（见上表"更新者"一列：`build_plugin_set()` 一次性计算，之后只读）。如果以后要做"运行时切换模型"这个功能（当前明确不在范围内，见前文），**必须记得同步更新 `global_variables["model_context_length"]`**，否则 state 段会一直显示旧模型的上下文窗口大小，误导模型对自己实际可用上下文的判断。好消息是这一处比 `global.model`（被 `identity`/`runtime` 两个**静态、只渲染一次就缓存**的 system prompt section 引用，见下文"system 消息只渲染一次"）好改——`model_context_length` 只出现在 `DynamicStateSectionPlugin` 贡献的**动态**段里，每个 Turn 的 Step 0 都会用当前的 `ctx.variables["global"]` 重新渲染一次，所以切换模型时只要把 `self._global_variables`（`ReactLoopPlugin` 持有的那个引用）原地更新，下一次渲染就会自动生效，不需要额外的缓存失效逻辑；但 `global.model` 本身要是也要跟着切换模型变，则必须同时处理 `SystemPromptPlugin._cached_content` 的失效，是两个不同量级的问题；
 - `ReactLoopPlugin.__init__(..., workspace_dir="", global_variables=None, persisted_session_variables=None)` 建立 `self._session_variables = {"tokens_used": 0, "turn_count": 0, **(persisted_session_variables or {}), "workspace_dir": workspace_dir}`——先给默认值，再用持久化值覆盖（找回上次的 `tokens_used`/`turn_count` 等），最后强制用本次构造传入的 `workspace_dir` 覆盖（不信任持久化里的旧路径，永远以当前会话的实际路径为准）；
@@ -314,7 +320,16 @@ return BeforeModelCall(messages=[*system, *kept], tools=ctx.tools, variables=ctx
 ## 8. 各插件详细设计
 
 ### 8.1 LoopPlugin — ReactLoopPlugin
-唯一消费 `steering.high` / `steering.low` mailbox 的编排者，持有本会话的 `storage_handle`，驱动整个 Turn/Step 流程。
+本会话的编排者，持有 `storage_handle`，驱动整个 Turn/Step 流程。不再订阅任何"用户输入"事件——它是全系统唯一的**邮箱消费者**：`register()` 里注册 `steering.high`/`steering.low` 两个邮箱（payload 基类 `SteeringItem`），输入什么时候被消费由它自己的循环结构决定。
+
+`run_loop()`（`PluginManager` 放进 `scope.tasks` 的常驻协程）的骨架：`wait_multiply_mailbox("steering.high", "steering.low")` 挂起等待 → 两个邮箱各 `drain` 一次 → 都为空（比如只是 bus 关闭唤醒）就回去继续等 → high 里有 `is_turn_abort()` 的条目（`SteeringStopCommand`，`/agent_stop` 投递）则 `_finalize_session()`（发 `SessionEnd(reason="agent_stop")`）并退出循环 → 否则 `_run_turn(high, low)`：先把两个邮箱 drain 到的 `SteeringItem` 按 `to_history_entries()` 注入历史，再发 `TurnStartEvent` 进入 Step 循环。`AbortTurn` 冒出 `_run_turn` 时看 `reason.ends_session`：为真（如 `USER_ABORT`）同样 `_finalize_session()` 退出；为假（如 `MODEL_TIMEOUT`，`_run_turn` 内部已发 `ErrorEvent`/`TurnEndEvent`）则回到循环顶部继续等下一条输入。
+
+Turn 进行中新到的输入**不会打断正在跑的模型调用**，而是在两类检查点被 `drain("steering.high")`：
+
+- 最终文本回答已经写入历史**之后**——此时 drain 出 turn-abort 就 `raise AbortTurn(USER_ABORT)`（答案已保住，不会被扔掉）；drain 出普通消息则注入历史、发 `StepEndEvent` 后 `continue`，同一个 Turn 直接接着跑下一个 Step，不用等用户下一次唤醒。
+- 一个 Step 的**全部** tool_call 都拿到 tool_result 写回历史之后——绝不在 tool_calls/tool_result 配对中间检查，保证中止也不会留下孤儿 tool 消息。
+
+`steering.low` 只在 Turn 正常收尾（`TurnEndEvent` 之后）才被 drain 注入，留给背景任务结果这类"不值得打断当前工作"的低优先级来源。模型调用本身包在 `asyncio.wait_for`（`model_timeout` 默认 120s）里，超时转成 `AbortTurn(MODEL_TIMEOUT)`。
 
 - 构造时除 `tool_schemas` 外还持有 `tool_payload_map: dict[str, type]`——工具的 `llm_name` → 该工具 `execute()` 参数类型（由 `PluginManager` 用 `infer_payload_type` 从签名自动推断），用于把模型返回的 `ToolCallSpec.args`（dict）转换成对应工具的 dataclass payload，再走 `bus.request(ToolCallRequestEvent, payload)`。
 - 系统提示词不落库：每个 Step 都从 `storage.load_history()` 取纯对话历史（不含 system），再交给 `BeforeModelCallEvent` 链（`SystemPromptPlugin` 会重新拼一份 system 消息临时前置），因此 system prompt 内容可以随 workspace/runtime 等运行时信息逐 Step 刷新，但不会污染持久化历史。
@@ -357,7 +372,7 @@ return BeforeModelCall(messages=[*system, *kept], tools=ctx.tools, variables=ctx
 ### 8.3 ToolPlugin（6 个）
 每个工具构造时绑定本会话 `workspace_dir`，任何解析后越出该目录的路径直接拒绝。路径校验逻辑集中在 `plugins/tools/base.py`：`resolve_within_workspace(workspace_dir, path)` 把相对路径解析到 `workspace_dir` 下并 `.resolve()`，若结果不在 workspace 内则 `raise WorkspaceEscapeError`；四个文件类工具都复用这一个函数，不各自实现越权检查。web_search/web_fetch 不访问本地文件，不依赖路径校验。
 
-六个工具的 `register()` 现在都额外 hook `BuildSystemPromptEvent`，各自贡献一段 prompt section（见第 7 节表格），把代码层已经强制的越权拒绝也讲给模型听——目的是让模型一开始就不去尝试越权路径，而不是等工具报错才知道。三个文件工具（read/write/edit）的措辞可以是陈述句（"paths outside it are rejected"），因为 `resolve_within_workspace` 真的会拒绝；`BashToolPlugin` 的措辞是请求句（"stay inside it, don't cd out"），因为 bash 只是把 `cwd` 设到 `workspace_dir`，并没有在代码层阻止 `cd ..`/绝对路径逃逸——这段 prompt 是目前唯一的"软约束"，不是真正的沙箱，见 `docs/Improvement.md`"安全与隔离"一节。web_search 和 web_fetch 的 section 不涉及工作区约束，而是给模型提供参数使用指引（topic/country/domains 等）和 fetch 节制警告（"只取一两条最相关的 URL"）。
+六个工具的 `register()` 现在都额外 hook `BuildSystemPromptEvent`，各自贡献一段 prompt section（见第 7 节表格），把代码层已经强制的越权拒绝也讲给模型听——目的是让模型一开始就不去尝试越权路径，而不是等工具报错才知道。三个文件工具（read/write/edit）的措辞可以是陈述句（"paths outside it are rejected"），因为 `resolve_within_workspace` 真的会拒绝；`BashToolPlugin` 的措辞是请求句（"stay inside it, don't cd out"），因为 bash 只是把 `cwd` 设到 `workspace_dir`，并没有在代码层阻止 `cd ..`/绝对路径逃逸——这段 prompt 是目前唯一的"软约束"，不是真正的沙箱，见 `../../Improvement-with-pi.md`"安全与隔离"一节。web_search 和 web_fetch 的 section 不涉及工作区约束，而是给模型提供参数使用指引（topic/country/domains 等）和 fetch 节制警告（"只取一两条最相关的 URL"）。
 
 - `BashToolPlugin`：`asyncio.create_subprocess_shell` 在 `workspace_dir` 下执行，超时（`BASH_TIMEOUT`，默认 60s）由 `asyncio.wait_for` 包裹 `proc.communicate()`；超时后 `proc.kill()` + `proc.wait()` 回收进程，返回 `ToolCallResult(error="command timed out after {timeout}s")`。超时值通过 `registry.py` 里定义的 `ConfiguredBashToolPlugin`（`BashToolPlugin` 的一个薄子类，`__init__` 只接 `workspace_dir` 以匹配 `PluginManager` 对所有 `tool_classes` 统一的 `tool_cls(workspace_dir=...)` 实例化方式，内部把 `config.bash_timeout` 转发给父类）从 `Config` 注入——`tool_classes` 里的类要同时支持"当类用"（`cls.schema`/`cls.llm_name`/`cls.execute` 静态访问）和"当工厂用"（绑定运行时配置），子类化是能同时满足两者的最小改法。stdout/stderr 合并后按字节截断（默认 20000 字节，超出附加 `...[truncated]`），非零退出码作为 `error` 返回。
 - `ReadFileToolPlugin`：`offset`/`limit`（默认 0 / 2000 行）按行切片，超出部分返回时附加总行数提示
@@ -369,14 +384,15 @@ return BeforeModelCall(messages=[*system, *kept], tools=ctx.tools, variables=ctx
 ### 8.4 DiscordGateway（Core Service，实现 `Gateway` Protocol）
 进程级 discord.py 连接持有者，维护 `{thread_id: SessionScope}` 路由表。在 `conic/discord/gateway.py`。
 
-- 会话生命周期的 `SessionStartEvent` 由 `PluginManager.start_session()` 发出，`reason` 由调用方传入：`handle_start_command(..., reason="new")`，`resume_active_sessions(..., reason="resume")`。`DiscordGateway` 不再自己 chain `SessionStartEvent`。
-- `handle_message` 只做路由：找到 `SessionScope` 后 `await scope.queue.put(text)`。后续由每会话的 `SessionGatewayPlugin.run()` 串行消费 queue、chain `InputEvent(Input(text=...))`，再把未处理输入转为 `SteeringUserMessage` 投递到 `steering.high`。
-- `handle_stop_command` 向 `steering.high` 投递 `SteeringStopCommand()`，把 `scope.closing` 置为 `True`，从路由表移除 session，并归档/锁定 Discord thread。Loop 消费 stop 命令后通过 `SessionEndEvent(reason="agent_stop")` 结束 session；如果进程在归档后、状态落库前崩溃，下一次 `resume_active_sessions()` 看到远端 thread 已归档，会把该 session 标为 `ended`。
+- 会话生命周期事件不由 Gateway 发出：Gateway 只在 `handle_start_command`/`resume_active_sessions` 调用 `start_session(..., reason="new"/"resume")` 时把 reason 作为参数透传，`SessionStartEvent` 由 `PluginManager.start_session()` 自己 chain（见第 5 节）；`SessionEndEvent` 由 `ReactLoopPlugin`（`agent_stop`）或 `PluginManager._join_and_cleanup`（`unexpected_exit`）发出（见 8.1）。早期版本是 Gateway 在 `start_session()` 返回后自己 emit——mailbox 重构把 reason 变成参数后，这个"只有调用方知道 reason"的理由消失了，生命周期事件收归 `PluginManager`，渠道 Gateway 不再各自负责。
+- `handle_message` 瘦成一行：查路由表拿到 `scope` 后 `await scope.queue.put(text)`，立即返回——不碰 bus、不做拦截。`InputEvent` 拦截链移到了渠道无关的 `SessionGatewayPlugin`（`core/session_gateway.py`，见第 5 节）里，Gateway 不需要知道文本最终会不会进 loop。
+- `handle_stop_command`（`/agent_stop`）：`bus.post("steering.high", SteeringStopCommand())` → `scope.closing = True` → 从路由表 pop 掉条目 → `archive()`（归档并锁定 thread）。停止是**协作式**的：不打断正在跑的模型调用/工具调用，`ReactLoopPlugin` 在下一个检查点 drain 到这条 turn-abort 后自己以 `SessionEnd(reason="agent_stop")` 收尾（见 8.1），已完成的回答不会被扔掉。
+- `resume_active_sessions`：`fetch_thread` 失败（thread 已删）→ 直接把 storage 行置 `ended`，session 从未建起；fetch 成功但 `thread.archived` 为真 → 同样置 `ended` 跳过——这是 `/agent_stop` 已经 `archive()` 但进程在后台 cleanup 把状态写成 `ended` 之前就死掉留下的残行，fetch 成功不代表会话还活着。
 
 ### 8.5 DiscordThreadPlugin（Plugin）
-每会话一份，订阅 `SessionEndEvent`/`AssistantMessageEvent`/`ErrorEvent`/`TurnStartEvent`/`StepStartEvent`/`MessageUpdateEvent`/`MessageDeltaUpdateEvent`/`TurnEndEvent`/`BuildSystemPromptEvent`（贡献 `output` prompt section，见第 7 节）。TurnStart/StepStart 时启动或续接 typing indicator（`TYPING_INTERVAL=8s` 刷新一次 `thread.typing()`，`TYPING_TIMEOUT=20s` 兜底超时自动停止单段任务），TurnEnd/Error/SessionEnd 时停止。由于单段任务有 20s 上限，多 Step 的长 Turn 靠每个 `StepStartEvent` 重新拉起一个新任务（若旧任务已超时结束）来续接，避免指示器在 Turn 中途消失。在 `conic/plugins/channels/discord.py`。
+每会话一份，订阅 `AssistantMessageEvent`/`ErrorEvent`/`TurnStartEvent`/`StepStartEvent`/`MessageUpdateEvent`/`MessageDeltaUpdateEvent`/`TurnEndEvent`/`SessionEndEvent`/`BuildSystemPromptEvent`（贡献 `output` prompt section，见第 7 节）。TurnStart/StepStart 时启动或续接 typing indicator（`TYPING_INTERVAL=8s` 刷新一次 `thread.typing()`，`TYPING_TIMEOUT=20s` 兜底超时自动停止单段任务），TurnEnd/Error/SessionEnd 时停止。由于单段任务有 20s 上限，多 Step 的长 Turn 靠每个 `StepStartEvent` 重新拉起一个新任务（若旧任务已超时结束）来续接，避免指示器在 Turn 中途消失。在 `conic/plugins/channels/discord.py`。
 
-- `SessionEndEvent` 会把内部 `_stopped` 标记置位；之后任何 `AssistantMessageEvent`/`ErrorEvent` 都会被忽略——防止会话已停止（thread 已被 archive/lock 或即将关闭）后模型仍在跑最后一个 Step 时把消息发进已关闭的线程。
+- `SessionEndEvent`（不论 reason 是 `agent_stop` 还是 `unexpected_exit`）会把内部 `_stopped` 标记置位；之后任何 `AssistantMessageEvent`/`ErrorEvent`/编辑操作都会被忽略——防止会话已停止（thread 可能已被 archive/lock）后残余事件把消息发进已关闭的线程。
 - `_send()` 按 `DISCORD_MESSAGE_LIMIT=2000` 字符切片分段发送，应对 Discord 单条消息长度限制。
 
 **实时状态消息 + token 流式输出**：
@@ -508,16 +524,17 @@ conic/                     # 项目根（main.py 与 pyproject.toml 同级，不
     openrouter/
       catalog.py          # fetch_openrouter_models / run_periodic_sync（见 9.1）
     core/
-      bus.py              # MessageBus
+      bus.py              # MessageBus（chain/request/mailbox 三套原语）
       manager.py          # PluginManager, PluginSet
-      session_gateway.py  # SessionGatewayPlugin：queue → InputEvent → steering.high
+      session_gateway.py  # SessionGatewayPlugin：渠道无关的输入拦截 + steering 投递协程
       messagealign.py     # align_cut：截断对齐，防止 orphan tool replies
       tokencount.py       # estimate_tokens：字符数 // 4 的粗略估算
     types/                 # 纯类型定义（dataclass / Protocol / 异常类），无行为逻辑
       gateway.py          # Gateway Protocol
-      session.py          # SessionScope（bus / row / closing / queue / tasks）
+      session.py          # SessionScope（bus/row/closing/queue/tasks）
       messages.py         # 所有消息 dataclass
-      errors.py           # AbortTurn、NoResponderError、DuplicateResponderError、mailbox 相关错误
+      steering.py         # SteeringItem 层级（UserMessage/BackgroundResult/StopCommand）
+      errors.py           # AbortTurn（含 AbortReason）、总线/邮箱异常类
     plugins/
       meta.py             # 总线 topic 名称常量 (*Event)
       registry.py         # build_plugin_set()：组装 PluginSet，泛化加载 prompts/*.md
@@ -567,7 +584,7 @@ conic/                     # 项目根（main.py 与 pyproject.toml 同级，不
 ## 13. 错误处理
 
 - 工具执行失败 → 返回 `ToolCallResult(error=...)`，反馈给模型
-- 任意钩子 `raise AbortTurn` → Loop 捕获 → `bus.chain(ErrorEvent, ...)` → Turn 干净结束；`USER_ABORT` 会结束整个 session
+- 任意钩子 `raise AbortTurn` → Loop 捕获 → 按 `AbortReason` 分流（`USER_ABORT` 只发 `TurnEndEvent`；`MODEL_TIMEOUT` 发 `ErrorEvent` + `TurnEndEvent` 后回到 idle 继续等下一条输入；`reason.ends_session` 为真的则整个会话以 `SessionEnd(reason="agent_stop")` 收尾）
 - OpenRouter API 异常 → 转为 error 事件上报
 - Discord 单条消息 2000 字符限制 → `DiscordThreadPlugin` 负责分段发送
 - Typing indicator：TurnStart/StepStart 启动或续接，TurnEnd/Error/SessionEnd 停止，20s 单段超时保护

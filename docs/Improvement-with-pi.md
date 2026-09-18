@@ -140,14 +140,16 @@ Pi 约有 35 个生命周期事件;Conic 目前有 27 个总线主题(原 15 个
 
 ### 1. 会话生命周期(优先级:高)✅ 已实现
 
-- **`session_start`**(reason: `"new"` / `"resume"`)— 已实现,由 `DiscordGateway` 在
-  `handle_start_command` / `resume_active_sessions` 里紧跟 `PluginManager.start_session()`
-  之后 emit,插件可感知"会话开始/恢复"及区分两者。
-- **`session_end`**(reason: `"user_stop"`)— 已实现,`handle_stop_command` 在
-  `session_stop` 之后、`stop_session()` 之前 emit。范围小于 Pi:目前只覆盖用户主动
-  `/agent_stop` 这一种 reason,"线程被删"(resume 时 fetch 失败,session 从未真正建起,
-  没有 bus 可 emit)和"进程退出"(`DiscordGateway.stop()` 目前不遍历 `self._sessions` 发
-  任何事件)仍是空白——若要补全,后者是可行的后续小改动。
+- **`session_start`**(reason: `"new"` / `"resume"`)— 已实现,由 `PluginManager.start_session()`
+  在挂完全部插件后 chain,reason 由调用方(Gateway)作为参数透传,插件可感知
+  "会话开始/恢复"及区分两者。(最初由 `DiscordGateway` 自己 emit;mailbox 重构把
+  reason 变成参数后收归 `PluginManager`,渠道 Gateway 不再各自负责。)
+- **`session_end`**(reason: `"agent_stop"` / `"unexpected_exit"`)— 已实现:
+  `/agent_stop` 投递的 `SteeringStopCommand` 被 `ReactLoopPlugin` 在检查点消费后,
+  以 `agent_stop` 收尾;会话常驻任务退出但没人发过 `session_end` 时,
+  `PluginManager._join_and_cleanup` 兜底补发 `unexpected_exit`。仍是空白的:
+  "线程被删"(resume 时 fetch 失败,session 从未真正建起,没有 bus 可 emit)和
+  "进程整体退出"(等不到 `_join_and_cleanup` 收尾)。
 
 ### 2. Step / 工具执行的对称性(优先级:高)部分已实现
 
@@ -190,10 +192,11 @@ Pi 约有 35 个生命周期事件;Conic 目前有 27 个总线主题(原 15 个
 
 ### 5. 输入拦截(优先级:中)✅ 已实现
 
-- **`input`(continue / transform / handled)** ✅ 已实现 — `DiscordGateway.handle_message`
-  在把文本交给 `UserInputEvent` 之前,先链式 emit `Input(text, handled=False)`。
-  钩子可返回改写过 `text` 的 `Input`(继续走 ReactLoop,但用改写后的文本),或把
-  `handled` 置 `True` 完全拦下(`UserInputEvent` 不会发出)。目前还没有任何插件
+- **`input`(continue / transform / handled)** ✅ 已实现 — 渠道无关的
+  `SessionGatewayPlugin`(`core/session_gateway.py`)从 `scope.queue` 取到文本后,
+  先链式 chain `Input(text, handled=False)`。钩子可返回改写过 `text` 的 `Input`
+  (继续投递,但用改写后的文本),或把 `handled` 置 `True` 完全拦下(不会被包成
+  `SteeringUserMessage` post 进 `steering.high`)。目前还没有任何插件
   真正挂在这个事件上——`!status` 之类的文本命令插件仍待实现,这里只是补齐了
   挂载点本身。
 
@@ -224,7 +227,7 @@ Pi 约有 35 个生命周期事件;Conic 目前有 27 个总线主题(原 15 个
 
 ## 四、建议落地顺序
 
-1. ✅ `session_start`(带 reason:new/resume)+ `session_end`(带 reason)— 已实现(`session_end` 目前只有 `user_stop` 一种 reason)。
+1. ✅ `session_start`(带 reason:new/resume)+ `session_end`(带 reason)— 已实现(`session_end` reason:`agent_stop` / `unexpected_exit`)。
 2. ✅ `step_end` + `tool_execution_start/end` — 已实现。
 3. ✅ `before_summarize` / `summarize_done` / `summarize_failed` — 已实现。
 4. ✅ `input` 拦截事件 — 已实现(挂载点已就绪,尚无插件使用它)。
@@ -296,11 +299,11 @@ Pi 约有 35 个生命周期事件;Conic 目前有 27 个总线主题(原 15 个
 
 ### 架构层面
 
-- **分支目标传递**:`UserInput` 目前只有 `text`,ReactLoop 每步直接
+- **分支目标传递**:`SteeringUserMessage` 目前只有 `text`,ReactLoop 每步直接
   `self._storage.load_history()`,"从哪个 leaf 继续"这一信息没有通道。需要:
-  - `UserInput` 携带分支目标(reply 解析出的历史条目 id,无 reply 则为当前 leaf);
-  - 从 gateway 经 `UserInputEvent` 一路传到存储读取处,`SessionHandle` 的
-    读写接口按 leaf 参数化;
+  - `SteeringUserMessage` 携带分支目标(reply 解析出的历史条目 id,无 reply 则为当前 leaf);
+  - 从 gateway 经 `scope.queue` → `SessionGatewayPlugin` → `steering.high` 一路传到
+    存储读取处,`SessionHandle` 的读写接口按 leaf 参数化;
   - 交互约定:reply = 从该点分支,不 reply = 继续当前 leaf;bot 回复时也
     reply 到触发消息,让 reply-chain 提供分支的视觉线索(Discord 线程是线性
     流,没有 `/tree` 式可视化,分支交错显示只能靠约定缓解)。
@@ -381,42 +384,30 @@ Discord 平台约束:slash command 交互**无法 reply 到某条消息**,所以
 
 ---
 
-# 消息注入(steering / follow-up)
+# ✅ 消息注入(steering / follow-up)已实现
 
-借鉴 Pi `agent-loop.ts` 的双层循环:内层每轮 LLM 调用之间注入 steering 消息
-(用户在 agent 运行中途插话,下一步生效),外层在 agent 本该停止时检查
-follow-up 队列,非空则自动继续。
+借鉴 Pi `agent-loop.ts` 双层循环的思路(内层每轮 LLM 调用之间注入 steering 消息,
+外层在 agent 本该停止时检查 follow-up 队列),已通过 steering mailbox 重构落地,
+完整设计见 `steering-mailbox-design.md`。落地后的实现和本节最初的提案在几处细节上不同:
 
-## Conic 现状的问题
+- **入口**:`gateway.handle_message` 只做 `scope.queue.put(text)`;渠道无关的
+  `SessionGatewayPlugin`(`core/session_gateway.py`)消费该队列、跑 `input` 拦截链,
+  把未拦下的文本包成 `SteeringUserMessage` post 进 bus 的 `steering.high` 邮箱。
+  提案里的"inbox 队列 + 会话锁"换成了 MessageBus 自己的 mailbox 原语
+  (`create_mailbox`/`post`/`drain`/`wait_multiply_mailbox`),`scope.lock` 已删除,
+  竞态收口由"唯一消费者 `run_loop()` 自己决定何时 drain"天然解决。
+- **消费时机**:`ReactLoopPlugin.run_loop()` 是常驻协程,空闲时挂在邮箱上等待、
+  drain 到消息就开 Turn;Turn 进行中在两类检查点 drain `steering.high`——
+  ①最终回答写入历史**之后**(有普通新消息则注入历史、同一 Turn 直接 continue
+  下一个 Step,等价于 follow-up;是 `SteeringStopCommand` 则以 USER_ABORT 中止,
+  已完成的回答不丢);②一个 Step 的**全部** tool_result 落库之后(绝不打断
+  tool_calls/tool_result 配对)。提案里的"下一次模型调用前排空"收紧成了这两个
+  更安全的边界。
+- **低优先级来源**:额外分出 `steering.low` 邮箱(如后台任务结果
+  `SteeringBackgroundResult`),只在 Turn 正常收尾后才注入,不打断进行中的工作。
 
-用户消息到达时 `gateway.handle_message` 直接 `async with scope.lock` 阻塞:
-Turn 运行中收到的新消息挂在锁上排队,等整个 Turn 结束后才作为独立的下一个
-Turn 依次执行。消息不丢,但**运行中无法插话**——agent 跑偏了只能等它跑完
-25 步;多条排队消息也各起一个完整 Turn,而不是合并进上下文。
+仍然有效的后续约定:
 
-## 目标行为
-
-1. **Turn 进行中接收 UserInput(steering)**:新消息不再阻塞在锁上,而是进入
-   会话的 inbox 队列;ReactLoop 在每个 Step 边界(下一次模型调用前)排空
-   inbox,把消息以 user role 追加进历史——本 Turn 的下一步就能看到插话。
-2. **Turn 结束后有新 Input 则自动执行下一个 Turn(follow-up)**:Turn 收尾时
-   检查 inbox,非空则不结束、直接以队列消息开启下一个 Turn(等价于 Pi 的
-   外层 while + `getFollowUpMessages`)。
-
-## 改动点
-
-- **Session 增加 inbox 队列**(`SessionScope` 加 `asyncio.Queue` 或 list+lock):
-  `handle_message` 从"抢锁 emit"改为"入队;若无 Turn 在跑则启动 Turn"。
-  现有 per-session lock 保留,仅用于保证同一会话同时只有一个 Turn 在执行。
-- **ReactLoop 两处消费 inbox**:
-  - 每次 `StepStartEvent` 之后、`before_model_call` 之前排空 inbox,逐条
-    `append_message({"role": "user", ...})` 并 emit(供 channel 插件回显确认);
-  - Turn 主循环退出前(最终 assistant 消息落库后)再查一次 inbox,非空则
-    `continue` 进入新 Turn(发 `turn_end` + 新 `turn_start`,保持事件语义)。
-- **竞态收口**:消息"入队"与"Turn 是否在跑"的判断必须原子(在会话锁内判断),
-  避免 Turn 恰好收尾时新消息既没被 follow-up 消费、也没人再启动 Turn。
-- **事件层配合**:steering 注入点正好是前文"缺失事件"里的 `input` 拦截事件
-  的天然挂点——注入前先过可拦截的链式 emit,一并实现。
 - **与分支的交互**:带 reply 的消息(分支意图)不适合作为 steering 注入当前
   Turn——它要切换 leaf。约定:reply 消息始终走 follow-up 路径(等当前 Turn
   结束后作为新 Turn 在目标分支上执行),普通消息才作 steering 注入。

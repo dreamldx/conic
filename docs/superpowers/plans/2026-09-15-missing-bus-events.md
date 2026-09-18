@@ -1,14 +1,16 @@
 # Missing Bus Events Implementation Plan
 
+> **状态（2026-09-18）：四个 Task 已全部实现，本文档是历史快照，不再随代码维护。** 落地之后引擎经历了 steering mailbox 重构：`bus.emit`/`bus.on` 改名 `bus.chain`/`bus.on_chain`；`UserInputEvent`/`SessionStopEvent` 已移除；`session_start`/`session_end` 的发出者从 `DiscordGateway` 收归 `PluginManager`/`ReactLoopPlugin`（`session_end` 的 reason 现为 `agent_stop`/`unexpected_exit`，不再有 `user_stop`）；`input` 拦截移入渠道无关的 `core/session_gateway.py`；消息 dataclass 移入 `types/messages.py`。本文正文里的发出位置与 API 名称反映的是当时的实现，现状以 `../specs/2026-09-13-conic-agentic-engine-design.md` 和 `../../steering-mailbox-design.md` 为准。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add the four highest-priority missing bus events identified in `docs/Improvement.md` section 2 — session lifecycle (`session_start`/`session_end`), Step/tool execution symmetry (`step_end`/`tool_execution_start`/`tool_execution_end`), summarize hooks (`before_summarize`/`summarize_done`/`summarize_failed`), and input interception (`input`) — so third-party plugins can observe and (where noted) intervene in these points without editing `react_loop.py` or `gateway.py`.
+**Goal:** Add the four highest-priority missing bus events identified in `../../Improvement-with-pi.md` section 2 — session lifecycle (`session_start`/`session_end`), Step/tool execution symmetry (`step_end`/`tool_execution_start`/`tool_execution_end`), summarize hooks (`before_summarize`/`summarize_done`/`summarize_failed`), and input interception (`input`) — so third-party plugins can observe and (where noted) intervene in these points without editing `react_loop.py` or `gateway.py`.
 
 **Architecture:** Every new event follows the existing MessageBus conventions already used throughout the codebase: plain notifications use `bus.emit(topic, payload)` with a dataclass payload (chain-emit; a handler may return a mutated payload or `None` for "no change"); nothing here needs `bus.request` (request/response) since none of these are answered by exactly one plugin. Session lifecycle events are emitted by `DiscordGateway` itself (not `PluginManager`) right after `start_session()` returns / right before `stop_session()` is called — this keeps `PluginManager.start_session`/`stop_session` synchronous and untouched (no ripple into `tests/core/test_manager.py`), since the gateway is the caller that actually knows the `reason` ("new" vs "resume" vs "user_stop") and already awaits other bus emits at those call sites.
 
 **Tech Stack:** Python 3.12, pytest + pytest-asyncio, the existing hand-rolled `conic.core.bus.MessageBus`.
 
-**Spec:** `docs/Improvement.md` (section "二、Conic 缺失的事件", items 1/2/4/5, and section "四、建议落地顺序")
+**Spec:** `../../Improvement-with-pi.md` (section "二、Conic 缺失的事件", items 1/2/4/5, and section "四、建议落地顺序")
 
 ## Global Constraints
 
@@ -991,4 +993,4 @@ git commit -m "feat: add input interception event (continue/transform/handled) t
 
 ## Post-plan documentation update (not a code task)
 
-After all four tasks are committed, update `docs/Improvement.md` section 2 to mark items 1, 2, 4, 5 as done (or remove them / move to a "已完成" note), and update `docs/superpowers/specs/2026-09-13-conic-agentic-engine-design.md` section 8 (LoopPlugin, DiscordGateway, SummarizerPlugin subsections) and the event-topic list to mention the 8 new topics — this keeps the "已知缺口" docs from going stale now that they're implemented. Do this as its own small commit, not folded into Task 4.
+After all four tasks are committed, update `../../Improvement-with-pi.md` section 2 to mark items 1, 2, 4, 5 as done (or remove them / move to a "已完成" note), and update `docs/superpowers/specs/2026-09-13-conic-agentic-engine-design.md` section 8 (LoopPlugin, DiscordGateway, SummarizerPlugin subsections) and the event-topic list to mention the 8 new topics — this keeps the "已知缺口" docs from going stale now that they're implemented. Do this as its own small commit, not folded into Task 4.

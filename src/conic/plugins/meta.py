@@ -1,16 +1,17 @@
 """All bus topic names, organized by emitting plugin."""
 
-# ── Plugin: DiscordGateway (conic/discord/gateway.py) ────────────────────
-# emitted right before a message becomes a SteeringUserMessage post to
-# steering.high, so hooks can transform the text or mark it handled to keep
-# it from reaching the session's loop entirely
+# ── Session lifecycle (core/session_gateway.py, core/manager.py) ──────────
+# emitted by SessionGatewayPlugin right before a message becomes a
+# SteeringUserMessage post to steering.high, so hooks can transform the text
+# or mark it handled to keep it from reaching the session's loop entirely
 InputEvent = "input"
-# emitted once per session, right after PluginManager.start_session wires
-# up its bus (reason: "new" or "resume")
+# emitted by PluginManager.start_session once per session, right after it
+# wires up the bus (reason: "new" or "resume", passed in by the gateway)
 SessionStartEvent = "session_start"
-# emitted once per session, when it is ended (reason varies: "user_stop",
-# "agent_stop", "unexpected_exit", ...) — the lifecycle notification plugins
-# should hook for cleanup/archival and to mute themselves
+# emitted once per session when it ends: by ReactLoopPlugin._finalize_session
+# (reason "agent_stop") or by PluginManager._join_and_cleanup as a fallback
+# (reason "unexpected_exit") — the lifecycle notification plugins should hook
+# for cleanup/archival and to mute themselves
 SessionEndEvent = "session_end"
 
 # ── Plugin: ReactLoopPlugin (loops/react_loop.py) ──────────────────────────
