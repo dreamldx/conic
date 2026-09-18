@@ -79,6 +79,19 @@ class DiscordGateway:
                 logger.warning("failed to resume session {} (thread deleted/missing)", row.session_key)
                 self._storage.handle_for(row).set_status("ended")
                 continue
+            title = getattr(thread, "name", "?")
+            if getattr(thread, "archived", False):
+                # The thread was archived (almost certainly by /agent_stop's
+                # own archive() call) but the row never got marked "ended" —
+                # most likely the process died between that archive() and the
+                # background join-and-cleanup task reaching storage.set_status.
+                # Fetch succeeding is not proof the session is still live.
+                logger.info(
+                    "session {} title={!r} thread is archived remotely, marking ended",
+                    row.session_key, title,
+                )
+                self._storage.handle_for(row).set_status("ended")
+                continue
             try:
                 scope = await self._plugin_manager.start_session(
                     channel="discord",
@@ -87,9 +100,13 @@ class DiscordGateway:
                     reason="resume",
                 )
             except Exception:
-                logger.exception("failed to construct session {} despite thread existing", row.session_key)
+                logger.exception(
+                    "failed to construct session {} title={!r} despite thread existing",
+                    row.session_key, title,
+                )
                 continue
             self._sessions[int(row.native_id)] = scope
+            logger.info("resumed session {} title={!r}", row.session_key, title)
 
     async def handle_message(self, thread_id: int, text: str) -> None:
         scope = self._sessions.get(thread_id)

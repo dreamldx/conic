@@ -1,6 +1,8 @@
 import asyncio
 from types import SimpleNamespace
 
+from loguru import logger
+
 from conic.discord.gateway import DiscordGateway
 from conic.services.storage import StorageService
 from conic.plugins import meta
@@ -119,6 +121,56 @@ async def test_resume_active_sessions_continues_past_a_dead_thread(tmp_path):
     assert sorted((c, n) for c, n, _ in manager.started) == [("discord", "111"), ("discord", "333")]
     assert 111 in gateway._sessions
     assert 333 in gateway._sessions
+    assert 222 not in gateway._sessions
+
+    reloaded = storage.get_or_create(channel="discord", native_id="222")
+    assert reloaded.status == "ended"
+    storage.shutdown()
+
+
+async def test_resume_active_sessions_logs_the_thread_title(tmp_path):
+    storage = make_storage(tmp_path)
+    storage.get_or_create(channel="discord", native_id="111")
+    manager = FakePluginManagerRecorder()
+    gateway = DiscordGateway(make_config(), plugin_manager=manager, storage=storage)
+
+    async def fake_fetch_thread(native_id: str):
+        return SimpleNamespace(name="my-session-title", archived=False)
+
+    logged = []
+    sink_id = logger.add(lambda msg: logged.append(msg.record["message"]), level="INFO")
+    try:
+        await gateway.resume_active_sessions(fetch_thread=fake_fetch_thread)
+    finally:
+        logger.remove(sink_id)
+
+    assert any("my-session-title" in m for m in logged)
+    storage.shutdown()
+
+
+async def test_resume_active_sessions_marks_ended_and_skips_a_thread_archived_remotely(tmp_path):
+    """A thread that was archived on Discord's side (e.g. /agent_stop ran and
+    archived+locked it, but the process crashed before the background
+    join-and-cleanup task got to storage.set_status('ended')) must not be
+    silently resumed on restart — fetch_thread succeeding isn't enough proof
+    the session is still live; an archived thread means it's already over."""
+    from types import SimpleNamespace
+
+    storage = make_storage(tmp_path)
+    storage.get_or_create(channel="discord", native_id="111")
+    storage.get_or_create(channel="discord", native_id="222")
+    manager = FakePluginManagerRecorder()
+    gateway = DiscordGateway(make_config(), plugin_manager=manager, storage=storage)
+
+    async def fake_fetch_thread(native_id: str):
+        if native_id == "222":
+            return SimpleNamespace(archived=True)
+        return SimpleNamespace(archived=False)
+
+    await gateway.resume_active_sessions(fetch_thread=fake_fetch_thread)
+
+    assert sorted((c, n) for c, n, _ in manager.started) == [("discord", "111")]
+    assert 111 in gateway._sessions
     assert 222 not in gateway._sessions
 
     reloaded = storage.get_or_create(channel="discord", native_id="222")
