@@ -1,11 +1,14 @@
+import asyncio
+
 from loguru import logger
 
-from conic.types.errors import AbortTurn
+from conic.types.errors import AbortReason, AbortTurn
 from conic.types.messages import (
     AssistantMessage, BeforeModelCall, Error, MessageUpdate, ModelRequest, ModelResponse,
-    StepEnd, StepStart, ToolCall, ToolCallResult, ToolCallSpec, ToolExecutionEnd,
-    ToolExecutionStart, TurnEnd, TurnStart, UserInput,
+    SessionEnd, StepEnd, StepStart, ToolCall, ToolCallResult, ToolCallSpec, ToolExecutionEnd,
+    ToolExecutionStart, TurnEnd, TurnStart,
 )
+from conic.types.steering import SteeringItem
 from conic.plugins import meta
 
 
@@ -18,6 +21,7 @@ class ReactLoopPlugin:
         workspace_dir: str = "",
         global_variables: dict | None = None,
         persisted_session_variables: dict | None = None,
+        model_timeout: float = 120,
     ):
         self._storage = storage_handle
         self._tool_schemas = tool_schemas
@@ -29,17 +33,47 @@ class ReactLoopPlugin:
             **(persisted_session_variables or {}),
             "workspace_dir": workspace_dir,
         }
+        self._model_timeout = model_timeout
         self._bus = None
 
     def register(self, bus) -> None:
         self._bus = bus
-        bus.on_chain(meta.UserInputEvent, self.handle_user_input)
+        bus.create_mailbox("steering.high", SteeringItem)
+        bus.create_mailbox("steering.low", SteeringItem)
 
     def _format_tool_status(self, call: ToolCallSpec) -> str:
         args = ", ".join(f"{k}={v!r}" for k, v in call.args.items())
         return f"🔧 {call.name}({args})"
 
-    async def handle_user_input(self, msg: UserInput) -> None:
+    def _inject(self, items: list[SteeringItem]) -> None:
+        for item in items:
+            for entry in item.to_history_entries():
+                self._storage.append_message(entry)
+
+    async def run_loop(self) -> None:
+        bus = self._bus
+        while True:
+            await bus.wait_multiply_mailbox("steering.high", "steering.low")
+            high = await bus.drain("steering.high")
+            low = await bus.drain("steering.low")
+            if not high and not low:
+                continue
+            if any(item.is_turn_abort() for item in high):
+                await self._finalize_session()
+                return
+            try:
+                await self._run_turn(high, low)
+            except AbortTurn as exc:
+                if exc.reason.ends_session:
+                    await self._finalize_session()
+                    return
+                # else (e.g. ModelTimeout): _run_turn already emitted
+                # ErrorEvent/TurnEndEvent — go back to idle and keep looping.
+
+    async def _finalize_session(self) -> None:
+        await self._bus.chain(meta.SessionEndEvent, SessionEnd(reason="agent_stop"))
+
+    async def _run_turn(self, high: list[SteeringItem], low: list[SteeringItem]) -> None:
         bus = self._bus
         self._session_variables["turn_count"] += 1
         variables: dict = {
@@ -47,7 +81,8 @@ class ReactLoopPlugin:
             "session": self._session_variables,
             "turn": {},
         }
-        self._storage.append_message({"role": "user", "content": msg.text})
+        self._inject([*high, *low])
+
         await bus.chain(meta.TurnStartEvent, TurnStart(variables=variables))
         step_index = 0
         try:
@@ -61,21 +96,42 @@ class ReactLoopPlugin:
                     meta.BeforeModelCallEvent,
                     BeforeModelCall(messages=history, tools=self._tool_schemas, variables=variables),
                 )
-                response: ModelResponse = await bus.request(
-                    meta.ModelRequestEvent,
-                    ModelRequest(
-                        messages=ctx.messages, tools=ctx.tools, stream_updates=True, variables=variables
-                    ),
-                )
+                try:
+                    response: ModelResponse = await asyncio.wait_for(
+                        bus.request(
+                            meta.ModelRequestEvent,
+                            ModelRequest(
+                                messages=ctx.messages, tools=ctx.tools, stream_updates=True,
+                                variables=variables,
+                            ),
+                        ),
+                        timeout=self._model_timeout,
+                    )
+                except TimeoutError:
+                    raise AbortTurn("model call timed out", reason=AbortReason.MODEL_TIMEOUT)
+
                 response = await bus.chain(meta.ModelResponseEvent, response)
+
+                # checkpoint 3: drain high as soon as the model has responded
+                drained_high = await bus.drain("steering.high")
+                if any(item.is_turn_abort() for item in drained_high):
+                    raise AbortTurn("user requested stop", reason=AbortReason.USER_ABORT)
+
                 if not response.tool_calls:
                     out = await bus.chain(
                         meta.AssistantMessageEvent,
                         AssistantMessage(text=response.text or "", variables=variables),
                     )
                     self._storage.append_message({"role": "assistant", "content": out.text})
+                    if drained_high:
+                        self._inject(drained_high)
+                        await bus.chain(meta.StepEndEvent, StepEnd(step_index=this_step, variables=variables))
+                        continue
                     await bus.chain(meta.StepEndEvent, StepEnd(step_index=this_step, variables=variables))
                     break
+
+                if drained_high:
+                    self._inject(drained_high)
                 self._storage.append_message(response.raw_message)
                 for call in response.tool_calls:
                     original_id = call.id
@@ -90,7 +146,8 @@ class ReactLoopPlugin:
                             ToolExecutionStart(call=call_ctx.call, variables=variables),
                         )
                         await bus.chain(
-                            meta.MessageUpdateEvent, MessageUpdate(text=self._format_tool_status(call_ctx.call))
+                            meta.MessageUpdateEvent,
+                            MessageUpdate(text=self._format_tool_status(call_ctx.call)),
                         )
                         result: ToolCallResult = await bus.request(meta.ToolCallRequestEvent, payload)
                         await bus.chain(
@@ -107,15 +164,32 @@ class ReactLoopPlugin:
                     self._storage.append_message(
                         {"role": "tool", "tool_call_id": original_id, "content": content}
                     )
+
+                    # checkpoint 2: drain high after each tool call completes
+                    tool_high = await bus.drain("steering.high")
+                    if any(item.is_turn_abort() for item in tool_high):
+                        raise AbortTurn("user requested stop", reason=AbortReason.USER_ABORT)
+                    self._inject(tool_high)
+
                 await bus.chain(meta.StepEndEvent, StepEnd(step_index=this_step, variables=variables))
         except AbortTurn as exc:
-            logger.info("turn aborted: {}", exc)
-            await bus.chain(meta.ErrorEvent, Error(exc=exc, variables=variables))
-            return
+            if exc.reason is AbortReason.USER_ABORT:
+                await bus.chain(meta.TurnEndEvent, TurnEnd(variables=variables))
+                raise
+            elif exc.reason is AbortReason.MODEL_TIMEOUT:
+                await bus.chain(meta.ErrorEvent, Error(exc=exc, variables=variables))
+                await bus.chain(meta.TurnEndEvent, TurnEnd(variables=variables))
+                raise
+            else:
+                logger.info("turn aborted: {}", exc)
+                await bus.chain(meta.ErrorEvent, Error(exc=exc, variables=variables))
+                return
         except Exception as exc:
             logger.exception("turn failed with unexpected error")
             await bus.chain(meta.ErrorEvent, Error(exc=exc, variables=variables))
             return
         finally:
             self._storage.save_variables(self._session_variables)
+
         await bus.chain(meta.TurnEndEvent, TurnEnd(variables=variables))
+        self._inject(await bus.drain("steering.low"))

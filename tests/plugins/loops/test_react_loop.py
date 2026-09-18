@@ -1,14 +1,16 @@
+import asyncio
 from dataclasses import dataclass
 
 import pytest
 
 from conic.core.bus import MessageBus
-from conic.types.errors import AbortTurn
+from conic.types.errors import AbortReason, AbortTurn
 from conic.types.messages import (
-    AssistantMessage, BeforeModelCall, Error, MessageUpdate, ModelRequest, ModelResponse, StepEnd,
-    StepStart, ToolCall, ToolCallResult, ToolCallSpec, ToolExecutionEnd, ToolExecutionStart,
-    TurnEnd, TurnStart, UserInput,
+    AssistantMessage, BeforeModelCall, Error, MessageUpdate, ModelRequest, ModelResponse, SessionEnd,
+    StepEnd, StepStart, ToolCall, ToolCallResult, ToolCallSpec, ToolExecutionEnd, ToolExecutionStart,
+    TurnEnd, TurnStart,
 )
+from conic.types.steering import SteeringBackgroundResult, SteeringStopCommand, SteeringUserMessage
 from conic.plugins.loops.react_loop import ReactLoopPlugin
 
 
@@ -35,7 +37,7 @@ class FakeToolCall:
     command: str
 
 
-def make_loop(handle, responses):
+def make_loop(handle, responses, model_timeout=120):
     bus = MessageBus()
     responses_iter = iter(responses)
 
@@ -53,6 +55,7 @@ def make_loop(handle, responses):
         storage_handle=handle,
         tool_schemas=[{"type": "function", "function": {"name": "bash"}}],
         tool_payload_map={"bash": FakeToolCall},
+        model_timeout=model_timeout,
     )
     loop.register(bus)
     return bus, loop
@@ -70,7 +73,7 @@ async def test_single_step_turn_with_no_tool_calls_emits_assistant_message():
 
     bus.on_chain("assistant_message", on_assistant_message)
 
-    await bus.chain("user_input", UserInput(text="hello"))
+    await loop._run_turn([SteeringUserMessage("hello")], [])
 
     assert received == ["hi there"]
     assert handle.messages[0] == {"role": "user", "content": "hello"}
@@ -93,7 +96,7 @@ async def test_multi_step_turn_executes_tool_then_returns_final_answer():
 
     bus.on_chain("step_start", on_step_start)
 
-    await bus.chain("user_input", UserInput(text="run ls"))
+    await loop._run_turn([SteeringUserMessage("run ls")], [])
 
     assert steps == [0, 1]
     tool_messages = [m for m in handle.messages if m.get("role") == "tool"]
@@ -112,7 +115,7 @@ async def test_step_end_emitted_with_matching_step_index_on_final_step():
 
     bus.on_chain("step_end", on_step_end)
 
-    await bus.chain("user_input", UserInput(text="hello"))
+    await loop._run_turn([SteeringUserMessage("hello")], [])
 
     assert ends == [0]
 
@@ -133,7 +136,7 @@ async def test_step_end_emitted_once_per_step_with_matching_index():
 
     bus.on_chain("step_end", on_step_end)
 
-    await bus.chain("user_input", UserInput(text="run ls"))
+    await loop._run_turn([SteeringUserMessage("run ls")], [])
 
     assert ends == [0, 1]
 
@@ -169,7 +172,7 @@ async def test_tool_execution_start_and_end_bracket_the_actual_tool_dispatch():
     bus.on_chain("tool_execution_end", on_execution_end)
     bus.on_chain("tool_result", on_tool_result)
 
-    await bus.chain("user_input", UserInput(text="run ls"))
+    await loop._run_turn([SteeringUserMessage("run ls")], [])
 
     assert order == ["before_tool_call", "tool_execution_start", "tool_execution_end", "tool_result"]
 
@@ -194,7 +197,7 @@ async def test_tool_execution_end_carries_raw_result_before_tool_result_mutation
     bus.on_chain("tool_execution_end", on_execution_end)
     bus.on_chain("tool_result", mutate_result)
 
-    await bus.chain("user_input", UserInput(text="run ls"))
+    await loop._run_turn([SteeringUserMessage("run ls")], [])
 
     assert captured == ["ran ls"]
     tool_messages = [m for m in handle.messages if m.get("role") == "tool"]
@@ -202,6 +205,9 @@ async def test_tool_execution_end_carries_raw_result_before_tool_result_mutation
 
 
 async def test_abort_turn_from_a_hook_emits_error_and_stops_the_loop():
+    """A policy-reason AbortTurn (the default, used by pre-existing hooks like
+    StepLimitPlugin) is swallowed inside _run_turn exactly like before: no
+    exception escapes, no TurnEndEvent, just an ErrorEvent."""
     handle = FakeStorageHandle()
     responses = [ModelResponse(text="unreachable", tool_calls=[], raw_message={})]
     bus, loop = make_loop(handle, responses)
@@ -218,7 +224,7 @@ async def test_abort_turn_from_a_hook_emits_error_and_stops_the_loop():
 
     bus.on_chain("error", on_error)
 
-    await bus.chain("user_input", UserInput(text="hello"))
+    await loop._run_turn([SteeringUserMessage("hello")], [])
 
     assert errors == ["blocked by policy"]
     assert not any(m.get("role") == "assistant" for m in handle.messages)
@@ -249,7 +255,7 @@ async def test_abort_turn_from_before_tool_call_hook_stops_the_turn():
 
     bus.on_chain("error", on_error)
 
-    await bus.chain("user_input", UserInput(text="run rm -rf /"))
+    await loop._run_turn([SteeringUserMessage("run rm -rf /")], [])
 
     assert errors == ["denied by policy"]
     assert not any(m.get("role") == "tool" for m in handle.messages)
@@ -272,7 +278,7 @@ async def test_turn_end_emitted_after_final_assistant_message():
     bus.on_chain("assistant_message", on_assistant_message)
     bus.on_chain("turn_end", on_turn_end)
 
-    await bus.chain("user_input", UserInput(text="hello"))
+    await loop._run_turn([SteeringUserMessage("hello")], [])
 
     assert order == ["assistant_message", "turn_end"]
 
@@ -280,7 +286,7 @@ async def test_turn_end_emitted_after_final_assistant_message():
 async def test_non_aborttturn_exception_from_model_request_is_reported_as_error():
     """A plain Exception (e.g. an OpenRouter API error) raised while producing a
     model response must be caught and reported as an `error` event, not crash
-    the process or propagate out of handle_user_input."""
+    the process or propagate out of _run_turn."""
     handle = FakeStorageHandle()
     bus = MessageBus()
 
@@ -303,8 +309,8 @@ async def test_non_aborttturn_exception_from_model_request_is_reported_as_error(
 
     bus.on_chain("error", on_error)
 
-    # Must not raise out of emit — the loop's own except Exception clause must catch it.
-    await bus.chain("user_input", UserInput(text="hello"))
+    # Must not raise out of _run_turn — its own except Exception clause must catch it.
+    await loop._run_turn([SteeringUserMessage("hello")], [])
 
     assert len(errors) == 1
     assert isinstance(errors[0], ValueError)
@@ -324,7 +330,7 @@ async def test_unknown_tool_name_does_not_corrupt_history_and_continues_next_ste
     ]
     bus, loop = make_loop(handle, responses)
 
-    await bus.chain("user_input", UserInput(text="run unknown tool"))
+    await loop._run_turn([SteeringUserMessage("run unknown tool")], [])
 
     tool_messages = [m for m in handle.messages if m.get("role") == "tool"]
     assert len(tool_messages) == 1
@@ -345,7 +351,6 @@ async def test_tool_call_id_preserved_when_hook_mutates_call_id():
     ]
     bus, loop = make_loop(handle, responses)
 
-    # Register a hook that mutates the call.id to a different value
     async def mutating_hook(tc: ToolCall) -> ToolCall:
         return ToolCall(call=ToolCallSpec(
             id="mutated_call_id",
@@ -355,20 +360,13 @@ async def test_tool_call_id_preserved_when_hook_mutates_call_id():
 
     bus.on_chain("before_tool_call", mutating_hook)
 
-    await bus.chain("user_input", UserInput(text="run ls"))
+    await loop._run_turn([SteeringUserMessage("run ls")], [])
 
-    # The tool-role message should use the ORIGINAL call id, not the mutated one
     tool_messages = [m for m in handle.messages if m.get("role") == "tool"]
     assert tool_messages == [{"role": "tool", "tool_call_id": "original_call_id", "content": "ran ls"}]
 
 
 async def test_message_update_fires_only_for_tool_status_not_a_per_step_thinking_reset():
-    """StepStart must NOT reset the responsive message back to "thinking" --
-    that would wipe out a still-relevant tool-status line (or in-flight
-    streamed text) every time a new step begins. MessageUpdate should only
-    fire for genuine state transitions (here: the one tool call), and the
-    "thinking" placeholder is DiscordThreadPlugin's job at Turn start, not
-    something ReactLoopPlugin re-asserts every step."""
     handle = FakeStorageHandle()
     tool_call = ToolCallSpec(id="call_1", name="bash", args={"command": "ls"})
     responses = [
@@ -384,7 +382,7 @@ async def test_message_update_fires_only_for_tool_status_not_a_per_step_thinking
 
     bus.on_chain("message_update", on_update)
 
-    await bus.chain("user_input", UserInput(text="run ls"))
+    await loop._run_turn([SteeringUserMessage("run ls")], [])
 
     assert updates == ["🔧 bash(command='ls')"]
 
@@ -407,15 +405,12 @@ async def test_model_request_opts_into_streaming():
     )
     loop.register(bus)
 
-    await bus.chain("user_input", UserInput(text="hello"))
+    await loop._run_turn([SteeringUserMessage("hello")], [])
 
     assert captured == [True]
 
 
 async def test_variables_dict_is_shared_across_turn_scoped_events():
-    """A handler on TurnStartEvent that contributes a turn-scoped variable
-    must have it visible to later Turn-scoped events (e.g. BeforeModelCallEvent)
-    in the same turn, since react_loop threads a single shared dict instance."""
     handle = FakeStorageHandle()
     responses = [ModelResponse(text="hi", tool_calls=[], raw_message={})]
     bus, loop = make_loop(handle, responses)
@@ -432,7 +427,7 @@ async def test_variables_dict_is_shared_across_turn_scoped_events():
     bus.on_chain("turn_start", contribute)
     bus.on_chain("before_model_call", observe)
 
-    await bus.chain("user_input", UserInput(text="hello"))
+    await loop._run_turn([SteeringUserMessage("hello")], [])
 
     assert seen == ["value"]
 
@@ -453,7 +448,7 @@ async def test_turn_step_count_tracks_current_step_index():
 
     bus.on_chain("before_model_call", observe)
 
-    await bus.chain("user_input", UserInput(text="run ls"))
+    await loop._run_turn([SteeringUserMessage("run ls")], [])
 
     assert seen_step_counts == [0, 1]
 
@@ -485,7 +480,7 @@ async def test_variables_has_global_session_turn_scopes():
 
     bus.on_chain("before_model_call", observe)
 
-    await bus.chain("user_input", UserInput(text="hello"))
+    await loop._run_turn([SteeringUserMessage("hello")], [])
 
     assert seen[0]["global"] == {"model": "gpt-test"}
     assert seen[0]["session"] == {"workspace_dir": "/tmp/ws", "tokens_used": 0, "turn_count": 1}
@@ -511,7 +506,7 @@ async def test_session_variables_seeded_from_persisted_values():
     )
     loop.register(bus)
 
-    await bus.chain("user_input", UserInput(text="hello"))
+    await loop._run_turn([SteeringUserMessage("hello")], [])
 
     assert loop._session_variables == {"workspace_dir": "/tmp/ws", "tokens_used": 250, "turn_count": 1}
 
@@ -521,7 +516,7 @@ async def test_session_variables_persisted_after_successful_turn():
     responses = [ModelResponse(text="hi", tool_calls=[], raw_message={})]
     bus, loop = make_loop(handle, responses)
 
-    await bus.chain("user_input", UserInput(text="hello"))
+    await loop._run_turn([SteeringUserMessage("hello")], [])
 
     assert handle.saved_variables == [{"workspace_dir": "", "tokens_used": 0, "turn_count": 1}]
 
@@ -536,7 +531,7 @@ async def test_session_variables_persisted_after_abort_turn():
 
     bus.on_chain("step_start", always_abort)
 
-    await bus.chain("user_input", UserInput(text="hello"))
+    await loop._run_turn([SteeringUserMessage("hello")], [])
 
     assert handle.saved_variables == [{"workspace_dir": "", "tokens_used": 0, "turn_count": 1}]
 
@@ -557,15 +552,12 @@ async def test_session_variables_persisted_after_generic_exception():
     )
     loop.register(bus)
 
-    await bus.chain("user_input", UserInput(text="hello"))
+    await loop._run_turn([SteeringUserMessage("hello")], [])
 
     assert handle.saved_variables == [{"workspace_dir": "", "tokens_used": 0, "turn_count": 1}]
 
 
 async def test_session_variables_reflect_mutations_made_during_the_turn():
-    """OpenRouterModelPlugin (or any handler) mutating session["tokens_used"]
-    in place during the turn must be reflected in what gets persisted, since
-    save_variables() is called after the turn body runs."""
     handle = FakeStorageHandle()
     responses = [ModelResponse(text="hi", tool_calls=[], raw_message={})]
     bus, loop = make_loop(handle, responses)
@@ -575,7 +567,7 @@ async def test_session_variables_reflect_mutations_made_during_the_turn():
 
     bus.on_chain("before_model_call", bump_tokens)
 
-    await bus.chain("user_input", UserInput(text="hello"))
+    await loop._run_turn([SteeringUserMessage("hello")], [])
 
     assert handle.saved_variables == [{"workspace_dir": "", "tokens_used": 42, "turn_count": 1}]
 
@@ -596,9 +588,9 @@ async def test_turn_count_increments_across_multiple_turns_in_the_same_session()
 
     bus.on_chain("before_model_call", observe)
 
-    await bus.chain("user_input", UserInput(text="hello"))
-    await bus.chain("user_input", UserInput(text="hello again"))
-    await bus.chain("user_input", UserInput(text="hello a third time"))
+    await loop._run_turn([SteeringUserMessage("hello")], [])
+    await loop._run_turn([SteeringUserMessage("hello again")], [])
+    await loop._run_turn([SteeringUserMessage("hello a third time")], [])
 
     assert seen_turn_counts == [1, 2, 3]
     assert loop._session_variables["turn_count"] == 3
@@ -624,6 +616,325 @@ async def test_turn_count_seeded_from_persisted_value():
     )
     loop.register(bus)
 
-    await bus.chain("user_input", UserInput(text="hello"))
+    await loop._run_turn([SteeringUserMessage("hello")], [])
 
     assert loop._session_variables["turn_count"] == 10
+
+
+# --- checkpoint / steering behavior (new) ---
+
+
+async def test_turn_start_injects_the_full_high_and_low_batch_into_history():
+    handle = FakeStorageHandle()
+    responses = [ModelResponse(text="hi", tool_calls=[], raw_message={})]
+    bus, loop = make_loop(handle, responses)
+
+    await loop._run_turn(
+        [SteeringUserMessage("hello")],
+        [SteeringBackgroundResult(task_id="t1", exit_code=0, output="build ok")],
+    )
+
+    assert handle.messages[0] == {"role": "user", "content": "hello"}
+    assert "t1" in handle.messages[1]["content"]
+    assert handle.messages[1]["role"] == "user"
+
+
+async def test_checkpoint_3_high_message_with_no_tool_calls_forces_another_step():
+    """A steering.high message that arrives exactly when the model returns a
+    final (no tool_calls) answer must not be dropped: the assistant's answer
+    is appended, the high item is injected, and the loop takes one more step
+    instead of ending the turn."""
+    handle = FakeStorageHandle()
+    responses = [
+        ModelResponse(text="first answer", tool_calls=[], raw_message={}),
+        ModelResponse(text="second answer", tool_calls=[], raw_message={}),
+    ]
+    bus, loop = make_loop(handle, responses)
+
+    async def inject_on_first_response(msg: ModelResponse) -> ModelResponse:
+        if not any(m.get("content") == "injected mid-turn" for m in handle.messages):
+            await bus.post("steering.high", SteeringUserMessage("injected mid-turn"))
+        return msg
+
+    bus.on_chain("model_response", inject_on_first_response)
+
+    steps = []
+
+    async def on_step_start(msg: StepStart) -> None:
+        steps.append(msg.step_index)
+
+    bus.on_chain("step_start", on_step_start)
+
+    await loop._run_turn([SteeringUserMessage("hello")], [])
+
+    assert steps == [0, 1]
+    assert {"role": "assistant", "content": "first answer"} in handle.messages
+    assert {"role": "user", "content": "injected mid-turn"} in handle.messages
+    assert handle.messages[-1] == {"role": "assistant", "content": "second answer"}
+
+
+async def test_checkpoint_3_abort_ends_turn_without_error_event_and_reraises():
+    """A SteeringStopCommand drained right after the model responds must abort
+    the turn: TurnEndEvent fires, ErrorEvent does not, and AbortTurn(reason=
+    USER_ABORT) propagates out for run_loop to handle."""
+    handle = FakeStorageHandle()
+    responses = [ModelResponse(text="unreachable", tool_calls=[], raw_message={})]
+    bus, loop = make_loop(handle, responses)
+
+    async def inject_stop(msg: ModelResponse) -> ModelResponse:
+        await bus.post("steering.high", SteeringStopCommand())
+        return msg
+
+    bus.on_chain("model_response", inject_stop)
+
+    errors = []
+    turn_ends = []
+
+    async def on_error(msg: Error) -> None:
+        errors.append(msg)
+
+    async def on_turn_end(msg: TurnEnd) -> None:
+        turn_ends.append(msg)
+
+    bus.on_chain("error", on_error)
+    bus.on_chain("turn_end", on_turn_end)
+
+    with pytest.raises(AbortTurn) as exc_info:
+        await loop._run_turn([SteeringUserMessage("hello")], [])
+
+    assert exc_info.value.reason is AbortReason.USER_ABORT
+    assert errors == []
+    assert len(turn_ends) == 1
+    assert not any(m.get("role") == "assistant" for m in handle.messages)
+
+
+async def test_checkpoint_2_abort_stops_after_current_tool_and_skips_the_rest():
+    """A SteeringStopCommand drained right after one tool call completes must
+    abort before the next tool call in the same step runs."""
+    handle = FakeStorageHandle()
+    call_1 = ToolCallSpec(id="call_1", name="bash", args={"command": "one"})
+    call_2 = ToolCallSpec(id="call_2", name="bash", args={"command": "two"})
+    responses = [
+        ModelResponse(
+            text=None, tool_calls=[call_1, call_2],
+            raw_message={"role": "assistant", "tool_calls": [1, 2]},
+        ),
+    ]
+    bus = MessageBus()
+    responses_iter = iter(responses)
+
+    async def fake_model_request(msg: ModelRequest) -> ModelResponse:
+        return next(responses_iter)
+
+    bus.on_request("model_request", fake_model_request)
+
+    executed = []
+
+    async def fake_tool_call(call: FakeToolCall) -> ToolCallResult:
+        executed.append(call.command)
+        if call.command == "one":
+            await bus.post("steering.high", SteeringStopCommand())
+        return ToolCallResult(output=f"ran {call.command}")
+
+    bus.on_request("tool_call", fake_tool_call)
+
+    loop = ReactLoopPlugin(
+        storage_handle=handle,
+        tool_schemas=[{"type": "function", "function": {"name": "bash"}}],
+        tool_payload_map={"bash": FakeToolCall},
+    )
+    loop.register(bus)
+
+    turn_ends = []
+
+    async def on_turn_end(msg: TurnEnd) -> None:
+        turn_ends.append(msg)
+
+    bus.on_chain("turn_end", on_turn_end)
+
+    with pytest.raises(AbortTurn) as exc_info:
+        await loop._run_turn([SteeringUserMessage("run both")], [])
+
+    assert exc_info.value.reason is AbortReason.USER_ABORT
+    assert executed == ["one"]
+    assert len(turn_ends) == 1
+
+
+async def test_checkpoint_2_high_message_is_injected_without_aborting_remaining_tools():
+    handle = FakeStorageHandle()
+    call_1 = ToolCallSpec(id="call_1", name="bash", args={"command": "one"})
+    call_2 = ToolCallSpec(id="call_2", name="bash", args={"command": "two"})
+    responses = [
+        ModelResponse(
+            text=None, tool_calls=[call_1, call_2],
+            raw_message={"role": "assistant", "tool_calls": [1, 2]},
+        ),
+        ModelResponse(text="done", tool_calls=[], raw_message={"role": "assistant"}),
+    ]
+    bus = MessageBus()
+    responses_iter = iter(responses)
+
+    async def fake_model_request(msg: ModelRequest) -> ModelResponse:
+        return next(responses_iter)
+
+    bus.on_request("model_request", fake_model_request)
+
+    executed = []
+
+    async def fake_tool_call(call: FakeToolCall) -> ToolCallResult:
+        executed.append(call.command)
+        if call.command == "one":
+            await bus.post("steering.high", SteeringUserMessage("also check three"))
+        return ToolCallResult(output=f"ran {call.command}")
+
+    bus.on_request("tool_call", fake_tool_call)
+
+    loop = ReactLoopPlugin(
+        storage_handle=handle,
+        tool_schemas=[{"type": "function", "function": {"name": "bash"}}],
+        tool_payload_map={"bash": FakeToolCall},
+    )
+    loop.register(bus)
+
+    await loop._run_turn([SteeringUserMessage("run both")], [])
+
+    assert executed == ["one", "two"]
+    assert {"role": "user", "content": "also check three"} in handle.messages
+    assert handle.messages[-1] == {"role": "assistant", "content": "done"}
+
+
+async def test_model_timeout_raises_abort_turn_and_emits_error_and_turn_end():
+    handle = FakeStorageHandle()
+    bus = MessageBus()
+
+    async def slow_model_request(msg: ModelRequest) -> ModelResponse:
+        await asyncio.sleep(10)
+        return ModelResponse(text="too slow", tool_calls=[], raw_message={})
+
+    bus.on_request("model_request", slow_model_request)
+
+    loop = ReactLoopPlugin(
+        storage_handle=handle,
+        tool_schemas=[{"type": "function", "function": {"name": "bash"}}],
+        tool_payload_map={"bash": FakeToolCall},
+        model_timeout=0.01,
+    )
+    loop.register(bus)
+
+    errors = []
+    turn_ends = []
+
+    async def on_error(msg: Error) -> None:
+        errors.append(msg)
+
+    async def on_turn_end(msg: TurnEnd) -> None:
+        turn_ends.append(msg)
+
+    bus.on_chain("error", on_error)
+    bus.on_chain("turn_end", on_turn_end)
+
+    with pytest.raises(AbortTurn) as exc_info:
+        await loop._run_turn([SteeringUserMessage("hello")], [])
+
+    assert exc_info.value.reason is AbortReason.MODEL_TIMEOUT
+    assert len(errors) == 1
+    assert len(turn_ends) == 1
+    assert not any(m.get("role") == "assistant" for m in handle.messages)
+
+
+async def test_turn_end_drains_steering_low_posted_during_the_turn():
+    handle = FakeStorageHandle()
+    responses = [ModelResponse(text="hi", tool_calls=[], raw_message={})]
+    bus, loop = make_loop(handle, responses)
+
+    async def post_low_result(msg: ModelResponse) -> ModelResponse:
+        await bus.post(
+            "steering.low", SteeringBackgroundResult(task_id="bg1", exit_code=0, output="finished")
+        )
+        return msg
+
+    bus.on_chain("model_response", post_low_result)
+
+    await loop._run_turn([SteeringUserMessage("hello")], [])
+
+    assert any("bg1" in m.get("content", "") for m in handle.messages)
+
+
+# --- run_loop (new) ---
+
+
+async def test_run_loop_idle_abort_finalizes_without_starting_a_turn():
+    handle = FakeStorageHandle()
+    bus, loop = make_loop(handle, [])
+
+    session_ends = []
+    turn_starts = []
+
+    async def on_session_end(msg: SessionEnd) -> None:
+        session_ends.append(msg)
+
+    async def on_turn_start(msg: TurnStart) -> None:
+        turn_starts.append(msg)
+
+    bus.on_chain("session_end", on_session_end)
+    bus.on_chain("turn_start", on_turn_start)
+
+    await bus.post("steering.high", SteeringStopCommand())
+
+    await asyncio.wait_for(loop.run_loop(), timeout=1.0)
+
+    assert len(session_ends) == 1
+    assert turn_starts == []
+
+
+async def test_run_loop_processes_a_message_then_ends_on_a_later_stop_command():
+    handle = FakeStorageHandle()
+    responses = [ModelResponse(text="hi", tool_calls=[], raw_message={})]
+    bus, loop = make_loop(handle, responses)
+
+    session_ends = []
+    assistant_messages = []
+
+    async def on_session_end(msg: SessionEnd) -> None:
+        session_ends.append(msg)
+
+    async def on_assistant_message(msg: AssistantMessage) -> None:
+        assistant_messages.append(msg.text)
+
+    bus.on_chain("session_end", on_session_end)
+    bus.on_chain("assistant_message", on_assistant_message)
+
+    await bus.post("steering.high", SteeringUserMessage("hello"))
+
+    async def post_stop_after_first_turn(msg: TurnEnd) -> TurnEnd:
+        await bus.post("steering.high", SteeringStopCommand())
+        return msg
+
+    bus.on_chain("turn_end", post_stop_after_first_turn)
+
+    await asyncio.wait_for(loop.run_loop(), timeout=1.0)
+
+    assert assistant_messages == ["hi"]
+    assert len(session_ends) == 1
+
+
+async def test_run_loop_drops_high_batch_that_contains_both_message_and_stop():
+    """Per the design's abort semantics, any abort in a drained batch discards
+    the rest of that same batch — a user message posted in the same wake as
+    /agent_stop never starts a turn."""
+    handle = FakeStorageHandle()
+    bus, loop = make_loop(handle, [])
+
+    turn_starts = []
+
+    async def on_turn_start(msg: TurnStart) -> None:
+        turn_starts.append(msg)
+
+    bus.on_chain("turn_start", on_turn_start)
+
+    await bus.post("steering.high", SteeringUserMessage("hello"))
+    await bus.post("steering.high", SteeringStopCommand())
+
+    await asyncio.wait_for(loop.run_loop(), timeout=1.0)
+
+    assert turn_starts == []

@@ -5,9 +5,8 @@ from discord import app_commands
 from loguru import logger
 
 from conic.config import Config
-from conic.types.messages import Input, SessionEnd, SessionStart, TurnEnd, UserInput
 from conic.plugins.channels.discord import DiscordThreadPlugin
-from conic.plugins import meta
+from conic.types.steering import SteeringStopCommand
 
 
 class DiscordGateway:
@@ -81,12 +80,12 @@ class DiscordGateway:
                 self._storage.handle_for(row).set_status("ended")
                 continue
             try:
-                scope = self._plugin_manager.start_session(
+                scope = await self._plugin_manager.start_session(
                     channel="discord",
                     native_id=row.native_id,
                     channel_plugin_factory=lambda t=thread: DiscordThreadPlugin(t),
+                    reason="resume",
                 )
-                await scope.bus.chain(meta.SessionStartEvent, SessionStart(reason="resume"))
             except Exception:
                 logger.exception("failed to construct session {} despite thread existing", row.session_key)
                 continue
@@ -96,34 +95,29 @@ class DiscordGateway:
         scope = self._sessions.get(thread_id)
         if scope is None:
             return
-        async with scope.lock:
-            ctx = await scope.bus.chain(meta.InputEvent, Input(text=text))
-            if ctx.handled:
-                return
-            await scope.bus.chain(meta.UserInputEvent, UserInput(text=ctx.text))
+        await scope.queue.put(text)
 
     async def handle_start_command(
         self, create_thread: Callable[[], Awaitable[object]], respond: Callable[[str], Awaitable[None]]
     ) -> None:
         thread = await create_thread()
         logger.info("starting new session in thread {}", thread.id)
-        scope = self._plugin_manager.start_session(
+        scope = await self._plugin_manager.start_session(
             channel="discord",
             native_id=str(thread.id),
             channel_plugin_factory=lambda: DiscordThreadPlugin(thread),
+            reason="new",
         )
-        await scope.bus.chain(meta.SessionStartEvent, SessionStart(reason="new"))
         self._sessions[thread.id] = scope
         await respond(f"Started session in thread {thread.id}")
 
     async def handle_stop_command(self, thread_id: int, archive: Callable[[], Awaitable[None]]) -> None:
-        scope = self._sessions.pop(thread_id, None)
+        scope = self._sessions.get(thread_id)
         if scope is None:
             logger.warning("stop command for unknown thread {}", thread_id)
             return
         logger.info("stopping session in thread {}", thread_id)
-        async with scope.lock:
-            await scope.bus.chain(meta.SessionStopEvent, TurnEnd())
-            await scope.bus.chain(meta.SessionEndEvent, SessionEnd(reason="user_stop"))
-            self._plugin_manager.stop_session(scope)
+        await scope.bus.post("steering.high", SteeringStopCommand())
+        scope.closing = True
+        self._sessions.pop(thread_id, None)
         await archive()

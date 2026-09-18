@@ -7,7 +7,7 @@ from loguru import logger
 
 from conic.types.messages import (
     AssistantMessage, BuildSystemPrompt, Error, MessageDeltaUpdate, MessageUpdate,
-    StepStart, TurnStart, TurnEnd,
+    SessionEnd, StepStart, TurnStart, TurnEnd,
 )
 from conic.plugins import meta
 
@@ -84,7 +84,7 @@ class DiscordThreadPlugin:
         self._last_edit_time = float("-inf")
 
     def register(self, bus) -> None:
-        bus.on_chain(meta.SessionStopEvent, self.on_session_stop)
+        bus.on_chain(meta.SessionEndEvent, self.on_session_end)
         bus.on_chain(meta.TurnStartEvent, self.on_turn_start)
         bus.on_chain(meta.StepStartEvent, self.on_step_start)
         bus.on_chain(meta.MessageUpdateEvent, self.on_message_update)
@@ -98,7 +98,7 @@ class DiscordThreadPlugin:
         msg.sections["output"] = OUTPUT_REQUIREMENTS
         return msg
 
-    async def on_session_stop(self, _msg: TurnEnd) -> None:
+    async def on_session_end(self, _msg: SessionEnd) -> None:
         self._stopped = True
         self._stop_typing()
 

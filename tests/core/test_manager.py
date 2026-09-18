@@ -1,11 +1,14 @@
+import asyncio
 from dataclasses import dataclass
 from pathlib import Path
 
 from conic.core.manager import PluginManager, PluginSet
+from conic.plugins import meta
 from conic.types.messages import (
-    AssistantMessage, BeforeModelCall, ModelRequest, ModelResponse,
+    AssistantMessage, BeforeModelCall, ModelRequest, ModelResponse, SessionEnd, SessionStart,
     StepStart, SummarizeRequest, SummarizeResult, ToolCallResult,
 )
+from conic.types.steering import SteeringStopCommand, SteeringUserMessage
 from conic.services.storage import StorageService
 
 
@@ -100,23 +103,44 @@ def make_manager(tmp_path):
     return storage, PluginManager(storage, plugin_set)
 
 
+async def wait_until(predicate, timeout=1.0, interval=0.01):
+    async def _poll():
+        while not predicate():
+            await asyncio.sleep(interval)
+
+    await asyncio.wait_for(_poll(), timeout=timeout)
+
+
+async def stop_and_join(scope):
+    await scope.bus.post("steering.high", SteeringStopCommand())
+    scope.closing = True
+    await asyncio.wait_for(asyncio.gather(*scope.tasks.values()), timeout=1.0)
+    # scope.tasks (loop + gateway) finishing doesn't mean PluginManager's own
+    # background join-and-cleanup task (storage "ended", bus.close()) has —
+    # that's a separate task racing this same gather. bus.close() is its last
+    # step, so wait for that as the real "cleanup is done" signal.
+    await wait_until(lambda: scope.bus._closed)
+
+
 async def test_start_session_assembles_a_working_bus(tmp_path):
     storage, manager = make_manager(tmp_path)
     channel_plugin = FakeChannelPlugin()
 
-    scope = manager.start_session(
+    scope = await manager.start_session(
         channel="discord", native_id="1", channel_plugin_factory=lambda: channel_plugin
     )
 
-    from conic.types.messages import UserInput
-    await scope.bus.chain("user_input", UserInput(text="hi"))
+    await scope.bus.post("steering.high", SteeringUserMessage("hi"))
+    await wait_until(lambda: channel_plugin.received)
 
     assert channel_plugin.received == ["ack"]
     assert Path(scope.row.workspace_dir) == tmp_path / "workspace" / "discord" / "1"
+
+    await stop_and_join(scope)
     storage.shutdown()
 
 
-def test_start_session_gives_each_session_fresh_plugin_instances_including_backend(tmp_path):
+async def test_start_session_gives_each_session_fresh_plugin_instances_including_backend(tmp_path):
     """Context/policy plugins, the summarizer, AND the backend must all be
     fresh per-session instances (isolation) -- a plugin that captures its
     session's bus in register() (like OpenRouterModelPlugin does, to emit
@@ -128,10 +152,10 @@ def test_start_session_gives_each_session_fresh_plugin_instances_including_backe
     constructor parameter."""
     storage, manager = make_manager(tmp_path)
 
-    scope1 = manager.start_session(
+    scope1 = await manager.start_session(
         channel="discord", native_id="a", channel_plugin_factory=lambda: FakeChannelPlugin()
     )
-    scope2 = manager.start_session(
+    scope2 = await manager.start_session(
         channel="discord", native_id="b", channel_plugin_factory=lambda: FakeChannelPlugin()
     )
 
@@ -160,17 +184,61 @@ def test_start_session_gives_each_session_fresh_plugin_instances_including_backe
     # But the underlying shared resource (HTTP client) IS shared across them.
     assert backend1.shared_client is backend2.shared_client
 
+    await stop_and_join(scope1)
+    await stop_and_join(scope2)
     storage.shutdown()
 
 
-def test_stop_session_marks_row_as_ended(tmp_path):
+async def test_start_session_chains_session_start_with_the_given_reason(tmp_path):
     storage, manager = make_manager(tmp_path)
-    scope = manager.start_session(
+    starts = []
+
+    class WatchingChannelPlugin(FakeChannelPlugin):
+        def register(self, bus):
+            super().register(bus)
+            bus.on_chain(meta.SessionStartEvent, self.on_session_start)
+
+        async def on_session_start(self, msg: SessionStart) -> None:
+            starts.append(msg.reason)
+
+    scope = await manager.start_session(
+        channel="discord", native_id="1", channel_plugin_factory=WatchingChannelPlugin, reason="resume"
+    )
+
+    assert starts == ["resume"]
+
+    await stop_and_join(scope)
+    storage.shutdown()
+
+
+async def test_agent_stop_ends_the_session_and_marks_the_row_ended(tmp_path):
+    storage, manager = make_manager(tmp_path)
+    scope = await manager.start_session(
         channel="discord", native_id="2", channel_plugin_factory=lambda: FakeChannelPlugin()
     )
 
-    manager.stop_session(scope)
+    session_ends = []
 
+    async def on_session_end(msg: SessionEnd) -> None:
+        session_ends.append(msg.reason)
+
+    scope.bus.on_chain(meta.SessionEndEvent, on_session_end)
+
+    await stop_and_join(scope)
+
+    assert session_ends == ["agent_stop"]
     reloaded = storage.get_or_create(channel="discord", native_id="2")
     assert reloaded.status == "ended"
+    storage.shutdown()
+
+
+async def test_stop_session_closes_the_bus_so_further_posts_are_a_noop(tmp_path):
+    storage, manager = make_manager(tmp_path)
+    scope = await manager.start_session(
+        channel="discord", native_id="3", channel_plugin_factory=lambda: FakeChannelPlugin()
+    )
+
+    await stop_and_join(scope)
+
+    await scope.bus.post("steering.high", SteeringUserMessage("too late"))  # must not raise
     storage.shutdown()

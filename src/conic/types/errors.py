@@ -1,5 +1,22 @@
+from enum import Enum
+
+
+class AbortReason(Enum):
+    POLICY = "policy"
+    MODEL_TIMEOUT = "model_timeout"
+    USER_ABORT = "user_abort"
+
+    @property
+    def ends_session(self) -> bool:
+        return self is AbortReason.USER_ABORT
+
+
 class AbortTurn(Exception):
     """Raised by any hook to abort the current turn cleanly."""
+
+    def __init__(self, message: str = "", reason: AbortReason = AbortReason.POLICY):
+        super().__init__(message)
+        self.reason = reason
 
 
 class NoResponderError(Exception):

@@ -1,4 +1,4 @@
-from conic.types.errors import AbortTurn, NoResponderError, DuplicateResponderError
+from conic.types.errors import AbortReason, AbortTurn, NoResponderError, DuplicateResponderError
 from conic.types.messages import (
     UserInput, TurnStart, TurnEnd, StepStart, BeforeModelCall, ModelRequest,
     ToolCallSpec, ModelResponse, ToolCall, ToolCallResult, AssistantMessage,
@@ -36,3 +36,19 @@ def test_error_types_are_exceptions():
         raise AbortTurn("too many steps")
     except AbortTurn as exc:
         assert "too many steps" in str(exc)
+
+
+def test_abort_turn_defaults_to_policy_reason_that_does_not_end_the_session():
+    exc = AbortTurn("blocked by policy")
+    assert exc.reason is AbortReason.POLICY
+    assert exc.reason.ends_session is False
+
+
+def test_abort_turn_user_abort_reason_ends_the_session():
+    exc = AbortTurn(reason=AbortReason.USER_ABORT)
+    assert exc.reason.ends_session is True
+
+
+def test_abort_turn_model_timeout_reason_does_not_end_the_session():
+    exc = AbortTurn(reason=AbortReason.MODEL_TIMEOUT)
+    assert exc.reason.ends_session is False

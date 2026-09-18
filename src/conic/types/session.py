@@ -9,4 +9,6 @@ from conic.services.models import Session
 class SessionScope:
     bus: MessageBus
     row: Session
-    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    closing: bool = False
+    queue: asyncio.Queue = field(default_factory=asyncio.Queue)
+    tasks: dict[str, asyncio.Task] = field(default_factory=dict)

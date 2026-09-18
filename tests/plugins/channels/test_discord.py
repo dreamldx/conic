@@ -4,7 +4,8 @@ import pytest
 
 from conic.core.bus import MessageBus
 from conic.types.messages import (
-    AssistantMessage, BuildSystemPrompt, Error, MessageDeltaUpdate, MessageUpdate, StepStart, TurnStart,
+    AssistantMessage, BuildSystemPrompt, Error, MessageDeltaUpdate, MessageUpdate, SessionEnd, StepStart,
+    TurnStart,
 )
 from conic.plugins import meta
 from conic.plugins.channels.discord import THINKING_TEXTS, DiscordThreadPlugin
@@ -54,6 +55,18 @@ class FakeClock:
 
     def advance(self, seconds: float) -> None:
         self.now += seconds
+
+
+async def test_session_end_mutes_further_output():
+    thread = FakeThread()
+    plugin = DiscordThreadPlugin(thread)
+    bus = MessageBus()
+    plugin.register(bus)
+
+    await bus.chain(meta.SessionEndEvent, SessionEnd(reason="user_stop"))
+    await bus.chain(meta.AssistantMessageEvent, AssistantMessage(text="hello"))
+
+    assert thread.sent == []
 
 
 async def test_forwards_assistant_message_to_thread():

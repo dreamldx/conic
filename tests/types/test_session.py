@@ -23,15 +23,25 @@ def test_session_scope_holds_bus_and_row():
     assert scope.row is row
 
 
-async def test_session_scope_has_an_asyncio_lock():
+def test_session_scope_starts_not_closing():
     scope = SessionScope(bus=MessageBus(), row=make_row())
-    assert isinstance(scope.lock, asyncio.Lock)
+    assert scope.closing is False
 
 
-async def test_separately_constructed_session_scopes_have_distinct_locks():
+async def test_session_scope_has_an_asyncio_queue():
+    scope = SessionScope(bus=MessageBus(), row=make_row())
+    assert isinstance(scope.queue, asyncio.Queue)
+
+
+async def test_separately_constructed_session_scopes_have_distinct_queues():
     scope1 = SessionScope(bus=MessageBus(), row=make_row("1"))
     scope2 = SessionScope(bus=MessageBus(), row=make_row("2"))
-    assert scope1.lock is not scope2.lock
+    assert scope1.queue is not scope2.queue
+
+
+def test_session_scope_tasks_defaults_to_empty_dict():
+    scope = SessionScope(bus=MessageBus(), row=make_row())
+    assert scope.tasks == {}
 
 
 def test_gateway_protocol_is_satisfied_by_a_minimal_implementation():

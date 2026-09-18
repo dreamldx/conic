@@ -1,49 +1,56 @@
+import asyncio
 from types import SimpleNamespace
 
 from conic.discord.gateway import DiscordGateway
 from conic.services.storage import StorageService
 from conic.plugins import meta
+from conic.types.steering import SteeringItem
 
 
 class FakePluginManagerRecorder:
-    def __init__(self):
-        self.started: list[tuple[str, str]] = []
-        self.stopped: list[object] = []
+    """Mimics the real (async) PluginManager.start_session closely enough for
+    gateway tests: builds a real SessionScope with the steering.high mailbox
+    already registered (as the real loop plugin's register() would do) and
+    chains SessionStartEvent itself, since the real start_session now does
+    that internally rather than leaving it to the caller."""
 
-    def start_session(self, channel, native_id, channel_plugin_factory):
+    def __init__(self):
+        self.started: list[tuple[str, str, str]] = []
+
+    async def start_session(self, channel, native_id, channel_plugin_factory, reason="new"):
         from conic.core.bus import MessageBus
         from conic.types.session import SessionScope
+        from conic.types.messages import SessionStart
         from conic.services.models import Session
         from datetime import datetime, timezone
 
-        self.started.append((channel, native_id))
+        self.started.append((channel, native_id, reason))
         channel_plugin_factory()  # exercise the closure like the real PluginManager does
         row = Session(
             session_key=f"{channel}:{native_id}", channel=channel, native_id=native_id,
             workspace_dir="/tmp", model="m", status="active", created_at=datetime.now(timezone.utc),
         )
-        return SessionScope(bus=MessageBus(), row=row)
-
-    def stop_session(self, scope):
-        self.stopped.append(scope)
+        bus = MessageBus()
+        bus.create_mailbox("steering.high", SteeringItem)
+        await bus.chain(meta.SessionStartEvent, SessionStart(reason=reason))
+        return SessionScope(bus=bus, row=row)
 
 
 class FakePluginManagerFixedScope:
     """Ignores channel_plugin_factory and always returns a pre-built scope,
     so a test can attach bus listeners *before* calling the gateway method —
-    gateway emits session_start internally and returns before the test would
-    otherwise get a chance to subscribe."""
+    the real start_session chains session_start internally and returns before
+    the test would otherwise get a chance to subscribe."""
 
     def __init__(self, scope):
         self._scope = scope
-        self.stopped: list[object] = []
 
-    def start_session(self, channel, native_id, channel_plugin_factory):
+    async def start_session(self, channel, native_id, channel_plugin_factory, reason="new"):
+        from conic.types.messages import SessionStart
+
         channel_plugin_factory()
+        await self._scope.bus.chain(meta.SessionStartEvent, SessionStart(reason=reason))
         return self._scope
-
-    def stop_session(self, scope):
-        self.stopped.append(scope)
 
 
 def make_fixed_scope(native_id="333"):
@@ -53,6 +60,7 @@ def make_fixed_scope(native_id="333"):
     from datetime import datetime, timezone
 
     bus = MessageBus()
+    bus.create_mailbox("steering.high", SteeringItem)
     row = Session(
         session_key=f"discord:{native_id}", channel="discord", native_id=native_id,
         workspace_dir="/tmp", model="m", status="active", created_at=datetime.now(timezone.utc),
@@ -85,7 +93,7 @@ async def test_resume_active_sessions_rebuilds_scope_for_each_active_row(tmp_pat
 
     await gateway.resume_active_sessions(fetch_thread=fake_fetch_thread)
 
-    assert manager.started == [("discord", "111")]
+    assert manager.started == [("discord", "111", "resume")]
     assert 111 in gateway._sessions
     storage.shutdown()
 
@@ -108,7 +116,7 @@ async def test_resume_active_sessions_continues_past_a_dead_thread(tmp_path):
 
     await gateway.resume_active_sessions(fetch_thread=flaky_fetch_thread)
 
-    assert sorted(manager.started) == [("discord", "111"), ("discord", "333")]
+    assert sorted((c, n) for c, n, _ in manager.started) == [("discord", "111"), ("discord", "333")]
     assert 111 in gateway._sessions
     assert 333 in gateway._sessions
     assert 222 not in gateway._sessions
@@ -128,10 +136,10 @@ async def test_resume_active_sessions_does_not_mark_ended_when_thread_exists_but
     storage.get_or_create(channel="discord", native_id="222")
 
     class FailingPluginManager(FakePluginManagerRecorder):
-        def start_session(self, channel, native_id, channel_plugin_factory):
+        async def start_session(self, channel, native_id, channel_plugin_factory, reason="new"):
             if native_id == "222":
                 raise RuntimeError("plugin factory bug")
-            return super().start_session(channel, native_id, channel_plugin_factory)
+            return await super().start_session(channel, native_id, channel_plugin_factory, reason)
 
     manager = FailingPluginManager()
     gateway = DiscordGateway(make_config(), plugin_manager=manager, storage=storage)
@@ -202,82 +210,45 @@ async def test_resume_active_sessions_emits_session_start_with_reason_resume(tmp
     storage.shutdown()
 
 
-async def test_handle_stop_command_emits_session_end_with_reason_user_stop():
-    from conic.types.messages import SessionEnd
-
+async def test_handle_stop_command_posts_a_stop_command_and_sets_closing():
     manager = FakePluginManagerRecorder()
     gateway = DiscordGateway(make_config(), plugin_manager=manager, storage=None)
-    scope = manager.start_session("discord", "444", lambda: object())
+    scope = await manager.start_session("discord", "444", lambda: object())
     gateway._sessions[444] = scope
-
-    ends = []
-
-    async def on_session_end(msg: SessionEnd) -> None:
-        ends.append(msg.reason)
-
-    scope.bus.on_chain(meta.SessionEndEvent, on_session_end)
 
     async def fake_archive():
         pass
 
     await gateway.handle_stop_command(thread_id=444, archive=fake_archive)
 
-    assert ends == ["user_stop"]
+    posted = await scope.bus.drain("steering.high")
+    assert len(posted) == 1
+    assert posted[0].is_turn_abort() is True
+    assert scope.closing is True
 
 
-async def test_handle_message_routes_to_known_session():
+async def test_handle_message_routes_to_known_session_by_enqueueing():
     manager = FakePluginManagerRecorder()
     gateway = DiscordGateway(make_config(), plugin_manager=manager, storage=None)
-    scope = manager.start_session("discord", "222", lambda: object())
+    scope = await manager.start_session("discord", "222", lambda: object())
     gateway._sessions[222] = scope
-
-    received = []
-    from conic.types.messages import UserInput
-
-    async def on_user_input(msg: UserInput) -> None:
-        received.append(msg.text)
-
-    scope.bus.on_chain("user_input", on_user_input)
 
     await gateway.handle_message(thread_id=222, text="hello")
 
-    assert received == ["hello"]
+    assert await asyncio.wait_for(scope.queue.get(), timeout=1.0) == "hello"
 
 
-async def test_handle_message_serializes_concurrent_messages_for_the_same_thread():
-    """Two concurrent handle_message calls for the same thread must not
-    interleave: the second turn must only start after the first's handler
-    has fully completed."""
-    import asyncio
-
+async def test_handle_message_enqueues_multiple_messages_in_order():
     manager = FakePluginManagerRecorder()
     gateway = DiscordGateway(make_config(), plugin_manager=manager, storage=None)
-    scope = manager.start_session("discord", "222", lambda: object())
+    scope = await manager.start_session("discord", "222", lambda: object())
     gateway._sessions[222] = scope
 
-    from conic.types.messages import UserInput
+    await gateway.handle_message(thread_id=222, text="first")
+    await gateway.handle_message(thread_id=222, text="second")
 
-    events = []
-
-    async def on_user_input(msg: UserInput) -> None:
-        events.append(("start", msg.text))
-        if msg.text == "first":
-            await asyncio.sleep(0.05)
-        events.append(("end", msg.text))
-
-    scope.bus.on_chain("user_input", on_user_input)
-
-    await asyncio.gather(
-        gateway.handle_message(thread_id=222, text="first"),
-        gateway.handle_message(thread_id=222, text="second"),
-    )
-
-    assert events == [
-        ("start", "first"),
-        ("end", "first"),
-        ("start", "second"),
-        ("end", "second"),
-    ]
+    assert await scope.queue.get() == "first"
+    assert await scope.queue.get() == "second"
 
 
 async def test_handle_message_ignores_unknown_thread():
@@ -303,15 +274,15 @@ async def test_handle_start_command_registers_new_session():
 
     await gateway.handle_start_command(create_thread=fake_create_thread, respond=fake_respond)
 
-    assert manager.started == [("discord", "333")]
+    assert [(c, n) for c, n, _ in manager.started] == [("discord", "333")]
     assert 333 in gateway._sessions
     assert responses  # a confirmation was sent
 
 
-async def test_handle_stop_command_removes_session_and_calls_stop_session():
+async def test_handle_stop_command_removes_session_from_routing_table():
     manager = FakePluginManagerRecorder()
     gateway = DiscordGateway(make_config(), plugin_manager=manager, storage=None)
-    scope = manager.start_session("discord", "444", lambda: object())
+    scope = await manager.start_session("discord", "444", lambda: object())
     gateway._sessions[444] = scope
 
     archived = []
@@ -322,41 +293,7 @@ async def test_handle_stop_command_removes_session_and_calls_stop_session():
     await gateway.handle_stop_command(thread_id=444, archive=fake_archive)
 
     assert 444 not in gateway._sessions
-    assert manager.stopped == [scope]
     assert archived == [True]
-
-
-async def test_handle_stop_command_waits_for_an_in_flight_turn_to_finish():
-    """/agent_stop must not archive/stop the session while a turn triggered by
-    handle_message is still running under the same scope.lock — it must wait
-    for the lock instead of racing the in-flight turn."""
-    import asyncio
-
-    manager = FakePluginManagerRecorder()
-    gateway = DiscordGateway(make_config(), plugin_manager=manager, storage=None)
-    scope = manager.start_session("discord", "444", lambda: object())
-    gateway._sessions[444] = scope
-
-    from conic.types.messages import UserInput
-
-    events = []
-
-    async def on_user_input(msg: UserInput) -> None:
-        events.append("turn_start")
-        await asyncio.sleep(0.05)
-        events.append("turn_end")
-
-    scope.bus.on_chain("user_input", on_user_input)
-
-    async def fake_archive():
-        events.append("archived")
-
-    await asyncio.gather(
-        gateway.handle_message(thread_id=444, text="hello"),
-        gateway.handle_stop_command(thread_id=444, archive=fake_archive),
-    )
-
-    assert events == ["turn_start", "turn_end", "archived"]
 
 
 async def test_handle_stop_command_on_unknown_thread_is_a_noop():
@@ -367,54 +304,3 @@ async def test_handle_stop_command_on_unknown_thread_is_a_noop():
         raise AssertionError("should not be called")
 
     await gateway.handle_stop_command(thread_id=555, archive=fake_archive)  # must not raise
-    assert manager.stopped == []
-
-
-async def test_handle_message_input_hook_can_transform_text_before_user_input():
-    from conic.types.messages import Input, UserInput
-
-    manager = FakePluginManagerRecorder()
-    gateway = DiscordGateway(make_config(), plugin_manager=manager, storage=None)
-    scope = manager.start_session("discord", "222", lambda: object())
-    gateway._sessions[222] = scope
-
-    async def upcase(msg: Input) -> Input:
-        return Input(text=msg.text.upper())
-
-    received = []
-
-    async def on_user_input(msg: UserInput) -> None:
-        received.append(msg.text)
-
-    scope.bus.on_chain(meta.InputEvent, upcase)
-    scope.bus.on_chain(meta.UserInputEvent, on_user_input)
-
-    await gateway.handle_message(thread_id=222, text="hello")
-
-    assert received == ["HELLO"]
-
-
-async def test_handle_message_input_hook_can_mark_handled_and_short_circuit():
-    from conic.types.messages import Input, UserInput
-
-    manager = FakePluginManagerRecorder()
-    gateway = DiscordGateway(make_config(), plugin_manager=manager, storage=None)
-    scope = manager.start_session("discord", "222", lambda: object())
-    gateway._sessions[222] = scope
-
-    async def handle_command(msg: Input) -> Input:
-        if msg.text == "!status":
-            return Input(text=msg.text, handled=True)
-        return msg
-
-    received = []
-
-    async def on_user_input(msg: UserInput) -> None:
-        received.append(msg.text)
-
-    scope.bus.on_chain(meta.InputEvent, handle_command)
-    scope.bus.on_chain(meta.UserInputEvent, on_user_input)
-
-    await gateway.handle_message(thread_id=222, text="!status")
-
-    assert received == []
