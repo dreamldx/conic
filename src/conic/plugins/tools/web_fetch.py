@@ -1,13 +1,15 @@
 import hashlib
 from dataclasses import dataclass
 from pathlib import Path
+from typing import ClassVar
 
 import aiohttp
 from loguru import logger
 
 from conic.plugins import meta
-from conic.plugins.tools.base import post_json, strip_special_tokens, validate_web_url, wrap_untrusted
+from conic.plugins.tools.base import strip_special_tokens, wrap_untrusted
 from conic.types.messages import BuildSystemPrompt, ToolCallResult
+from conic.utils.net import ProviderResponseError, http_post_json, validate_web_url
 
 FIRECRAWL_SCRAPE_URL = "https://api.firecrawl.dev/v2/scrape"
 HEAD_RATIO = 0.75
@@ -56,7 +58,7 @@ class WebFetchCall:
 
 class WebFetchToolPlugin:
     llm_name = "web_fetch"
-    schema = build_web_fetch_schema(include_prompt=False)
+    schema: ClassVar[dict] = build_web_fetch_schema(include_prompt=False)
 
     def __init__(self, workspace_dir: str, api_key: str = "", timeout: float = 60.0,
                  max_chars: int = 15000, summary_model: str = "", summary_client=None,
@@ -84,17 +86,19 @@ class WebFetchToolPlugin:
             return ToolCallResult(error=url_error)
         payload = {
             "url": call.url, "formats": ["markdown"],
-            "onlyMainContent": True, "proxy": "auto", "maxAge": 172_800_000,
+            "onlyMainContent": True, "onlyCleanContent": True,
+            "skipTlsVerification": True,
+            "proxy": "auto", "maxAge": 172_800_000, "timeout": 30000,
         }
         try:
-            status, body, text = await post_json(
+            status, body, text = await http_post_json(
                 self._session_factory,
                 FIRECRAWL_SCRAPE_URL,
                 payload,
                 {"Authorization": f"Bearer {self._api_key}"},
                 self._timeout,
             )
-        except aiohttp.ClientError as exc:
+        except (aiohttp.ClientError, TimeoutError, ProviderResponseError) as exc:
             return ToolCallResult(error=f"web_fetch request failed: {exc}")
         if status != 200:
             return ToolCallResult(error=f"web_fetch failed with HTTP {status}: {text[:200]}")
@@ -142,7 +146,7 @@ class WebFetchToolPlugin:
                     ),
                 }],
             )
-        except Exception as exc:
+        except (AttributeError, IndexError, RuntimeError, TypeError, ValueError) as exc:
             logger.debug("web_fetch summary failed, falling back to raw: {}", exc)
             return self._render(call.url, markdown)
         answer = (resp.choices[0].message.content or "").strip()

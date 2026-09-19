@@ -191,14 +191,20 @@ from conic.plugins.tools.web_search import WebSearchToolPlugin
 
 
 def make_config_with(**extra):
-    base = dict(
-        _env_file=None,
-        PROJECT_ROOT="/tmp",
-        DISCORD_BOT_TOKEN="d", OPENROUTER_API_KEY="k", OPENROUTER_MODEL="test-model",
-        WORKSPACE_ROOT="./workspace", DUCKDB_PATH="./data/conic.duckdb",
-        LOG_LEVEL="DEBUG", MAX_STEPS_PER_TURN=7, CONTEXT_TOKEN_BUDGET=123, TRUNCATE_KEEP_LAST_N=9,
-        BASH_TIMEOUT=42,
-    )
+    base = {
+        "_env_file": None,
+        "PROJECT_ROOT": "/tmp",
+        "DISCORD_BOT_TOKEN": "d",
+        "OPENROUTER_API_KEY": "k",
+        "OPENROUTER_MODEL": "test-model",
+        "WORKSPACE_ROOT": "./workspace",
+        "DUCKDB_PATH": "./data/conic.duckdb",
+        "LOG_LEVEL": "DEBUG",
+        "MAX_STEPS_PER_TURN": 7,
+        "CONTEXT_TOKEN_BUDGET": 123,
+        "TRUNCATE_KEEP_LAST_N": 9,
+        "BASH_TIMEOUT": 42,
+    }
     base.update(extra)
     return Config(**base)
 

@@ -2,8 +2,14 @@ import aiohttp
 
 from conic.core.bus import MessageBus
 from conic.plugins import meta
-from conic.plugins.tools.web_search import CITE_SUFFIX, WEB_SEARCH_SECTION, WebSearchCall, WebSearchToolPlugin
 from conic.plugins.tools.base import UNTRUSTED_NOTICE
+from conic.plugins.tools.web_search import (
+    CITE_SUFFIX,
+    TOPIC_OPTIONS,
+    WEB_SEARCH_SECTION,
+    WebSearchCall,
+    WebSearchToolPlugin,
+)
 from conic.types.messages import BuildSystemPrompt
 
 
@@ -85,23 +91,76 @@ async def test_strips_special_tokens_from_results():
     assert "<|endoftext|>" not in result.output
 
 
-async def test_sends_clamped_params_and_bearer_auth():
-    captured = []
-    tool = make_tool(tavily_session_factory(RESULTS, capture=captured))
-    await tool.execute(WebSearchCall(query="q", max_results=99, time_range="week"))
-    request = captured[0]
-    assert request["headers"]["Authorization"] == "Bearer tv-key"
-    body = request["json"]
-    assert body == {"query": "q", "max_results": 10, "search_depth": "basic", "time_range": "week"}
-
-
-async def test_omits_time_range_when_empty():
+async def test_sends_default_params_with_advanced_depth():
     captured = []
     tool = make_tool(tavily_session_factory(RESULTS, capture=captured))
     await tool.execute(WebSearchCall(query="q"))
     body = captured[0]["json"]
+    assert body == {"query": "q", "max_results": 5, "search_depth": "advanced", "topic": "general"}
     assert "time_range" not in body
-    assert body["max_results"] == 5
+
+
+async def test_sends_clamped_params_and_all_optional_fields():
+    captured = []
+    tool = make_tool(tavily_session_factory(RESULTS, capture=captured))
+    await tool.execute(WebSearchCall(
+        query="q", max_results=99, time_range="week",
+        topic="general", country="china", exact_match=True,
+        include_domains=["docs.example.com"], include_answer="advanced",
+    ))
+    body = captured[0]["json"]
+    assert body["search_depth"] == "advanced"
+    assert body["topic"] == "general"
+    assert body["country"] == "china"
+    assert body["exact_match"] is True
+    assert body["include_domains"] == ["docs.example.com"]
+    assert body["include_answer"] == "advanced"
+
+
+async def test_country_only_sent_with_general_topic():
+    captured = []
+    tool = make_tool(tavily_session_factory(RESULTS, capture=captured))
+    await tool.execute(WebSearchCall(query="q", topic="news", country="china"))
+    body = captured[0]["json"]
+    assert "country" not in body
+
+
+async def test_invalid_topic_falls_back_to_general():
+    captured = []
+    tool = make_tool(tavily_session_factory(RESULTS, capture=captured))
+    await tool.execute(WebSearchCall(query="q", topic="invalid"))
+    body = captured[0]["json"]
+    assert body["topic"] == "general"
+
+
+async def test_invalid_include_answer_falls_back_to_basic():
+    captured = []
+    tool = make_tool(tavily_session_factory(RESULTS, capture=captured))
+    await tool.execute(WebSearchCall(query="q", include_answer="fast"))
+    body = captured[0]["json"]
+    assert body["include_answer"] == "basic"
+
+
+async def test_empty_include_domains_and_answer_omitted():
+    captured = []
+    tool = make_tool(tavily_session_factory(RESULTS, capture=captured))
+    await tool.execute(WebSearchCall(query="q"))
+    body = captured[0]["json"]
+    assert "include_domains" not in body
+    assert "include_answer" not in body
+
+
+async def test_formats_answer_before_results_when_present():
+    body = {
+        "results": [{"title": "X", "url": "https://x.com", "content": "data"}],
+        "answer": "This is the synthesized answer.",
+    }
+    tool = make_tool(tavily_session_factory(body))
+    result = await tool.execute(WebSearchCall(query="q"))
+    assert "Answer: This is the synthesized answer." in result.output
+    answer_pos = result.output.index("Answer:")
+    results_pos = result.output.index("Results for")
+    assert answer_pos < results_pos
 
 
 async def test_empty_results_return_actionable_message():
@@ -120,10 +179,31 @@ async def test_http_error_becomes_result_error():
 
 
 async def test_client_failure_becomes_result_error():
-    tool = make_tool(tavily_session_factory(error=aiohttp.ClientError("timed out")))
+    tool = make_tool(tavily_session_factory(error=TimeoutError("timed out")))
     result = await tool.execute(WebSearchCall(query="q"))
     assert result.error is not None
     assert "timed out" in result.error
+
+
+async def test_non_json_success_response_is_error_not_empty_results():
+    class HtmlResponse(FakeResponse):
+        async def text(self):
+            return "<html>blocked</html>"
+
+        async def json(self):
+            raise aiohttp.ContentTypeError(None, ())
+
+    class HtmlSession(FakeSession):
+        def post(self, url, json, headers):
+            return HtmlResponse()
+
+    def factory(timeout):
+        return HtmlSession()
+    tool = make_tool(factory)
+    result = await tool.execute(WebSearchCall(query="q"))
+    assert result.error is not None
+    assert "non-JSON" in result.error
+    assert result.output is None
 
 
 async def test_contributes_web_search_section_with_turn_now_and_untrusted_rule():
@@ -135,3 +215,27 @@ async def test_contributes_web_search_section_with_turn_now_and_untrusted_rule()
     assert "{{ turn.now }}" in WEB_SEARCH_SECTION
     assert "if web_fetch is available" in WEB_SEARCH_SECTION
     assert "EXTERNAL_UNTRUSTED_CONTENT" in WEB_SEARCH_SECTION
+    assert "`news`" in WEB_SEARCH_SECTION
+    assert "`finance`" in WEB_SEARCH_SECTION
+    assert "include_domains" in WEB_SEARCH_SECTION
+    assert "include_answer" in WEB_SEARCH_SECTION
+
+
+async def test_topic_options_are_general_news_finance():
+    assert TOPIC_OPTIONS == ["general", "news", "finance"]
+
+
+async def test_schema_exposes_all_new_parameters():
+    schema = WebSearchToolPlugin.schema
+    props = schema["function"]["parameters"]["properties"]
+    assert "query" in props
+    assert "max_results" in props
+    assert "time_range" in props
+    assert "topic" in props
+    assert props["topic"]["enum"] == TOPIC_OPTIONS
+    assert "country" in props
+    assert "exact_match" in props
+    assert "include_domains" in props
+    assert props["include_domains"]["items"]["type"] == "string"
+    assert "include_answer" in props
+    assert props["include_answer"]["enum"] == ["basic", "advanced"]
