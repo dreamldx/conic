@@ -1,15 +1,22 @@
 import asyncio
 import random
 import time
-from typing import Callable
+from collections.abc import Callable
 
 from loguru import logger
 
-from conic.types.messages import (
-    AssistantMessage, BuildSystemPrompt, Error, MessageDeltaUpdate, MessageUpdate,
-    SessionEnd, StepStart, TurnStart, TurnEnd,
-)
 from conic.plugins import meta
+from conic.types.messages import (
+    AssistantMessage,
+    BuildSystemPrompt,
+    Error,
+    MessageDeltaUpdate,
+    MessageUpdate,
+    SessionEnd,
+    StepStart,
+    TurnEnd,
+    TurnStart,
+)
 
 OUTPUT_REQUIREMENTS = (
     "Your reply is posted to a Discord thread. Formatting constraints:\n"

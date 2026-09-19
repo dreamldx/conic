@@ -27,7 +27,7 @@ async def test_contribute_preserves_existing_turn_variables():
 
 
 async def test_emit_on_turn_start_populates_turn_variables():
-    plugin, bus = make_plugin()
+    _plugin, bus = make_plugin()
     result = await bus.chain(
         meta.TurnStartEvent, TurnStart(variables={"global": {}, "session": {}, "turn": {}})
     )

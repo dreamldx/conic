@@ -1,5 +1,5 @@
-from conic.types.messages import BuildDynamicPrompt
 from conic.plugins import meta
+from conic.types.messages import BuildDynamicPrompt
 
 
 class DynamicStateSectionPlugin:

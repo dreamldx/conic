@@ -44,11 +44,9 @@ async def test_chain_calls_handlers_in_registration_order():
 
     async def first(msg: Ping):
         calls.append("first")
-        return None
 
     async def second(msg: Ping):
         calls.append("second")
-        return None
 
     bus.on_chain("ping", first)
     bus.on_chain("ping", second)

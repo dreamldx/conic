@@ -3,8 +3,13 @@ import json
 from loguru import logger
 from openai import AsyncOpenAI
 
-from conic.types.messages import MessageDeltaUpdate, ModelRequest, ModelResponse, ToolCallSpec
 from conic.plugins import meta
+from conic.types.messages import (
+    MessageDeltaUpdate,
+    ModelRequest,
+    ModelResponse,
+    ToolCallSpec,
+)
 
 APP_HTTP_REFERER = "https://github.com/dreamldx/conic"
 

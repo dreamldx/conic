@@ -1,7 +1,7 @@
 import sys
 
-from conic.plugins.tools.bash import BashCall, BashToolPlugin
 from conic.core.bus import MessageBus
+from conic.plugins.tools.bash import BashCall, BashToolPlugin
 from conic.types.messages import BuildSystemPrompt
 
 

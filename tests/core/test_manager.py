@@ -1,15 +1,24 @@
 import asyncio
 from dataclasses import dataclass
 from pathlib import Path
+from typing import ClassVar
 
 from conic.core.manager import PluginManager, PluginSet
 from conic.plugins import meta
+from conic.services.storage import StorageService
 from conic.types.messages import (
-    AssistantMessage, BeforeModelCall, ModelRequest, ModelResponse, SessionEnd, SessionStart,
-    StepStart, SummarizeRequest, SummarizeResult, ToolCallResult,
+    AssistantMessage,
+    BeforeModelCall,
+    ModelRequest,
+    ModelResponse,
+    SessionEnd,
+    SessionStart,
+    StepStart,
+    SummarizeRequest,
+    SummarizeResult,
+    ToolCallResult,
 )
 from conic.types.steering import SteeringStopCommand, SteeringUserMessage
-from conic.services.storage import StorageService
 
 
 @dataclass
@@ -19,7 +28,7 @@ class FakeCall:
 
 class FakeToolPlugin:
     llm_name = "bash"
-    schema = {"type": "function", "function": {"name": "bash"}}
+    schema: ClassVar[dict] = {"type": "function", "function": {"name": "bash"}}
 
     def __init__(self, workspace_dir: str):
         self.workspace_dir = workspace_dir

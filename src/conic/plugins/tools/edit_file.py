@@ -1,8 +1,9 @@
 from dataclasses import dataclass
+from typing import ClassVar
 
-from conic.types.messages import BuildSystemPrompt, ToolCallResult
-from conic.plugins.tools.base import WorkspaceEscapeError, resolve_within_workspace
 from conic.plugins import meta
+from conic.plugins.tools.base import WorkspaceEscapeError, resolve_within_workspace
+from conic.types.messages import BuildSystemPrompt, ToolCallResult
 
 
 @dataclass
@@ -14,7 +15,7 @@ class EditFileCall:
 
 class EditFileToolPlugin:
     llm_name = "edit_file"
-    schema = {
+    schema: ClassVar[dict] = {
         "type": "function",
         "function": {
             "name": "edit_file",

@@ -4,7 +4,12 @@ from conic.plugins.context.extra_prompt import ExtraPromptPlugin
 from conic.plugins.context.sections.dynamic_state import DynamicStateSectionPlugin
 from conic.plugins.context.token_budget import TokenBudgetPlugin
 from conic.plugins.context.truncator import TruncatorPlugin
-from conic.types.messages import BeforeModelCall, BuildDynamicPrompt, SummarizeRequest, SummarizeResult
+from conic.types.messages import (
+    BeforeModelCall,
+    BuildDynamicPrompt,
+    SummarizeRequest,
+    SummarizeResult,
+)
 
 
 def make_plugin():
@@ -79,7 +84,7 @@ async def test_forwards_tools_and_variables_unchanged():
 
 
 async def test_emit_on_before_model_call_appends_to_last_message():
-    plugin, bus = make_plugin()
+    _plugin, bus = make_plugin()
     ctx = BeforeModelCall(
         messages=[{"role": "user", "content": "hi"}],
         tools=[],

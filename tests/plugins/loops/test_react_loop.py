@@ -4,14 +4,31 @@ from dataclasses import dataclass
 import pytest
 
 from conic.core.bus import MessageBus
+from conic.plugins.loops.react_loop import ReactLoopPlugin
 from conic.types.errors import AbortReason, AbortTurn
 from conic.types.messages import (
-    AssistantMessage, BeforeModelCall, Error, MessageUpdate, ModelRequest, ModelResponse, SessionEnd,
-    StepEnd, StepStart, ToolCall, ToolCallResult, ToolCallSpec, ToolExecutionEnd, ToolExecutionStart,
-    TurnEnd, TurnStart,
+    AssistantMessage,
+    BeforeModelCall,
+    Error,
+    MessageUpdate,
+    ModelRequest,
+    ModelResponse,
+    SessionEnd,
+    StepEnd,
+    StepStart,
+    ToolCall,
+    ToolCallResult,
+    ToolCallSpec,
+    ToolExecutionEnd,
+    ToolExecutionStart,
+    TurnEnd,
+    TurnStart,
 )
-from conic.types.steering import SteeringBackgroundResult, SteeringStopCommand, SteeringUserMessage
-from conic.plugins.loops.react_loop import ReactLoopPlugin
+from conic.types.steering import (
+    SteeringBackgroundResult,
+    SteeringStopCommand,
+    SteeringUserMessage,
+)
 
 
 class FakeStorageHandle:
@@ -328,7 +345,7 @@ async def test_unknown_tool_name_does_not_corrupt_history_and_continues_next_ste
         ModelResponse(text=None, tool_calls=[tool_call], raw_message={"role": "assistant", "tool_calls": [1]}),
         ModelResponse(text="done", tool_calls=[], raw_message={"role": "assistant"}),
     ]
-    bus, loop = make_loop(handle, responses)
+    _bus, loop = make_loop(handle, responses)
 
     await loop._run_turn([SteeringUserMessage("run unknown tool")], [])
 
@@ -514,7 +531,7 @@ async def test_session_variables_seeded_from_persisted_values():
 async def test_session_variables_persisted_after_successful_turn():
     handle = FakeStorageHandle()
     responses = [ModelResponse(text="hi", tool_calls=[], raw_message={})]
-    bus, loop = make_loop(handle, responses)
+    _bus, loop = make_loop(handle, responses)
 
     await loop._run_turn([SteeringUserMessage("hello")], [])
 
@@ -627,7 +644,7 @@ async def test_turn_count_seeded_from_persisted_value():
 async def test_turn_start_injects_the_full_high_and_low_batch_into_history():
     handle = FakeStorageHandle()
     responses = [ModelResponse(text="hi", tool_calls=[], raw_message={})]
-    bus, loop = make_loop(handle, responses)
+    _bus, loop = make_loop(handle, responses)
 
     await loop._run_turn(
         [SteeringUserMessage("hello")],

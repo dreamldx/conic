@@ -1,8 +1,8 @@
 import pytest
 
+from conic.plugins.policy.step_limit import StepLimitPlugin
 from conic.types.errors import AbortTurn
 from conic.types.messages import StepStart
-from conic.plugins.policy.step_limit import StepLimitPlugin
 
 
 async def test_allows_steps_under_the_limit():

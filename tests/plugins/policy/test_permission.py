@@ -1,5 +1,5 @@
-from conic.types.messages import ToolCall, ToolCallSpec
 from conic.plugins.policy.permission import PermissionPolicyPlugin
+from conic.types.messages import ToolCall, ToolCallSpec
 
 
 async def test_v1_allows_every_tool_call():

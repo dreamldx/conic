@@ -1,14 +1,13 @@
 import json
-from dataclasses import dataclass, field
 from types import SimpleNamespace
 
 import pytest
 from loguru import logger
 
 from conic.core.bus import MessageBus
-from conic.types.messages import MessageDeltaUpdate, ModelRequest
 from conic.plugins import meta
 from conic.plugins.models.openrouter import APP_HTTP_REFERER, OpenRouterModelPlugin
+from conic.types.messages import MessageDeltaUpdate, ModelRequest
 
 
 class FakeCompletions:

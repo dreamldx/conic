@@ -1,6 +1,6 @@
 import asyncio
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable
 
 from loguru import logger
 

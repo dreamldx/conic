@@ -1,17 +1,17 @@
 import asyncio
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from conic.core.bus import MessageBus
+from conic.services.models import Session
 from conic.types.gateway import Gateway
 from conic.types.session import SessionScope
-from conic.services.models import Session
 
 
 def make_row(native_id="1"):
     return Session(
         session_key=f"discord:{native_id}", channel="discord", native_id=native_id,
         workspace_dir="/tmp/ws", model="m", status="active",
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
     )
 
 

@@ -1,7 +1,6 @@
 import pytest
-from pydantic import ValidationError
 
-from conic.config import Config, ConfigError, load_config
+from conic.config import ConfigError, load_config
 
 
 def test_load_config_applies_defaults():

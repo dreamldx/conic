@@ -1,10 +1,11 @@
 import asyncio
 from dataclasses import dataclass
+from typing import ClassVar
 
 from loguru import logger
 
-from conic.types.messages import BuildSystemPrompt, ToolCallResult
 from conic.plugins import meta
+from conic.types.messages import BuildSystemPrompt, ToolCallResult
 
 
 @dataclass
@@ -14,7 +15,7 @@ class BashCall:
 
 class BashToolPlugin:
     llm_name = "bash"
-    schema = {
+    schema: ClassVar[dict] = {
         "type": "function",
         "function": {
             "name": "bash",
@@ -65,17 +66,16 @@ class BashToolPlugin:
 
         try:
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=self._timeout)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             proc.kill()
             await proc.wait()
             return ToolCallResult(error=f"command timed out after {self._timeout}s")
         except OSError as exc:
-            # Attempt cleanup without masking the original error
             try:
                 proc.kill()
                 await proc.wait()
-            except Exception:
-                pass  # Ignore cleanup failures
+            except (OSError, RuntimeError) as cleanup_exc:
+                logger.debug("bash cleanup failed after communicate error: {}", cleanup_exc)
             return ToolCallResult(error=str(exc))
 
         output = stdout.decode(errors="replace")

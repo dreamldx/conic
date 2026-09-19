@@ -1,11 +1,12 @@
 import asyncio
+from datetime import UTC
 from types import SimpleNamespace
 
 from loguru import logger
 
 from conic.discord.gateway import DiscordGateway
-from conic.services.storage import StorageService
 from conic.plugins import meta
+from conic.services.storage import StorageService
 from conic.types.steering import SteeringItem
 
 
@@ -20,17 +21,18 @@ class FakePluginManagerRecorder:
         self.started: list[tuple[str, str, str]] = []
 
     async def start_session(self, channel, native_id, channel_plugin_factory, reason="new"):
+        from datetime import datetime
+
         from conic.core.bus import MessageBus
-        from conic.types.session import SessionScope
-        from conic.types.messages import SessionStart
         from conic.services.models import Session
-        from datetime import datetime, timezone
+        from conic.types.messages import SessionStart
+        from conic.types.session import SessionScope
 
         self.started.append((channel, native_id, reason))
         channel_plugin_factory()  # exercise the closure like the real PluginManager does
         row = Session(
             session_key=f"{channel}:{native_id}", channel=channel, native_id=native_id,
-            workspace_dir="/tmp", model="m", status="active", created_at=datetime.now(timezone.utc),
+            workspace_dir="/tmp", model="m", status="active", created_at=datetime.now(UTC),
         )
         bus = MessageBus()
         bus.create_mailbox("steering.high", SteeringItem)
@@ -56,16 +58,17 @@ class FakePluginManagerFixedScope:
 
 
 def make_fixed_scope(native_id="333"):
+    from datetime import datetime
+
     from conic.core.bus import MessageBus
-    from conic.types.session import SessionScope
     from conic.services.models import Session
-    from datetime import datetime, timezone
+    from conic.types.session import SessionScope
 
     bus = MessageBus()
     bus.create_mailbox("steering.high", SteeringItem)
     row = Session(
         session_key=f"discord:{native_id}", channel="discord", native_id=native_id,
-        workspace_dir="/tmp", model="m", status="active", created_at=datetime.now(timezone.utc),
+        workspace_dir="/tmp", model="m", status="active", created_at=datetime.now(UTC),
     )
     return bus, SessionScope(bus=bus, row=row)
 

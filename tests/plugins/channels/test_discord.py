@@ -3,12 +3,18 @@ import asyncio
 import pytest
 
 from conic.core.bus import MessageBus
-from conic.types.messages import (
-    AssistantMessage, BuildSystemPrompt, Error, MessageDeltaUpdate, MessageUpdate, SessionEnd, StepStart,
-    TurnStart,
-)
 from conic.plugins import meta
 from conic.plugins.channels.discord import THINKING_TEXTS, DiscordThreadPlugin
+from conic.types.messages import (
+    AssistantMessage,
+    BuildSystemPrompt,
+    Error,
+    MessageDeltaUpdate,
+    MessageUpdate,
+    SessionEnd,
+    StepStart,
+    TurnStart,
+)
 
 
 class FakeMessage:

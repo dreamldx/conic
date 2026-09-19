@@ -1,8 +1,26 @@
-from conic.types.errors import AbortReason, AbortTurn, NoResponderError, DuplicateResponderError
+from conic.types.errors import (
+    AbortReason,
+    AbortTurn,
+    DuplicateResponderError,
+    NoResponderError,
+)
 from conic.types.messages import (
-    UserInput, TurnStart, TurnEnd, StepStart, BeforeModelCall, ModelRequest,
-    ToolCallSpec, ModelResponse, ToolCall, ToolCallResult, AssistantMessage,
-    Error, SummarizeRequest, SummarizeResult, MessageUpdate, MessageDeltaUpdate,
+    AssistantMessage,
+    BeforeModelCall,
+    Error,
+    MessageDeltaUpdate,
+    MessageUpdate,
+    ModelRequest,
+    ModelResponse,
+    StepStart,
+    SummarizeRequest,
+    SummarizeResult,
+    ToolCall,
+    ToolCallResult,
+    ToolCallSpec,
+    TurnEnd,
+    TurnStart,
+    UserInput,
 )
 
 
@@ -19,7 +37,7 @@ def test_message_dataclasses_construct():
     assert result.error is None
     assert AssistantMessage(text="hi").text == "hi"
     assert isinstance(Error(exc=ValueError("x")).exc, ValueError)
-    req = SummarizeRequest(messages=[], budget_tokens=100)
+    assert SummarizeRequest(messages=[], budget_tokens=100).budget_tokens == 100
     assert SummarizeResult(messages=[{"role": "system", "content": "s"}]).messages[0]["role"] == "system"
     TurnStart()
     TurnEnd()

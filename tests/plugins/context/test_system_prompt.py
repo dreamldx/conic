@@ -1,7 +1,7 @@
 from conic.core.bus import MessageBus
-from conic.types.messages import BeforeModelCall
 from conic.plugins.context.sections.identity import IdentitySectionPlugin
 from conic.plugins.context.system_prompt import SystemPromptPlugin
+from conic.types.messages import BeforeModelCall
 
 
 def make_plugin():

@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from conic.core.bus import MessageBus
 from conic.core.session_gateway import SessionGatewayPlugin
@@ -7,14 +7,14 @@ from conic.plugins import meta
 from conic.services.models import Session
 from conic.types.messages import Input
 from conic.types.session import SessionScope
-from conic.types.steering import SteeringItem, SteeringUserMessage
+from conic.types.steering import SteeringItem
 
 
 def make_scope():
     row = Session(
         session_key="discord:1", channel="discord", native_id="1",
         workspace_dir="/tmp/ws", model="m", status="active",
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
     )
     bus = MessageBus()
     bus.create_mailbox("steering.high", SteeringItem)

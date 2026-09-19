@@ -1,6 +1,6 @@
 from conic.core.messagealign import align_cut
-from conic.types.messages import BeforeModelCall
 from conic.plugins import meta
+from conic.types.messages import BeforeModelCall
 
 
 class TruncatorPlugin:

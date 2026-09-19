@@ -1,6 +1,7 @@
 import asyncio
 import inspect
-from typing import Any, Callable, get_type_hints
+from collections.abc import Callable
+from typing import Any, get_type_hints
 
 from loguru import logger
 

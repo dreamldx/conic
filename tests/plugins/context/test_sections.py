@@ -1,6 +1,6 @@
 from conic.core.bus import MessageBus
-from conic.types.messages import BuildSystemPrompt
 from conic.plugins.context.sections.tooling import ToolingSectionPlugin
+from conic.types.messages import BuildSystemPrompt
 
 
 async def test_execution_section_adds_guidelines():

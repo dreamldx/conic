@@ -1,6 +1,6 @@
 from conic.core.bus import MessageBus
-from conic.types.messages import ModelRequest, ModelResponse, SummarizeRequest
 from conic.plugins.context.summarizer import SummarizerPlugin
+from conic.types.messages import ModelRequest, ModelResponse, SummarizeRequest
 
 
 async def test_summarize_keeps_recent_messages_and_replaces_older_ones_with_summary():

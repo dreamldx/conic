@@ -1,11 +1,15 @@
 import pytest
 
 from conic.core.bus import MessageBus
-from conic.types.messages import (
-    BeforeModelCall, BeforeSummarize, SummarizeDone, SummarizeFailed,
-    SummarizeRequest, SummarizeResult,
-)
 from conic.plugins.context.token_budget import TokenBudgetPlugin
+from conic.types.messages import (
+    BeforeModelCall,
+    BeforeSummarize,
+    SummarizeDone,
+    SummarizeFailed,
+    SummarizeRequest,
+    SummarizeResult,
+)
 
 
 async def test_passes_through_when_under_budget():

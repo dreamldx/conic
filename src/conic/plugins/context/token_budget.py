@@ -1,6 +1,12 @@
-from conic.types.messages import BeforeModelCall, BeforeSummarize, SummarizeDone, SummarizeFailed, SummarizeRequest
 from conic.core.tokencount import estimate_tokens
 from conic.plugins import meta
+from conic.types.messages import (
+    BeforeModelCall,
+    BeforeSummarize,
+    SummarizeDone,
+    SummarizeFailed,
+    SummarizeRequest,
+)
 
 
 class TokenBudgetPlugin:

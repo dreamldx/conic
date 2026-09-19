@@ -1,7 +1,7 @@
 from jinja2 import Template
 
-from conic.types.messages import BeforeModelCall, BuildDynamicPrompt
 from conic.plugins import meta
+from conic.types.messages import BeforeModelCall, BuildDynamicPrompt
 
 
 class ExtraPromptPlugin:

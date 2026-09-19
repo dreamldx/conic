@@ -1,5 +1,5 @@
-from conic.types.messages import BeforeModelCall
 from conic.plugins.context.truncator import TruncatorPlugin
+from conic.types.messages import BeforeModelCall
 
 
 async def test_passes_through_when_under_limit():

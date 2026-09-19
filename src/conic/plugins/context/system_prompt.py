@@ -1,7 +1,7 @@
 from jinja2 import Template
 
-from conic.types.messages import BeforeModelCall, BuildSystemPrompt
 from conic.plugins import meta
+from conic.types.messages import BeforeModelCall, BuildSystemPrompt
 
 SECTION_ORDER = ["identity", "tooling", "workspace", "runtime", "execution"]
 
