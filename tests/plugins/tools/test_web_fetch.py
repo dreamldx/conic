@@ -88,7 +88,9 @@ async def test_sends_fixed_firecrawl_params(tmp_path):
     body = request["json"]
     assert body == {
         "url": "https://example.com/a", "formats": ["markdown"],
-        "onlyMainContent": True, "proxy": "auto", "maxAge": 172800000,
+        "onlyMainContent": True, "onlyCleanContent": True,
+        "skipTlsVerification": True,
+        "proxy": "auto", "maxAge": 172800000, "timeout": 30000,
     }
 
 
@@ -111,7 +113,7 @@ async def test_spilled_file_has_special_tokens_stripped(tmp_path):
     long_md = "<|im_start|>" + ("x" * 20000)
     tool = make_tool(tmp_path, firecrawl_session_factory(long_md), max_chars=15000)
     await tool.execute(WebFetchCall(url="https://example.com/p"))
-    spilled = list((tmp_path / "web").glob("*.md"))[0]
+    spilled = next(iter((tmp_path / "web").glob("*.md")))
     assert "<|im_start|>" not in spilled.read_text(encoding="utf-8")
 
 
@@ -136,9 +138,29 @@ async def test_http_error_and_timeout_become_result_errors(tmp_path):
     result = await tool.execute(WebFetchCall(url="https://example.com/x"))
     assert result.error is not None and "500" in result.error
 
-    tool = make_tool(tmp_path, firecrawl_session_factory(error=aiohttp.ClientError("timed out")))
+    tool = make_tool(tmp_path, firecrawl_session_factory(error=TimeoutError("timed out")))
     result = await tool.execute(WebFetchCall(url="https://example.com/x"))
     assert result.error is not None and "timed out" in result.error
+
+
+async def test_non_json_success_response_becomes_result_error(tmp_path):
+    class HtmlResponse(FakeResponse):
+        async def text(self):
+            return "<html>blocked</html>"
+
+        async def json(self):
+            raise aiohttp.ContentTypeError(None, ())
+
+    class HtmlSession(FakeSession):
+        def post(self, url, json, headers):
+            return HtmlResponse()
+
+    def factory(timeout):
+        return HtmlSession()
+    tool = make_tool(tmp_path, factory)
+    result = await tool.execute(WebFetchCall(url="https://example.com/x"))
+    assert result.error is not None
+    assert "non-JSON" in result.error
 
 
 async def test_empty_markdown_is_an_error(tmp_path):

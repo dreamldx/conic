@@ -42,7 +42,7 @@ class ReactLoopPlugin:
         bus.create_mailbox("steering.low", SteeringItem)
 
     def _format_tool_status(self, call: ToolCallSpec) -> str:
-        args = ", ".join(f"{k}={v!r}" for k, v in call.args.items())
+        args = ", ".join(f"{k}={v!r}" for k, v in call.args.items() if v != "" and v != [])
         return f"🔧 {call.name}({args})"
 
     def _inject(self, items: list[SteeringItem]) -> None:

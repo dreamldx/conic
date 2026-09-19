@@ -3,6 +3,7 @@ import platform
 from datetime import datetime
 from pathlib import Path
 
+from loguru import logger
 from openai import AsyncOpenAI
 
 from conic.config import Config
@@ -73,6 +74,8 @@ def build_plugin_set(config: Config, global_variables: dict | None = None) -> Pl
                 super().__init__(workspace_dir=workspace_dir, api_key=config.tavily_api_key,
                                  timeout=config.web_search_timeout)
         tool_classes.append(ConfiguredWebSearchToolPlugin)
+    else:
+        logger.warning("TAVILY_API_KEY not set — web_search tool will not be available")
 
     if config.firecrawl_api_key:
         class ConfiguredWebFetchToolPlugin(WebFetchToolPlugin):
@@ -84,6 +87,8 @@ def build_plugin_set(config: Config, global_variables: dict | None = None) -> Pl
                                  summary_model=config.web_fetch_summary_model,
                                  summary_client=shared_client if config.web_fetch_summary_model else None)
         tool_classes.append(ConfiguredWebFetchToolPlugin)
+    else:
+        logger.warning("FIRECRAWL_API_KEY not set — web_fetch tool will not be available")
 
     return PluginSet(
         tool_classes=tuple(tool_classes),
