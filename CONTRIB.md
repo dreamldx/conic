@@ -6,7 +6,8 @@
 
 - Target **Python 3.12+**, use modern syntax (`str | None`, `list[dict]`)
 - Package manager: **uv** (`uv sync`, `uv run`)
-- Formatter/linter: follow existing style, no formatter configured yet
+- Linter: **ruff**. Run `uv run ruff check` on changed Python files after code changes; run `uv run ruff check src tests` before committing code when the full tree is expected to be lint-clean.
+- Formatting: keep imports and layout compatible with ruff's reported style. No separate formatter is configured.
 
 ### Naming
 
@@ -26,9 +27,16 @@ All function signatures must have type annotations. Use `| None` for optional, n
 def load_config(env: dict[str, str] | None = None) -> Config:
 ```
 
+### Code Checks
+
+- Tests after every change: `uv run pytest`
+- Style check for changed Python files: `uv run ruff check <paths>`
+- Full style check for lint-clean code submissions: `uv run ruff check src tests`
+- Coverage when needed: `uv run pytest --cov=src/conic --cov-report=term-missing`
+
 ### Architecture
 
-- **MessageBus** is the communication backbone — `bus.on()` for event handlers, `bus.on_request()` for request/response
+- **MessageBus** is the communication backbone — `bus.on_chain()` / `bus.chain()` for chain handlers, `bus.on_request()` / `bus.request()` for request/response, and mailboxes for queued session input
 - Bus topic names are centralized in `src/conic/plugins/meta.py` as `*Event` constants
 - All plugins register on the bus in their `register(bus)` method
 - SQL statements live in `src/conic/services/queries.py` as functions returning `(sql, params)` tuples
@@ -48,6 +56,18 @@ Use `loguru` — `logger.info()`, `logger.debug()`, `logger.warning()`, `logger.
 - Framework-level exceptions in `src/conic/types/errors.py`
 - Tool errors returned as `ToolCallResult(error=...)`, not raised
 - Context/policy plugins mutate and return payloads; return `None` for no-op
+- `ReactLoopPlugin` turn/tool-call boundaries must keep `except Exception` as a last-resort session safety net, with `AbortTurn` handled separately before the catch-all
+- Discord runtime boundaries in `DiscordGateway` and the Discord thread channel adapter must keep `except Exception` fallbacks so one bad thread/message edit does not crash the gateway or session
+- Other code should catch specific exception types unless it is an explicit process, session, gateway, or external callback boundary
+
+### Date and Time
+
+- All `datetime` values must be timezone-aware.
+- Use UTC for stored timestamps, event variables, tests, and default values: `datetime.now(UTC)`.
+- Do not use local-time APIs such as `datetime.now()` without a timezone, `datetime.utcnow()`, or `datetime.now().astimezone()` for product logic.
+- Serialized timestamps must include an offset, such as `2026-09-19T12:00:00+00:00`.
+- If old persisted data lacks timezone information, load it as UTC before exposing it to the rest of the application.
+- Use monotonic clocks such as `time.monotonic()` only for elapsed-time measurement, rate limiting, and timeouts.
 
 ### Testing
 

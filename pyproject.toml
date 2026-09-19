@@ -32,3 +32,8 @@ dev = [
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+
+[tool.ruff.lint.per-file-ignores]
+"src/conic/discord/gateway.py" = ["BLE001"]
+"src/conic/plugins/channels/discord.py" = ["BLE001"]
+"src/conic/plugins/loops/react_loop.py" = ["BLE001"]

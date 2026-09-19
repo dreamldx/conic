@@ -6,6 +6,7 @@ Agent instructions for working on the Conic project.
 
 - See `CONTRIB.md` for coding style and architecture conventions.
 - Run `uv run pytest` after every change. Do not commit if tests fail.
+- Run `uv run ruff check` on changed Python files after every code change. Run `uv run ruff check src tests` before committing code when the full tree is expected to be lint-clean.
 - Update or add unit tests for every code change. Key decisions and logic paths must have test coverage, not every code path.
 - Bus topic names must use constants from `src/conic/plugins/meta.py`, never hardcoded strings.
 - Do not add comments to source code.
