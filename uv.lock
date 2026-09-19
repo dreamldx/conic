@@ -229,6 +229,7 @@ name = "conic"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "aiohttp" },
     { name = "discord-py" },
     { name = "duckdb" },
     { name = "jinja2" },
@@ -246,6 +247,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "aiohttp", specifier = ">=3.12" },
     { name = "discord-py", specifier = ">=2.4" },
     { name = "duckdb", specifier = ">=1.5.5" },
     { name = "jinja2", specifier = ">=3.1" },
