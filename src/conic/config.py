@@ -24,6 +24,12 @@ class Config(BaseSettings):
     truncate_keep_last_n: int = Field(default=40, ge=1, alias="TRUNCATE_KEEP_LAST_N")
     bash_timeout: float = Field(default=60.0, ge=1, alias="BASH_TIMEOUT")
     project_name: str = Field(default="Conic", alias="PROJECT_NAME")
+    tavily_api_key: str = Field(default="", alias="TAVILY_API_KEY")
+    firecrawl_api_key: str = Field(default="", alias="FIRECRAWL_API_KEY")
+    web_search_timeout: float = Field(default=30.0, ge=1, alias="WEB_SEARCH_TIMEOUT")
+    web_fetch_timeout: float = Field(default=60.0, ge=1, alias="WEB_FETCH_TIMEOUT")
+    web_fetch_max_chars: int = Field(default=15000, ge=2000, alias="WEB_FETCH_MAX_CHARS")
+    web_fetch_summary_model: str = Field(default="", alias="WEB_FETCH_SUMMARY_MODEL")
 
     @model_validator(mode="after")
     def _resolve_paths(self):

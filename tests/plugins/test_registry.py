@@ -184,3 +184,58 @@ def test_detect_shell_falls_back_to_default_comspec_when_unset_on_windows(monkey
 def test_detect_shell_is_bin_sh_on_posix(monkeypatch):
     monkeypatch.setattr("conic.plugins.registry.platform.system", lambda: "Linux")
     assert _detect_shell() == "/bin/sh"
+
+
+from conic.plugins.tools.web_fetch import WebFetchToolPlugin, build_web_fetch_schema
+from conic.plugins.tools.web_search import WebSearchToolPlugin
+
+
+def make_config_with(**extra):
+    base = dict(
+        _env_file=None,
+        PROJECT_ROOT="/tmp",
+        DISCORD_BOT_TOKEN="d", OPENROUTER_API_KEY="k", OPENROUTER_MODEL="test-model",
+        WORKSPACE_ROOT="./workspace", DUCKDB_PATH="./data/conic.duckdb",
+        LOG_LEVEL="DEBUG", MAX_STEPS_PER_TURN=7, CONTEXT_TOKEN_BUDGET=123, TRUNCATE_KEEP_LAST_N=9,
+        BASH_TIMEOUT=42,
+    )
+    base.update(extra)
+    return Config(**base)
+
+
+def test_web_tools_absent_without_api_keys():
+    plugin_set = build_plugin_set(make_config())
+    for cls in plugin_set.tool_classes:
+        assert not issubclass(cls, (WebSearchToolPlugin, WebFetchToolPlugin))
+
+
+def test_web_search_registered_with_tavily_key_only():
+    plugin_set = build_plugin_set(make_config_with(TAVILY_API_KEY="tv", WEB_SEARCH_TIMEOUT=11))
+    search_classes = [c for c in plugin_set.tool_classes if issubclass(c, WebSearchToolPlugin)]
+    assert len(search_classes) == 1
+    assert not any(issubclass(c, WebFetchToolPlugin) for c in plugin_set.tool_classes)
+    tool = search_classes[0](workspace_dir="/tmp/ws")
+    assert tool._api_key == "tv"
+    assert tool._timeout == 11
+
+
+def test_web_fetch_registered_with_firecrawl_key_and_raw_schema_by_default():
+    plugin_set = build_plugin_set(make_config_with(FIRECRAWL_API_KEY="fc", WEB_FETCH_MAX_CHARS=5000))
+    fetch_classes = [c for c in plugin_set.tool_classes if issubclass(c, WebFetchToolPlugin)]
+    assert len(fetch_classes) == 1
+    assert fetch_classes[0].schema == build_web_fetch_schema(include_prompt=False)
+    tool = fetch_classes[0](workspace_dir="/tmp/ws")
+    assert tool._api_key == "fc"
+    assert tool._max_chars == 5000
+    assert tool._summary_client is None
+
+
+def test_web_fetch_summary_model_enables_prompt_param_and_shared_client():
+    plugin_set = build_plugin_set(make_config_with(
+        FIRECRAWL_API_KEY="fc", WEB_FETCH_SUMMARY_MODEL="fast-model",
+    ))
+    fetch_cls = next(c for c in plugin_set.tool_classes if issubclass(c, WebFetchToolPlugin))
+    assert fetch_cls.schema == build_web_fetch_schema(include_prompt=True)
+    tool = fetch_cls(workspace_dir="/tmp/ws")
+    assert tool._summary_model == "fast-model"
+    assert tool._summary_client is not None

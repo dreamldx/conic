@@ -26,6 +26,8 @@ from conic.plugins.policy.step_limit import StepLimitPlugin
 from conic.plugins.tools.bash import BashToolPlugin
 from conic.plugins.tools.edit_file import EditFileToolPlugin
 from conic.plugins.tools.read_file import ReadFileToolPlugin
+from conic.plugins.tools.web_fetch import WebFetchToolPlugin, build_web_fetch_schema
+from conic.plugins.tools.web_search import WebSearchToolPlugin
 from conic.plugins.tools.write_file import WriteFileToolPlugin
 
 
@@ -63,8 +65,28 @@ def build_plugin_set(config: Config, global_variables: dict | None = None) -> Pl
         def __init__(self, workspace_dir: str):
             super().__init__(workspace_dir=workspace_dir, timeout=config.bash_timeout)
 
+    tool_classes: list[type] = [ConfiguredBashToolPlugin, ReadFileToolPlugin, WriteFileToolPlugin, EditFileToolPlugin]
+
+    if config.tavily_api_key:
+        class ConfiguredWebSearchToolPlugin(WebSearchToolPlugin):
+            def __init__(self, workspace_dir: str):
+                super().__init__(workspace_dir=workspace_dir, api_key=config.tavily_api_key,
+                                 timeout=config.web_search_timeout)
+        tool_classes.append(ConfiguredWebSearchToolPlugin)
+
+    if config.firecrawl_api_key:
+        class ConfiguredWebFetchToolPlugin(WebFetchToolPlugin):
+            schema = build_web_fetch_schema(include_prompt=bool(config.web_fetch_summary_model))
+
+            def __init__(self, workspace_dir: str):
+                super().__init__(workspace_dir=workspace_dir, api_key=config.firecrawl_api_key,
+                                 timeout=config.web_fetch_timeout, max_chars=config.web_fetch_max_chars,
+                                 summary_model=config.web_fetch_summary_model,
+                                 summary_client=shared_client if config.web_fetch_summary_model else None)
+        tool_classes.append(ConfiguredWebFetchToolPlugin)
+
     return PluginSet(
-        tool_classes=(ConfiguredBashToolPlugin, ReadFileToolPlugin, WriteFileToolPlugin, EditFileToolPlugin),
+        tool_classes=tuple(tool_classes),
         backend=lambda session_key: OpenRouterModelPlugin(
             api_key=config.openrouter_api_key, model=config.openrouter_model, client=shared_client,
             provider_blacklist=provider_blacklist,

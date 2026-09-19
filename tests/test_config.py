@@ -63,3 +63,30 @@ def test_load_config_raises_on_invalid_field_type():
             "OPENROUTER_API_KEY": "k",
             "MAX_STEPS_PER_TURN": "not_a_number",
         })
+
+
+def test_web_tool_settings_default_to_disabled():
+    config = load_config(env={
+        "PROJECT_ROOT": "/tmp", "DISCORD_BOT_TOKEN": "d", "OPENROUTER_API_KEY": "k",
+    })
+    assert config.tavily_api_key == ""
+    assert config.firecrawl_api_key == ""
+    assert config.web_fetch_summary_model == ""
+    assert config.web_search_timeout == 30.0
+    assert config.web_fetch_timeout == 60.0
+    assert config.web_fetch_max_chars == 15000
+
+
+def test_web_tool_settings_parse_from_env():
+    config = load_config(env={
+        "PROJECT_ROOT": "/tmp", "DISCORD_BOT_TOKEN": "d", "OPENROUTER_API_KEY": "k",
+        "TAVILY_API_KEY": "tv", "FIRECRAWL_API_KEY": "fc",
+        "WEB_SEARCH_TIMEOUT": "10", "WEB_FETCH_TIMEOUT": "20",
+        "WEB_FETCH_MAX_CHARS": "5000", "WEB_FETCH_SUMMARY_MODEL": "google/gemini-flash",
+    })
+    assert config.tavily_api_key == "tv"
+    assert config.firecrawl_api_key == "fc"
+    assert config.web_search_timeout == 10.0
+    assert config.web_fetch_timeout == 20.0
+    assert config.web_fetch_max_chars == 5000
+    assert config.web_fetch_summary_model == "google/gemini-flash"
