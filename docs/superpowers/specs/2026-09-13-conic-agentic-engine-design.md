@@ -19,7 +19,7 @@ while True:
 
 - **LLM 后端**：OpenRouter（OpenAI 兼容协议）
 - **交互渠道**：Discord bot
-- **工具集**：mini-Kode v1 档位——`bash` / `read_file` / `write_file` / `edit_file`
+- **工具集**：v1 档位——`bash` / `read_file` / `write_file` / `edit_file` / `web_search`（Tavily）/ `web_fetch`（Firecrawl）。web_search 和 web_fetch 通过 HTTP API 直接调用 provider，API key 各自独立配置，任一 key 未配置时对应工具不注册。详见 `docs/superpowers/specs/2026-09-18-web-tools-design.md`。
 - **架构要求**：AI 后端、渠道、工具三者都做成插件；agent loop 本身也是插件；插件之间只通过消息机制通信，不做直接函数调用（持久化存储、渠道网关连接等进程级 Core Service 除外，见第 3 节）
 
 使用场景：小型可信团队内部使用，工具具备真实的本地执行能力（bash/文件读写），因此需要工作区沙箱边界，但不需要面向不可信公网用户的重度隔离。
@@ -85,7 +85,7 @@ plugin_manager.start_session(
 )
 ```
 
-`PluginManager.start_session()` 内部按固定顺序把插件挂到新建的 `MessageBus` 上：4 个 ToolPlugin（各自绑定 `workspace_dir`）→ BackendPlugin → context 插件链（system_prompt → truncator → token_budget）→ policy 插件（permission → step_limit）→ SummarizerPlugin → ReactLoopPlugin → channel 插件。`PluginSet.backend` 和其余插件一样也是**工厂闭包**，确保每会话独立实例——`OpenRouterModelPlugin.register()` 会捕获本会话的 `bus`（流式分支要用它 emit `MessageDeltaUpdateEvent`），如果跨会话共享同一个实例，后一个会话的 `register()` 会覆盖前一个会话捕获的 `bus`，导致流式 token 错发到别的会话/线程（曾经的真实 bug，已修复）。`registry.py` 里这个工厂闭包共享同一个 `AsyncOpenAI` 连接实例，只是插件对象本身（连同它捕获的 `bus`）各会话独立，避免为每个会话重复建立 HTTP 连接。`SessionScope` 额外持有一把 `asyncio.Lock`：`DiscordGateway.handle_message()` 在 `async with scope.lock` 内才 `emit(UserInputEvent, ...)`，避免同一线程内并发消息互相打断同一个 Turn；`handle_stop_command()`（`agent_stop` 命令）同样在 pop 掉路由表条目后用同一把锁包住 `emit(SessionStopEvent) + stop_session()`，确保它会等一个正在跑的 Turn 释放锁之后才停止/归档会话，而不是与之竞态。
+`PluginManager.start_session()` 内部按固定顺序把插件挂到新建的 `MessageBus` 上：6 个 ToolPlugin（各自绑定 `workspace_dir`）→ BackendPlugin → context 插件链（system_prompt → truncator → token_budget）→ policy 插件（permission → step_limit）→ SummarizerPlugin → ReactLoopPlugin → channel 插件。`PluginSet.backend` 和其余插件一样也是**工厂闭包**，确保每会话独立实例——`OpenRouterModelPlugin.register()` 会捕获本会话的 `bus`（流式分支要用它 emit `MessageDeltaUpdateEvent`），如果跨会话共享同一个实例，后一个会话的 `register()` 会覆盖前一个会话捕获的 `bus`，导致流式 token 错发到别的会话/线程（曾经的真实 bug，已修复）。`registry.py` 里这个工厂闭包共享同一个 `AsyncOpenAI` 连接实例，只是插件对象本身（连同它捕获的 `bus`）各会话独立，避免为每个会话重复建立 HTTP 连接。`SessionScope` 额外持有一把 `asyncio.Lock`：`DiscordGateway.handle_message()` 在 `async with scope.lock` 内才 `emit(UserInputEvent, ...)`，避免同一线程内并发消息互相打断同一个 Turn；`handle_stop_command()`（`agent_stop` 命令）同样在 pop 掉路由表条目后用同一把锁包住 `emit(SessionStopEvent) + stop_session()`，确保它会等一个正在跑的 Turn 释放锁之后才停止/归档会话，而不是与之竞态。
 
 ### 5.1 进程启动与会话恢复流程
 
@@ -151,6 +151,8 @@ class Gateway(Protocol):
 | read_file | `ReadFileToolPlugin`（工具插件） | 动态拼接，携带当前会话的 `self._workspace_dir`（`plugins/tools/read_file.py`） |
 | write_file | `WriteFileToolPlugin`（工具插件） | 动态拼接，携带当前会话的 `self._workspace_dir`（`plugins/tools/write_file.py`） |
 | edit_file | `EditFileToolPlugin`（工具插件） | 动态拼接，携带当前会话的 `self._workspace_dir`（`plugins/tools/edit_file.py`） |
+| web_search | `WebSearchToolPlugin`（工具插件） | 模块常量 `WEB_SEARCH_SECTION`，含 `{{ turn.now }}`、topic/country/exact_match/include_domains/include_answer 等参数的使用引导（`plugins/tools/web_search.py`） |
+| web_fetch | `WebFetchToolPlugin`（工具插件） | 模块常量 `WEB_FETCH_SECTION`，含 fetch 节制指引及不可信内容警告（`plugins/tools/web_fetch.py`） |
 
 任何插件都可以 hook `BuildSystemPromptEvent` 注入自定义 section。`SystemPromptPlugin._assemble()` 按 `SECTION_ORDER` 拼接为最终系统消息；不在 `SECTION_ORDER` 里的 section（未来插件新增的）会追加在已知 section 之后，不会丢失——`output` 就是这样一个例子：由渠道插件（而不是 `context_plugins` 里的固定 section 插件）贡献，告诉模型当前输出渠道（Discord）的格式限制（不渲染 markdown 表格、标题只支持到 `###`）、流式渲染方式（同一条消息逐 token 编辑，不需要模型自己分段）、以及要求回复不超过单条消息字符数上限（2000）。这也是"渠道相关的输出要求应该由渠道插件自己声明，而不是写死在 core prompt 里"这一设计意图的落地。`bash` 是同一模式在工具侧的例子：`BashToolPlugin.register()` 同时 hook `ToolCallRequestEvent`（真正执行命令）和 `BuildSystemPromptEvent`（告诉模型"超过 `self._timeout` 秒的命令会被 kill 并报错，不要跑长期运行/阻塞/交互式命令"），把"这个工具有什么限制"和"工具本身怎么实现"放在同一个文件里维护，且提示词里的超时数字直接读 `self._timeout`，配置改了不会和提示词文字脱节。
 
@@ -204,7 +206,7 @@ if self._cached_content is None:
 
 `**ctx.variables` 把 `global`/`session`/`turn` 三个 key 展开成同名关键字参数传给 `render()`（Jinja2 不受 Python `global` 关键字保留限制），因此各 section 插件（`identity`/`execution.md` 等）里的占位符要写成带命名空间前缀的形式，例如 `prompts/identity.md` 现在写的是 `"You are Conic, a helpful coding agent running on {{ global.model }}."`。
 
-**system 消息只渲染一次、之后全 session 复用（`SystemPromptPlugin.__init__` 里的 `self._cached_content: str | None = None`）**：`SystemPromptPlugin` 是每 session 一个新实例（`context_plugins` 工厂闭包保证），所以这个缓存天然是 session 级的——第一次 `apply()`（本 session 第一个 Step）才会真正 emit `BuildSystemPromptEvent` + `_assemble()` + `Template(...).render()`，之后每个 Step 的 `apply()` 直接复用 `self._cached_content`，不再重新收集 section、不再重新渲染。这要求参与这次渲染的所有 section **只能引用 `global.*`**——`identity`（`global.model`）、`tooling`/`workspace`（不含模板语法，构造时就是定值）、`runtime`（`global.platform`/`global.shell`/`global.model`/`global.timezone`）、`execution`、四个工具的 section 都满足这一条件，因此把它们缓存下来是安全的：同一个 session 里 `global` 不会变，缓存的渲染结果自然也不会过期。缓存的直接收益是给 OpenRouter/DeepSeek 之类支持 prompt 前缀缓存的后端一个**跨请求完全不变的 system 消息**，不会像"每个 Step 都带一份不同的当前时间/step 数"那样把缓存前缀每次都打断。`SystemPromptPlugin.apply()` 返回的新 `BeforeModelCall` 会把 `variables=ctx.variables` 原样带上。**`TruncatorPlugin`/`TokenBudgetPlugin` 在它们真正改写消息列表时也必须转发 `variables=ctx.variables`**——`ExtraPromptPlugin` 排在它们之后，会用 `ctx.variables` 渲染动态 section，如果这两者中任何一个在构造自己的 `BeforeModelCall` 时漏掉 `variables`（默认值是空 dict `{}`），`ExtraPromptPlugin` 拿到的 `ctx.variables` 就不含 `global`/`session`/`turn` 任何一个 key，`Template(text).render(**ctx.variables)` 渲染 `{{ turn.now }}` 会直接抛出 `jinja2.exceptions.UndefinedError: 'turn' is undefined`（真实出现过的 bug：`TruncatorPlugin.apply()`/`TokenBudgetPlugin.apply()` 早期实现里 `return BeforeModelCall(...)` 都没带 `variables`，因为写这段代码时 `ExtraPromptPlugin` 还没引入、链上确实没人在它们之后读 `variables`；后来把 `ExtraPromptPlugin` 加到链尾读 `ctx.variables` 时，这两处忘了同步补上）。`tests/plugins/context/test_truncator.py::test_forwards_variables_when_truncating`、`test_token_budget.py::test_forwards_variables_when_summarizing` 和 `test_extra_prompt.py` 里两个 `test_survives_after_*_in_the_real_registry_chain_order` 端到端测试专门覆盖这一点。
+**system 消息只渲染一次、之后全 session 复用（`SystemPromptPlugin.__init__` 里的 `self._cached_content: str | None = None`）**：`SystemPromptPlugin` 是每 session 一个新实例（`context_plugins` 工厂闭包保证），所以这个缓存天然是 session 级的——第一次 `apply()`（本 session 第一个 Step）才会真正 emit `BuildSystemPromptEvent` + `_assemble()` + `Template(...).render()`，之后每个 Step 的 `apply()` 直接复用 `self._cached_content`，不再重新收集 section、不再重新渲染。这要求参与这次渲染的所有 section **只能引用 `global.*`**——`identity`（`global.model`）、`tooling`/`workspace`（不含模板语法，构造时就是定值）、`runtime`（`global.platform`/`global.shell`/`global.model`/`global.timezone`）、`execution`、六个工具的 section 都满足这一条件，因此把它们缓存下来是安全的：同一个 session 里 `global` 不会变，缓存的渲染结果自然也不会过期。缓存的直接收益是给 OpenRouter/DeepSeek 之类支持 prompt 前缀缓存的后端一个**跨请求完全不变的 system 消息**，不会像"每个 Step 都带一份不同的当前时间/step 数"那样把缓存前缀每次都打断。`SystemPromptPlugin.apply()` 返回的新 `BeforeModelCall` 会把 `variables=ctx.variables` 原样带上。**`TruncatorPlugin`/`TokenBudgetPlugin` 在它们真正改写消息列表时也必须转发 `variables=ctx.variables`**——`ExtraPromptPlugin` 排在它们之后，会用 `ctx.variables` 渲染动态 section，如果这两者中任何一个在构造自己的 `BeforeModelCall` 时漏掉 `variables`（默认值是空 dict `{}`），`ExtraPromptPlugin` 拿到的 `ctx.variables` 就不含 `global`/`session`/`turn` 任何一个 key，`Template(text).render(**ctx.variables)` 渲染 `{{ turn.now }}` 会直接抛出 `jinja2.exceptions.UndefinedError: 'turn' is undefined`（真实出现过的 bug：`TruncatorPlugin.apply()`/`TokenBudgetPlugin.apply()` 早期实现里 `return BeforeModelCall(...)` 都没带 `variables`，因为写这段代码时 `ExtraPromptPlugin` 还没引入、链上确实没人在它们之后读 `variables`；后来把 `ExtraPromptPlugin` 加到链尾读 `ctx.variables` 时，这两处忘了同步补上）。`tests/plugins/context/test_truncator.py::test_forwards_variables_when_truncating`、`test_token_budget.py::test_forwards_variables_when_summarizing` 和 `test_extra_prompt.py` 里两个 `test_survives_after_*_in_the_real_registry_chain_order` 端到端测试专门覆盖这一点。
 
 **会变的信息不再混进 system 消息，改成 `ExtraPromptPlugin` 拼进最后一条已有消息的 `content` 里**（`plugins/context/extra_prompt.py`，直接订阅 `BeforeModelCallEvent`，不再是 `BuildSystemPromptEvent` 的 section 贡献者）。它的收集机制和 `SystemPromptPlugin` 是同一套模式的镜像：`SystemPromptPlugin` 构造时接收一份 `section_plugins` 列表，emit `BuildSystemPromptEvent` 收集只读一次的 `global` 级 section；`ExtraPromptPlugin` 同样构造时接收一份 `section_plugins` 列表（目前只有 `DynamicStateSectionPlugin` 一个），但它在**每个 Step** 都重新 emit 新引入的 `BuildDynamicPromptEvent`（`meta.py`）收集 `session`/`turn` 级、逐 Step 会变的 section：
 
@@ -319,15 +321,17 @@ return BeforeModelCall(messages=[*system, *kept], tools=ctx.tools, variables=ctx
 
 因为 `build_app()` 本身不做任何网络调用（这是一个既有的、被 `test_build_app_wires_storage_and_gateway_without_connecting` 显式测试保护的不变式——用假 token 也能无网络地把对象图搭起来），app name 不能在 `build_app()` 里同步抓取，只能靠这个"先占位、后填充、每次请求现读"的可变 dict 方案，而不是把 `app_name` 当成构造时就能确定的普通字符串参数传下去。
 
-### 8.3 ToolPlugin（4 个）
-每个工具构造时绑定本会话 `workspace_dir`，任何解析后越出该目录的路径直接拒绝。路径校验逻辑集中在 `plugins/tools/base.py`：`resolve_within_workspace(workspace_dir, path)` 把相对路径解析到 `workspace_dir` 下并 `.resolve()`，若结果不在 workspace 内则 `raise WorkspaceEscapeError`；四个文件类工具都复用这一个函数，不各自实现越权检查。
+### 8.3 ToolPlugin（6 个）
+每个工具构造时绑定本会话 `workspace_dir`，任何解析后越出该目录的路径直接拒绝。路径校验逻辑集中在 `plugins/tools/base.py`：`resolve_within_workspace(workspace_dir, path)` 把相对路径解析到 `workspace_dir` 下并 `.resolve()`，若结果不在 workspace 内则 `raise WorkspaceEscapeError`；四个文件类工具都复用这一个函数，不各自实现越权检查。web_search/web_fetch 不访问本地文件，不依赖路径校验。
 
-四个工具的 `register()` 现在都额外 hook `BuildSystemPromptEvent`，各自贡献一段"我只能访问 `{workspace_dir}`"的 prompt section（见第 7 节表格），把代码层已经强制的越权拒绝也讲给模型听——目的是让模型一开始就不去尝试越权路径，而不是等工具报错才知道。三个文件工具（read/write/edit）的措辞可以是陈述句（"paths outside it are rejected"），因为 `resolve_within_workspace` 真的会拒绝；`BashToolPlugin` 的措辞是请求句（"stay inside it, don't cd out"），因为 bash 只是把 `cwd` 设到 `workspace_dir`，并没有在代码层阻止 `cd ..`/绝对路径逃逸——这段 prompt 是目前唯一的"软约束"，不是真正的沙箱，见 `docs/Improvement.md`"安全与隔离"一节。
+六个工具的 `register()` 现在都额外 hook `BuildSystemPromptEvent`，各自贡献一段 prompt section（见第 7 节表格），把代码层已经强制的越权拒绝也讲给模型听——目的是让模型一开始就不去尝试越权路径，而不是等工具报错才知道。三个文件工具（read/write/edit）的措辞可以是陈述句（"paths outside it are rejected"），因为 `resolve_within_workspace` 真的会拒绝；`BashToolPlugin` 的措辞是请求句（"stay inside it, don't cd out"），因为 bash 只是把 `cwd` 设到 `workspace_dir`，并没有在代码层阻止 `cd ..`/绝对路径逃逸——这段 prompt 是目前唯一的"软约束"，不是真正的沙箱，见 `docs/Improvement.md`"安全与隔离"一节。web_search 和 web_fetch 的 section 不涉及工作区约束，而是给模型提供参数使用指引（topic/country/domains 等）和 fetch 节制警告（"只取一两条最相关的 URL"）。
 
 - `BashToolPlugin`：`asyncio.create_subprocess_shell` 在 `workspace_dir` 下执行，超时（`BASH_TIMEOUT`，默认 60s）由 `asyncio.wait_for` 包裹 `proc.communicate()`；超时后 `proc.kill()` + `proc.wait()` 回收进程，返回 `ToolCallResult(error="command timed out after {timeout}s")`。超时值通过 `registry.py` 里定义的 `ConfiguredBashToolPlugin`（`BashToolPlugin` 的一个薄子类，`__init__` 只接 `workspace_dir` 以匹配 `PluginManager` 对所有 `tool_classes` 统一的 `tool_cls(workspace_dir=...)` 实例化方式，内部把 `config.bash_timeout` 转发给父类）从 `Config` 注入——`tool_classes` 里的类要同时支持"当类用"（`cls.schema`/`cls.llm_name`/`cls.execute` 静态访问）和"当工厂用"（绑定运行时配置），子类化是能同时满足两者的最小改法。stdout/stderr 合并后按字节截断（默认 20000 字节，超出附加 `...[truncated]`），非零退出码作为 `error` 返回。
 - `ReadFileToolPlugin`：`offset`/`limit`（默认 0 / 2000 行）按行切片，超出部分返回时附加总行数提示
 - `WriteFileToolPlugin`：创建/覆盖文件，返回结果里报告新旧行数和 created/overwritten 状态
 - `EditFileToolPlugin`：要求 `old_text` 在文件中**精确出现一次**，否则报错（未找到 / 不唯一），成功后只替换第一处匹配
+- `WebSearchToolPlugin`：调用 Tavily Search API（`POST https://api.tavily.com/search`），`search_depth` 固定 `advanced`（2 credits/次），支持 `max_results`（1-10，默认 5）、`time_range`（day/week/month/year）、`topic`（general/news/finance，默认 general）、`country`（仅 topic=general 时生效）、`exact_match`、`include_domains`、`include_answer`（basic/advanced）。搜索结果以边界标记包裹（`<<<EXTERNAL_UNTRUSTED_CONTENT ...>>>`），返回时已剥离 LLM 特殊 token。仅在 `TAVILY_API_KEY` 配置后注册。
+- `WebFetchToolPlugin`：调用 Firecrawl Scrape API（`POST https://api.firecrawl.dev/v2/scrape`），`onlyMainContent`/`onlyCleanContent`/`skipTlsVerification` 均为 `true`，`proxy: auto`，`maxAge: 48h`，`timeout: 30s`。超过 `WEB_FETCH_MAX_CHARS`（默认 15000）时 head+tail 截断（75%/25%），完整 markdown 写入 workspace `web/<sha256>.md`。仅在 `FIRECRAWL_API_KEY` 配置后注册。详细设计见 `docs/superpowers/specs/2026-09-18-web-tools-design.md`。
 
 ### 8.4 DiscordGateway（Core Service，实现 `Gateway` Protocol）
 进程级 discord.py 连接持有者，维护 `{thread_id: SessionScope}` 路由表。在 `conic/discord/gateway.py`。
@@ -413,6 +417,12 @@ SQL 语句集中在 `src/conic/services/queries.py` 中，每句包装为返回 
 | `CONTEXT_TOKEN_BUDGET` | `50000` | 触发摘要压缩的 token 阈值 |
 | `TRUNCATE_KEEP_LAST_N` | `40` | Truncator 保留的最近消息数 |
 | `BASH_TIMEOUT` | `60` | `bash` 工具单次命令执行超时（秒），超时后 kill 进程并返回 error |
+| `TAVILY_API_KEY` | 无 | Tavily API key。未设置时 `web_search` 不注册 |
+| `FIRECRAWL_API_KEY` | 无 | Firecrawl API key。未设置时 `web_fetch` 不注册 |
+| `WEB_SEARCH_TIMEOUT` | `30` | `web_search` 请求超时（秒） |
+| `WEB_FETCH_TIMEOUT` | `60` | `web_fetch` 请求超时（秒） |
+| `WEB_FETCH_MAX_CHARS` | `15000` | fetch 内联返回的字符预算，超长时 head+tail 截断落盘 |
+| `WEB_FETCH_SUMMARY_MODEL` | 无 | 两段式 fetch 的小模型 id（OpenRouter），设置后 `web_fetch` 暴露 `prompt` 参数 |
 
 `WORKSPACE_ROOT` 和 `DUCKDB_PATH` 默认为 PROJECT_ROOT 下的绝对路径，也可通过环境变量覆盖为自定义路径。
 
@@ -448,8 +458,10 @@ conic/                     # 项目根（main.py 与 pyproject.toml 同级，不
       loops/react_loop.py
       models/openrouter.py
       tools/
-        base.py           # resolve_within_workspace / WorkspaceEscapeError（4 个工具共用）
+        base.py           # resolve_within_workspace / strip_special_tokens / wrap_untrusted（通用辅助）
         bash.py / read_file.py / write_file.py / edit_file.py
+        web_search.py     # Tavily Search API
+        web_fetch.py      # Firecrawl Scrape API
       context/
         system_prompt.py  # 组装系统提示词，缓存渲染结果
         extra_prompt.py   # ExtraPromptPlugin，把逐 Step 变化的信息拼进最后一条消息的 content
@@ -469,6 +481,8 @@ conic/                     # 项目根（main.py 与 pyproject.toml 同级，不
       storage.py          # StorageService + SessionHandle (DuckDB)
       queries.py          # SQL 语句函数
       models.py           # Session/Message pydantic 模型
+    utils/
+      net.py              # http_post_json / validate_web_url / ProviderResponseError（HTTP 调用辅助）
   tests/                  # 结构与 src/conic 镜像，另含 test_config.py、test_main.py
     core/
     discord/
@@ -491,7 +505,7 @@ conic/                     # 项目根（main.py 与 pyproject.toml 同级，不
 
 ## 14. v1 范围界定
 
-**包含**：4 个核心工具、OpenRouter 单一 backend、Discord 单一 channel、DuckDB 持久化、完整的 ContextBuilder 链（含 Summarizer/TokenBudget）、composable system prompt、StepLimit 安全阀、typing indicator、loguru 日志。
+**包含**：6 个核心工具（bash/read_file/write_file/edit_file/web_search/web_fetch）、OpenRouter 单一 backend、Discord 单一 channel、DuckDB 持久化、完整的 ContextBuilder 链（含 Summarizer/TokenBudget）、composable system prompt、StepLimit 安全阀、typing indicator、loguru 日志。
 
 **不包含（架构已预留空间）**：
 - 多 channel 同时运行
