@@ -1,3 +1,5 @@
+from datetime import UTC
+
 from conic.services.storage import StorageService
 
 
@@ -19,6 +21,7 @@ def test_get_or_create_creates_new_session_with_workspace_dir(tmp_path):
     assert row.native_id == "123"
     assert row.model == "test-model"
     assert row.status == "active"
+    assert row.created_at.tzinfo is UTC
     assert row.variables == {}
     assert (tmp_path / "workspace" / "discord" / "123").is_dir()
     storage.shutdown()
@@ -56,6 +59,19 @@ def test_get_or_create_is_idempotent(tmp_path):
     first = storage.get_or_create(channel="discord", native_id="123")
     second = storage.get_or_create(channel="discord", native_id="123")
     assert first == second
+    storage.shutdown()
+
+
+def test_naive_stored_session_time_is_loaded_as_utc(tmp_path):
+    storage = make_storage(tmp_path)
+    row = storage.get_or_create(channel="discord", native_id="123")
+    storage._conn.execute(
+        "update sessions set created_at = ? where session_key = ?",
+        ["2026-09-19T12:00:00", row.session_key],
+    )
+    reloaded = storage.get_or_create(channel="discord", native_id="123")
+    assert reloaded.created_at.tzinfo is UTC
+    assert reloaded.created_at.isoformat() == "2026-09-19T12:00:00+00:00"
     storage.shutdown()
 
 

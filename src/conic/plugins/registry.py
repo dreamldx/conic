@@ -1,6 +1,5 @@
 import os
 import platform
-from datetime import datetime
 from pathlib import Path
 
 from loguru import logger
@@ -57,7 +56,7 @@ def build_plugin_set(config: Config, global_variables: dict | None = None) -> Pl
         "model": config.openrouter_model,
         "platform": f"{platform.system()} {platform.release()}",
         "shell": _detect_shell(),
-        "timezone": str(datetime.now().astimezone().tzinfo),
+        "timezone": "UTC",
         **(global_variables or {}),
     }
     provider_blacklist = [p.strip() for p in config.openrouter_provider_blacklist.split(",") if p.strip()]

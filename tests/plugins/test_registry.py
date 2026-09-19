@@ -147,7 +147,7 @@ def test_loop_factory_wires_session_and_global_variables():
     assert loop._session_variables == {"workspace_dir": "/tmp/ws", "tokens_used": 0, "turn_count": 0}
     assert loop._global_variables["model"] == "test-model"
     assert "platform" in loop._global_variables
-    assert "timezone" in loop._global_variables
+    assert loop._global_variables["timezone"] == "UTC"
 
 
 def test_loop_factory_seeds_session_variables_from_persisted_values():

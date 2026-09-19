@@ -1,5 +1,5 @@
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import duckdb
@@ -21,7 +21,7 @@ class SessionHandle:
             seq=seq,
             role=message.get("role", ""),
             content=json.dumps(message),
-            created_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
         )
         sql, params = queries.insert_message_sql(msg)
         self._conn.execute(sql, params)
@@ -84,7 +84,7 @@ class StorageService:
             workspace_dir=workspace_dir,
             model=self._default_model,
             status="active",
-            created_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
             variables={},
         )
         sql, params = queries.insert_session_sql(session)
@@ -103,6 +103,13 @@ class StorageService:
     def _session_from_row(r) -> Session:
         return Session(
             session_key=r[0], channel=r[1], native_id=r[2], workspace_dir=r[3],
-            model=r[4], status=r[5], created_at=datetime.fromisoformat(r[6]),
+            model=r[4], status=r[5], created_at=_parse_stored_datetime(r[6]),
             variables=json.loads(r[7]) if r[7] else {},
         )
+
+
+def _parse_stored_datetime(value: str) -> datetime:
+    parsed = datetime.fromisoformat(value)
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed
