@@ -51,21 +51,29 @@ while True:
 
 ```python
 class MessageBus:
-    def on(self, type_name: str, handler) -> None: ...
-    async def emit(self, type_name: str, payload: Any) -> Any: ...
+    def on_chain(self, type_name: str, handler) -> None: ...
+    async def chain(self, type_name: str, payload: Any) -> Any: ...
 
     def on_request(self, type_name: str, handler) -> None: ...
     async def request(self, type_name: str, payload: Any) -> Any: ...
+
+    def create_mailbox(self, name: str, payload_type: type) -> None: ...
+    async def post(self, name: str, payload: Any) -> None: ...
+    async def drain(self, name: str) -> list[Any]: ...
+    async def wait_multiply_mailbox(self, *names: str) -> None: ...
+    async def close(self) -> None: ...
 ```
 
-| | `on` / `emit` | `on_request` / `request` |
-|---|---|---|
-| 订阅者数量 | 0 个或多个，按注册顺序依次处理，每个可返回修改后的 payload 传给下一个，也可 `raise AbortTurn` 中止 | 恰好 1 个；注册第二个同 `(type_name, payload类型)` 的会报错 |
-| 用途 | 通知 + 链式加工（前置/后置钩子、审核、渠道输出） | 问答（唯一确定答案：模型补全结果、某个工具的执行结果、摘要结果） |
+| | `on_chain` / `chain` | `on_request` / `request` | mailbox |
+|---|---|---|---|
+| 订阅者数量 | 0 个或多个，按注册顺序依次处理，每个可返回修改后的 payload 传给下一个，也可 `raise AbortTurn` 中止 | 恰好 1 个；注册第二个同 `(type_name, payload类型)` 的会报错 | 每个 mailbox 名称恰好一个消费者创建，任意生产者可 `post` |
+| 用途 | 通知 + 链式加工（前置/后置钩子、审核、渠道输出） | 问答（唯一确定答案：模型补全结果、某个工具的执行结果、摘要结果） | 会话内排队输入与异步唤醒；当前用于 `steering.high` / `steering.low` |
 
 **消息类型判定 = 字符串 topic + payload 的 Python 类型**。同一个字符串 topic 下可以有多种不同 payload 类型分别对应不同 handler。
 
-`emit()` 对每个已注册 handler 先做 `isinstance(payload, payload_cls)` 判断，只有类型匹配才会真正调用；`payload_cls` 只来自 handler 参数的类型注解，跟返回值类型无关——框架不检查"参数类型和返回值类型是否一致"，这是靠约定维持的：同一条概念上的链（比如所有订阅 `BeforeModelCallEvent` 的 handler 都该收/发 `BeforeModelCall`）如果某个 handler 返回了别的类型，链上后面注册的同类型 handler 会被 `isinstance` 检查悄悄跳过，不报错。`isinstance` 检查为 False 时 `emit()` 会打一条 `logger.info("chain interrupted: topic={} handler={} expected={} got={}", ...)`——这不代表出错（同一 topic 下多种 payload 类型互相跳过是设计内的正常情况），但如果它出现在你以为都是同一类型的一条链里，就是排查"payload 类型被意外换掉"这类隐蔽 bug 的信号。
+`chain()` 对每个已注册 handler 先做 `isinstance(payload, payload_cls)` 判断，只有类型匹配才会真正调用；`payload_cls` 只来自 handler 参数的类型注解，跟返回值类型无关——框架不检查"参数类型和返回值类型是否一致"，这是靠约定维持的：同一条概念上的链（比如所有订阅 `BeforeModelCallEvent` 的 handler 都该收/发 `BeforeModelCall`）如果某个 handler 返回了别的类型，链上后面注册的同类型 handler 会被 `isinstance` 检查悄悄跳过，不报错。`isinstance` 检查为 False 时 `chain()` 会打一条 `logger.info("chain interrupted: topic={} handler={} expected={} got={}", ...)`——这不代表出错（同一 topic 下多种 payload 类型互相跳过是设计内的正常情况），但如果它出现在你以为都是同一类型的一条链里，就是排查"payload 类型被意外换掉"这类隐蔽 bug 的信号。
+
+Mailbox 是总线里的第三种通信形态。`ReactLoopPlugin.register()` 创建 `steering.high` / `steering.low` 两个 mailbox，payload 类型都是 `SteeringItem`。`SessionGatewayPlugin` 把用户输入转成 `SteeringUserMessage` 投递到 `steering.high`；`/agent_stop` 把 `SteeringStopCommand` 投递到 `steering.high`；Loop 协程通过 `wait_multiply_mailbox()` 被任一 mailbox 唤醒，再 `drain()` 批量消费。`MessageBus.close()` 会唤醒等待中的 loop，使会话后台任务能结束。
 
 Payload 类型在注册时**自动从 handler 的类型注解推断**（用 `inspect.signature` + `typing.get_type_hints`），插件作者不需要重复声明。
 
@@ -82,10 +90,15 @@ Bus topic 名称通过 `src/conic/plugins/meta.py` 中的 `*Event` 常量集中�
 plugin_manager.start_session(
     channel="discord", native_id=str(discord_thread.id),
     channel_plugin_factory=lambda: DiscordThreadPlugin(discord_thread),
+    reason="new",
 )
 ```
 
-`PluginManager.start_session()` 内部按固定顺序把插件挂到新建的 `MessageBus` 上：6 个 ToolPlugin（各自绑定 `workspace_dir`）→ BackendPlugin → context 插件链（system_prompt → truncator → token_budget）→ policy 插件（permission → step_limit）→ SummarizerPlugin → ReactLoopPlugin → channel 插件。`PluginSet.backend` 和其余插件一样也是**工厂闭包**，确保每会话独立实例——`OpenRouterModelPlugin.register()` 会捕获本会话的 `bus`（流式分支要用它 emit `MessageDeltaUpdateEvent`），如果跨会话共享同一个实例，后一个会话的 `register()` 会覆盖前一个会话捕获的 `bus`，导致流式 token 错发到别的会话/线程（曾经的真实 bug，已修复）。`registry.py` 里这个工厂闭包共享同一个 `AsyncOpenAI` 连接实例，只是插件对象本身（连同它捕获的 `bus`）各会话独立，避免为每个会话重复建立 HTTP 连接。`SessionScope` 额外持有一把 `asyncio.Lock`：`DiscordGateway.handle_message()` 在 `async with scope.lock` 内才 `emit(UserInputEvent, ...)`，避免同一线程内并发消息互相打断同一个 Turn；`handle_stop_command()`（`agent_stop` 命令）同样在 pop 掉路由表条目后用同一把锁包住 `emit(SessionStopEvent) + stop_session()`，确保它会等一个正在跑的 Turn 释放锁之后才停止/归档会话，而不是与之竞态。
+`PluginManager.start_session()` 内部按固定顺序把插件挂到新建的 `MessageBus` 上：当前配置启用的 ToolPlugin（各自绑定 `workspace_dir`）→ BackendPlugin → context 插件链（variables → system_prompt → truncator → token_budget → extra_prompt）→ policy 插件（permission → step_limit）→ SummarizerPlugin → ReactLoopPlugin → channel 插件 → `SessionGatewayPlugin`。ToolPlugin 数量不是固定 6 个：`bash/read_file/write_file/edit_file` 总是注册，`web_search` 仅在 `TAVILY_API_KEY` 存在时注册，`web_fetch` 仅在 `FIRECRAWL_API_KEY` 存在时注册。`PluginSet.backend` 和其余插件一样也是**工厂闭包**，确保每会话独立实例——`OpenRouterModelPlugin.register()` 会捕获本会话的 `bus`（流式分支要用它 chain `MessageDeltaUpdateEvent`），如果跨会话共享同一个实例，后一个会话的 `register()` 会覆盖前一个会话捕获的 `bus`，导致流式 token 错发到别的会话/线程（曾经的真实 bug，已修复）。`registry.py` 里这个工厂闭包共享同一个 `AsyncOpenAI` 连接实例，只是插件对象本身（连同它捕获的 `bus`）各会话独立，避免为每个会话重复建立 HTTP 连接。
+
+`PluginManager.start_session()` 在所有插件注册完成后立即 `chain(SessionStartEvent, SessionStart(reason=reason))`，然后启动两个后台任务：`ReactLoopPlugin.run_loop()` 和 `SessionGatewayPlugin.run()`。`SessionScope` 当前持有 `bus`、持久化 session row、`closing` 标记、一个 `asyncio.Queue[str]` 以及后台 task 集合；它不再用 per-session lock 直接包住每条输入。`DiscordGateway.handle_message()` 只负责把 Discord 文本放入 `scope.queue`。`SessionGatewayPlugin` 串行消费 queue，先链式运行 `InputEvent(Input(text=...))` 拦截/改写，再把未处理的文本作为 `SteeringUserMessage` 投递到 `steering.high`。`ReactLoopPlugin.run_loop()` 是唯一消费 `steering.high` / `steering.low` 的协程，因此同一会话的 Turn 自然串行执行。
+
+停止流程同样走 mailbox：`DiscordGateway.handle_stop_command()` 向 `steering.high` 投递 `SteeringStopCommand`，设置 `scope.closing=True`，从路由表移除该 session，并归档/锁定线程。Loop 在下一次安全 checkpoint 消费到 stop 命令后发出 `SessionEndEvent(reason="agent_stop")`；如果后台任务异常退出且此前没有发过 `SessionEndEvent`，`PluginManager._join_and_cleanup()` 会补发 `SessionEndEvent(reason="unexpected_exit")`，随后把 session 状态置为 `ended` 并关闭 bus。
 
 ### 5.1 进程启动与会话恢复流程
 
@@ -100,44 +113,44 @@ class Gateway(Protocol):
 `DiscordGateway.start()` 内部：
 1. 登录 discord.py 网关连接
 2. 注册 `/agent_start`、`/agent_stop` 斜杠命令
-3. 查 storage 里 `channel="discord"` 且 `status="active"` 的会话，逐个恢复，填进内存路由表 `{thread_id: SessionScope}`
+3. 查 storage 里 `channel="discord"` 且 `status="active"` 的会话，逐个恢复，填进内存路由表 `{thread_id: SessionScope}`；如果远端 thread 已丢失或已归档，则直接把该 session 标成 `ended`
 4. 阻塞进入 discord.py 事件循环
 
 ## 6. 完整消息生命周期
 
-| Topic (meta.py) | Verb | Payload | 处理者 |
+| Topic / channel | Verb | Payload | 处理者 |
 |---|---|---|---|
-| `InputEvent` | emit | `Input` | 无默认订阅者（拦截点，供未来文本命令插件使用） |
-| `UserInputEvent` | emit | `UserInput` | LoopPlugin |
-| `SessionStartEvent` | emit | `SessionStart` | 无默认订阅者（会话开始通知，reason: new/resume） |
-| `TurnStartEvent` | emit | `TurnStart` | TurnVariableUpdaterPlugin（注入 `now` 到 `variables["turn"]`）→ DiscordThreadPlugin（typing indicator + 发送占位状态消息） |
-| `StepStartEvent` | emit | `StepStart` | StepLimitPlugin、DiscordThreadPlugin（续接 typing indicator） |
-| `BeforeModelCallEvent` | emit | `BeforeModelCall` | SystemPromptPlugin → TruncatorPlugin → TokenBudgetPlugin |
-| `BeforeSummarizeEvent` | emit | `BeforeSummarize` | 无默认订阅者（可改写 `instructions` 或置 `cancelled=True`） |
+| `InputEvent` | chain | `Input` | 无默认订阅者（`SessionGatewayPlugin` 在投递用户输入前触发的拦截点，未来文本命令插件可改写 `text` 或置 `handled=True`） |
+| `steering.high` | mailbox | `SteeringItem` | `ReactLoopPlugin.run_loop()`；当前接收 `SteeringUserMessage` 和 `SteeringStopCommand` |
+| `steering.low` | mailbox | `SteeringItem` | `ReactLoopPlugin.run_loop()`；当前供后台结果等低优先级输入预留 |
+| `SessionStartEvent` | chain | `SessionStart` | `PluginManager.start_session()` 注册完插件后发出；默认无订阅者（会话开始通知，reason: new/resume） |
+| `TurnStartEvent` | chain | `TurnStart` | TurnVariableUpdaterPlugin（注入 `now` 到 `variables["turn"]`）→ DiscordThreadPlugin（typing indicator + 发送占位状态消息） |
+| `StepStartEvent` | chain | `StepStart` | StepLimitPlugin、DiscordThreadPlugin（续接 typing indicator） |
+| `BeforeModelCallEvent` | chain | `BeforeModelCall` | SystemPromptPlugin → TruncatorPlugin → TokenBudgetPlugin → ExtraPromptPlugin |
+| `BeforeSummarizeEvent` | chain | `BeforeSummarize` | 无默认订阅者（可改写 `instructions` 或置 `cancelled=True`） |
 | `SummarizeEvent` | request | `SummarizeRequest` → `SummarizeResult` | SummarizerPlugin |
-| `SummarizeDoneEvent` | emit | `SummarizeDone` | 无默认订阅者 |
-| `SummarizeFailedEvent` | emit | `SummarizeFailed` | 无默认订阅者（emit 后异常仍会重新抛出） |
+| `SummarizeDoneEvent` | chain | `SummarizeDone` | 无默认订阅者 |
+| `SummarizeFailedEvent` | chain | `SummarizeFailed` | 无默认订阅者（chain 后异常仍会重新抛出） |
 | `ModelRequestEvent` | request | `ModelRequest` → `ModelResponse` | OpenRouterModelPlugin |
-| `MessageDeltaUpdateEvent` | emit | `MessageDeltaUpdate` | DiscordThreadPlugin（追加缓冲区 + 节流 edit）；仅当 `ModelRequest.stream_updates=True` 时由 OpenRouterModelPlugin 逐 chunk emit |
-| `ModelResponseEvent` | emit | `ModelResponse` | 无默认订阅者 |
-| `ToolCallEvent` | emit | `ToolCall` | PermissionPolicyPlugin |
-| `ToolExecutionStartEvent` | emit | `ToolExecutionStart` | 无默认订阅者；ReactLoopPlugin 紧接着 emit `MessageUpdateEvent`（工具状态行） |
-| `MessageUpdateEvent` | emit | `MessageUpdate` | DiscordThreadPlugin（整体替换缓冲区 + 立即 edit，不节流） |
+| `MessageDeltaUpdateEvent` | chain | `MessageDeltaUpdate` | DiscordThreadPlugin（追加缓冲区 + 节流 edit）；仅当 `ModelRequest.stream_updates=True` 时由 OpenRouterModelPlugin 逐 chunk chain |
+| `ModelResponseEvent` | chain | `ModelResponse` | 无默认订阅者 |
+| `ToolCallEvent` | chain | `ToolCall` | PermissionPolicyPlugin |
+| `ToolExecutionStartEvent` | chain | `ToolExecutionStart` | 无默认订阅者；ReactLoopPlugin 紧接着 chain `MessageUpdateEvent`（工具状态行） |
+| `MessageUpdateEvent` | chain | `MessageUpdate` | DiscordThreadPlugin（整体替换缓冲区 + 立即 edit，不节流） |
 | `ToolCallRequestEvent` | request | tool payload → `ToolCallResult` | 对应 ToolPlugin |
-| `ToolExecutionEndEvent` | emit | `ToolExecutionEnd` | 无默认订阅者（携带派发得到的原始 `ToolCallResult`） |
-| `ToolCallResultEvent` | emit | `ToolCallResult` | 无默认订阅者 |
-| `StepEndEvent` | emit | `StepEnd` | 无默认订阅者 |
-| `AssistantMessageEvent` | emit | `AssistantMessage` | DiscordThreadPlugin |
-| `ErrorEvent` | emit | `Error` | DiscordThreadPlugin |
-| `TurnEndEvent` | emit | `TurnEnd` | DiscordThreadPlugin（停止 typing） |
-| `BuildSystemPromptEvent` | emit | `BuildSystemPrompt` | Section 插件链（只在每 session 第一次 `BeforeModelCallEvent` 时 emit 一次，结果被 `SystemPromptPlugin` 缓存，见 7.1） |
-| `BuildDynamicPromptEvent` | emit | `BuildDynamicPrompt` | `DynamicStateSectionPlugin`（每次 `BeforeModelCallEvent` 都重新 emit，不缓存，见 7.1） |
-| `SessionStopEvent` | emit | `TurnEnd` | DiscordThreadPlugin（标记停止，先于 `SessionEndEvent`） |
-| `SessionEndEvent` | emit | `SessionEnd` | 无默认订阅者（会话结束通知，目前 reason 只有 `user_stop`） |
+| `ToolExecutionEndEvent` | chain | `ToolExecutionEnd` | 无默认订阅者（携带派发得到的原始 `ToolCallResult`） |
+| `ToolCallResultEvent` | chain | `ToolCallResult` | 无默认订阅者 |
+| `StepEndEvent` | chain | `StepEnd` | 无默认订阅者 |
+| `AssistantMessageEvent` | chain | `AssistantMessage` | DiscordThreadPlugin |
+| `ErrorEvent` | chain | `Error` | DiscordThreadPlugin |
+| `TurnEndEvent` | chain | `TurnEnd` | DiscordThreadPlugin（停止 typing） |
+| `BuildSystemPromptEvent` | chain | `BuildSystemPrompt` | Section 插件链（只在每 session 第一次 `BeforeModelCallEvent` 时 chain 一次，结果被 `SystemPromptPlugin` 缓存，见 7.1） |
+| `BuildDynamicPromptEvent` | chain | `BuildDynamicPrompt` | `DynamicStateSectionPlugin`（每次 `BeforeModelCallEvent` 都重新 chain，不缓存，见 7.1） |
+| `SessionEndEvent` | chain | `SessionEnd` | DiscordThreadPlugin（标记停止并停止 typing）以及 PluginManager 内部的结束标记 handler；reason 可能是 `agent_stop` / `unexpected_exit` 等 |
 
 ## 7. 系统提示词（System Prompt）
 
-系统提示词通过 bus 消息 `BuildSystemPromptEvent` 动态组装。`SystemPromptPlugin` emit 该消息时携带空的 `sections: dict[str, str]`，各 section 插件依次填充：
+系统提示词通过 bus 消息 `BuildSystemPromptEvent` 动态组装。`SystemPromptPlugin` chain 该消息时携带空的 `sections: dict[str, str]`，各 section 插件依次填充：
 
 | Section | 插件 | 来源 |
 |---------|------|------|
@@ -165,10 +178,10 @@ class Gateway(Protocol):
 | 作用域 | 生命周期 | 建立时机 | 键 | 更新者 |
 |---|---|---|---|---|
 | `global` | 与进程/`PluginSet` 同寿命，所有 session 共享同一份引用 | `build_plugin_set()` 调用时 | `model`（`config.openrouter_model`）、`platform`（`platform.system() + platform.release()`）、`shell`（`_detect_shell()`，见下）、`timezone`（`datetime.now().astimezone().tzinfo`），加上调用方可选传入的 `global_variables: dict`（覆盖同名默认键） | `registry.py::build_plugin_set()`，一次性计算，之后只读 |
-| `session` | 与一次 Discord 会话（一个 `ReactLoopPlugin` 实例）同寿命 | `ReactLoopPlugin.__init__()` 构造时 | `workspace_dir`；`tokens_used`（初值 0）；`turn_count`（初值 0） | `workspace_dir` 由 `__init__` 一次性写入；`tokens_used` 由 `OpenRouterModelPlugin` 在每次 `ModelRequestEvent` 完成后累加（阻塞/流式路径都支持，流式通过 `stream_options={"include_usage": True}` 从最后一个 chunk 拿 usage），跨 Turn 累计不清零；`turn_count` 由 `ReactLoopPlugin.handle_user_input()` 在方法一开始（`variables` 字典构造之前）`self._session_variables["turn_count"] += 1`，因此本 Turn 内读到的值就是"这是第几轮对话"（1-based），累计不清零 |
-| `turn` | 一次 Turn（一次 `handle_user_input()` 调用） | 每次 `handle_user_input()` 开始时新建空 dict | `now`（UTC ISO8601，精确到秒，由 `TurnVariableUpdaterPlugin` 在 `TurnStartEvent` 上写入）；`step_count`（当前 Step 序号，0-based，由 `ReactLoopPlugin` 在每次进入 while 循环体时写入，与该次 `StepStart.step_index` 一致） | `TurnVariableUpdaterPlugin`（`now`）、`ReactLoopPlugin.handle_user_input()`（`step_count`）；任何 Turn 内事件的订阅者都可以继续往 `turn` 里写 |
+| `session` | 与一次 Discord 会话（一个 `ReactLoopPlugin` 实例）同寿命 | `ReactLoopPlugin.__init__()` 构造时 | `workspace_dir`；`tokens_used`（初值 0）；`turn_count`（初值 0） | `workspace_dir` 由 `__init__` 一次性写入；`tokens_used` 由 `OpenRouterModelPlugin` 在每次 `ModelRequestEvent` 完成后累加（阻塞/流式路径都支持，流式通过 `stream_options={"include_usage": True}` 从最后一个 chunk 拿 usage），跨 Turn 累计不清零；`turn_count` 由 `ReactLoopPlugin._run_turn()` 在方法一开始（`variables` 字典构造之前）`self._session_variables["turn_count"] += 1`，因此本 Turn 内读到的值就是"这是第几轮对话"（1-based），累计不清零 |
+| `turn` | 一次 Turn（一次 `_run_turn()` 调用） | 每次 `_run_turn()` 开始时新建空 dict | `now`（UTC ISO8601，精确到秒，由 `TurnVariableUpdaterPlugin` 在 `TurnStartEvent` 上写入）；`step_count`（当前 Step 序号，0-based，由 `ReactLoopPlugin` 在每次进入 while 循环体时写入，与该次 `StepStart.step_index` 一致） | `TurnVariableUpdaterPlugin`（`now`）、`ReactLoopPlugin._run_turn()`（`step_count`）；任何 Turn 内事件的订阅者都可以继续往 `turn` 里写 |
 
-`ReactLoopPlugin.handle_user_input()` 在 Turn 开始时创建：
+`ReactLoopPlugin._run_turn()` 在 Turn 开始时创建：
 
 ```python
 variables: dict = {
@@ -180,7 +193,7 @@ variables: dict = {
 
 并把同一个 `variables` 引用传给该 Turn 内所有 Turn/Step/工具生命周期事件的 payload（`TurnStart`/`TurnEnd`/`StepStart`/`StepEnd`/`BeforeModelCall`/`ToolCall`/`ToolExecutionStart`/`ToolExecutionEnd`/`AssistantMessage`/`Error`，均带 `variables: dict = field(default_factory=dict)` 字段），以及 `ModelRequest`（同样带 `variables` 字段，专门为了让 `OpenRouterModelPlugin` 能回写 `session.tokens_used`，见下）。因为 `global`/`session`/`turn` 三个子 dict 都是引用（不是逐次拷贝），任何事件订阅者往 `msg.variables["turn"]` 里写入的键，本 Turn 后续事件的订阅者都能读到；`global`/`session` 也会被订阅者原地修改——`OpenRouterModelPlugin` 就是这么更新 `session["tokens_used"]` 的（见下）。除 `ModelRequest` 外，其余请求/响应类 payload（`ModelResponse`/`ToolCallSpec`/`ToolCallResult`/`SummarizeRequest`/`SummarizeResult` 等）以及非 Turn 生命周期事件（`BuildSystemPrompt` 等）仍不携带 `variables`。
 
-`TurnVariableUpdaterPlugin`（`plugins/context/variables.py`，无构造参数）订阅 `TurnStartEvent`，只做一件事：`msg.variables["turn"]["now"] = ...`。它在 `registry.py` 的 `context_plugins` 元组里排第一位，保证同一 Turn 后续任何事件读取 `variables["turn"]["now"]` 时这个键已经存在。`turn.step_count` 不经过插件，直接由 `ReactLoopPlugin.handle_user_input()` 在 while 循环体顶部（`this_step = step_index` 之后）写入 `variables["turn"]["step_count"] = this_step`，与该次 `StepStartEvent` 的 `step_index` 保持一致，因此 `BeforeModelCallEvent` 渲染系统提示词时总能读到当前 Step 序号。
+`TurnVariableUpdaterPlugin`（`plugins/context/variables.py`，无构造参数）订阅 `TurnStartEvent`，只做一件事：`msg.variables["turn"]["now"] = ...`。它在 `registry.py` 的 `context_plugins` 元组里排第一位，保证同一 Turn 后续任何事件读取 `variables["turn"]["now"]` 时这个键已经存在。`turn.step_count` 不经过插件，直接由 `ReactLoopPlugin._run_turn()` 在 while 循环体顶部（`this_step = step_index` 之后）写入 `variables["turn"]["step_count"] = this_step`，与该次 `StepStartEvent` 的 `step_index` 保持一致，因此 `ExtraPromptPlugin` 每个 Step 渲染动态提示词时总能读到当前 Step 序号。`SystemPromptPlugin` 的静态系统提示词只在本 session 第一次 `BeforeModelCallEvent` 时渲染并缓存，不会随后续 Step 重新渲染 `turn.*`。
 
 `global`/`session` 两层的建立入口不在 `TurnVariableUpdaterPlugin` 里，而是：
 - `registry.py::build_plugin_set(config, global_variables=None)` 计算 `resolved_global_variables = {"model": ..., "platform": ..., "shell": ..., "timezone": ..., **(global_variables or {})}`，通过闭包捕获进 `loop_factory`。`shell` 由私有函数 `_detect_shell()` 算出，故意不探测 conic 进程自己跑在哪个交互式 shell 下（那和实际执行工具调用的解释器是两回事），而是直接对齐 `BashToolPlugin.execute()` 底层 `asyncio.create_subprocess_shell`（`shell=True`）真正会 spawn 的程序：Windows 读 `ComSpec` 环境变量取文件名（未设置时回退 `"C:\Windows\System32\cmd.exe"` 的文件名 `"cmd.exe"`——CPython `subprocess.py` 的 Windows `_execute_child` 在 `shell=True` 时就是这么解析 `comspec` 并拼成 `"{comspec} /c \"{args}\""` 的，逐行读源码 + 用 `echo %ComSpec%` 这种只有 cmd.exe 才会展开 `%VAR%` 的探测命令实测验证过），其他平台固定 `"/bin/sh"`（CPython 同一份 `_execute_child` 的 POSIX 分支里 `shell=True` 固定 `args = ["/bin/sh", "-c"] + args`，不读 `$SHELL`）。`RuntimeSectionPlugin` 早期版本硬编码过 "PowerShell 5.1"，这条提示词本来就是错的（Windows 上 `shell=True` 走的是 `ComSpec`／通常是 `cmd.exe`，不是 PowerShell）；中途还试过用第三方库 `shellingham` 探测父进程链识别的交互式 shell，但那反映的是"conic 进程本身在哪个 shell 里启动"，跟"`BashToolPlugin` 的每条命令实际被哪个解释器执行"是两个不同的问题——已改回直接对齐后者；
@@ -192,23 +205,23 @@ variables: dict = {
 - Schema：`sessions` 表新增 `variables VARCHAR DEFAULT '{}'` 列（JSON 序列化的 `dict`）。新建表（`queries.create_sessions_table_sql()`）直接带这一列；已存在的旧库靠 `StorageService.startup()` 里额外执行的 `queries.add_sessions_variables_column_sql()`（`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS variables VARCHAR DEFAULT '{}'`，DuckDB 支持该语法，幂等）补齐。
 - 读取：`services/models.py::Session` 新增 `variables: dict` 字段；`StorageService._session_from_row()` 把该列 `json.loads()` 回 dict（空/`None` 时给 `{}`）；`get_or_create()` 新建会话时 `variables={}`。
 - 写入：`SessionHandle.save_variables(variables: dict)`（`services/storage.py`）把整个 dict `json.dumps()` 后 `UPDATE sessions SET variables = ? WHERE session_key = ?`（`queries.set_session_variables_sql`），整体替换而不是合并。
-- 调用时机：`ReactLoopPlugin.handle_user_input()` 把 while 循环体（含两个 `except`）包在一个 `try/finally` 里，`finally: self._storage.save_variables(self._session_variables)`——无论 Turn 是正常走到 `break` 后触发 `TurnEndEvent`、被 `AbortTurn` 中止、还是被普通异常中止，这一行都会执行且只执行一次，保证"每次 Turn 结束都持久化"覆盖全部三种收尾路径。因为 `self._session_variables` 就是 `variables["session"]` 的同一个引用，Turn 期间任何写入（例如 `OpenRouterModelPlugin` 累加的 `tokens_used`）在持久化时都已经生效。
+- 调用时机：`ReactLoopPlugin._run_turn()` 把 while 循环体（含两个 `except`）包在一个 `try/finally` 里，`finally: self._storage.save_variables(self._session_variables)`——无论 Turn 是正常走到 `break` 后触发 `TurnEndEvent`、被 `AbortTurn` 中止、还是被普通异常中止，这一行都会执行且只执行一次，保证"每次 Turn 结束都持久化"覆盖全部三种收尾路径。因为 `self._session_variables` 就是 `variables["session"]` 的同一个引用，Turn 期间任何写入（例如 `OpenRouterModelPlugin` 累加的 `tokens_used`）在持久化时都已经生效。
 - 恢复时机：`PluginManager.start_session()` 每次都会调用 `storage.get_or_create()`（新会话或恢复已有会话都走这条路径），把拿到的 `row.variables` 传给 `loop_factory` 再传给 `ReactLoopPlugin.__init__`；对新会话这就是 `{}`（用默认值 `tokens_used=0`），对恢复的会话则是上次持久化的值。
 
 模板渲染发生在 `SystemPromptPlugin.apply()`（`BeforeModelCallEvent` 的第一个订阅者）里，在 `_assemble()` 把所有 section 拼成纯文本之后：
 
 ```python
 if self._cached_content is None:
-    sections_msg = await self._bus.emit(meta.BuildSystemPromptEvent, BuildSystemPrompt(sections={}))
+    sections_msg = await self._bus.chain(meta.BuildSystemPromptEvent, BuildSystemPrompt(sections={}))
     system_text = self._assemble(sections_msg.sections)
     self._cached_content = Template(system_text).render(**ctx.variables)
 ```
 
 `**ctx.variables` 把 `global`/`session`/`turn` 三个 key 展开成同名关键字参数传给 `render()`（Jinja2 不受 Python `global` 关键字保留限制），因此各 section 插件（`identity`/`execution.md` 等）里的占位符要写成带命名空间前缀的形式，例如 `prompts/identity.md` 现在写的是 `"You are Conic, a helpful coding agent running on {{ global.model }}."`。
 
-**system 消息只渲染一次、之后全 session 复用（`SystemPromptPlugin.__init__` 里的 `self._cached_content: str | None = None`）**：`SystemPromptPlugin` 是每 session 一个新实例（`context_plugins` 工厂闭包保证），所以这个缓存天然是 session 级的——第一次 `apply()`（本 session 第一个 Step）才会真正 emit `BuildSystemPromptEvent` + `_assemble()` + `Template(...).render()`，之后每个 Step 的 `apply()` 直接复用 `self._cached_content`，不再重新收集 section、不再重新渲染。这要求参与这次渲染的所有 section **只能引用 `global.*`**——`identity`（`global.model`）、`tooling`/`workspace`（不含模板语法，构造时就是定值）、`runtime`（`global.platform`/`global.shell`/`global.model`/`global.timezone`）、`execution`、六个工具的 section 都满足这一条件，因此把它们缓存下来是安全的：同一个 session 里 `global` 不会变，缓存的渲染结果自然也不会过期。缓存的直接收益是给 OpenRouter/DeepSeek 之类支持 prompt 前缀缓存的后端一个**跨请求完全不变的 system 消息**，不会像"每个 Step 都带一份不同的当前时间/step 数"那样把缓存前缀每次都打断。`SystemPromptPlugin.apply()` 返回的新 `BeforeModelCall` 会把 `variables=ctx.variables` 原样带上。**`TruncatorPlugin`/`TokenBudgetPlugin` 在它们真正改写消息列表时也必须转发 `variables=ctx.variables`**——`ExtraPromptPlugin` 排在它们之后，会用 `ctx.variables` 渲染动态 section，如果这两者中任何一个在构造自己的 `BeforeModelCall` 时漏掉 `variables`（默认值是空 dict `{}`），`ExtraPromptPlugin` 拿到的 `ctx.variables` 就不含 `global`/`session`/`turn` 任何一个 key，`Template(text).render(**ctx.variables)` 渲染 `{{ turn.now }}` 会直接抛出 `jinja2.exceptions.UndefinedError: 'turn' is undefined`（真实出现过的 bug：`TruncatorPlugin.apply()`/`TokenBudgetPlugin.apply()` 早期实现里 `return BeforeModelCall(...)` 都没带 `variables`，因为写这段代码时 `ExtraPromptPlugin` 还没引入、链上确实没人在它们之后读 `variables`；后来把 `ExtraPromptPlugin` 加到链尾读 `ctx.variables` 时，这两处忘了同步补上）。`tests/plugins/context/test_truncator.py::test_forwards_variables_when_truncating`、`test_token_budget.py::test_forwards_variables_when_summarizing` 和 `test_extra_prompt.py` 里两个 `test_survives_after_*_in_the_real_registry_chain_order` 端到端测试专门覆盖这一点。
+**system 消息只渲染一次、之后全 session 复用（`SystemPromptPlugin.__init__` 里的 `self._cached_content: str | None = None`）**：`SystemPromptPlugin` 是每 session 一个新实例（`context_plugins` 工厂闭包保证），所以这个缓存天然是 session 级的——第一次 `apply()`（本 session 第一个 Step）才会真正 chain `BuildSystemPromptEvent` + `_assemble()` + `Template(...).render()`，之后每个 Step 的 `apply()` 直接复用 `self._cached_content`，不再重新收集 section、不再重新渲染。这要求参与这次渲染的所有 section **只能引用 `global.*`**——`identity`（`global.model`）、`tooling`/`workspace`（不含模板语法，构造时就是定值）、`runtime`（`global.platform`/`global.shell`/`global.model`/`global.timezone`）、`execution`、各工具的静态 section 都满足这一条件，因此把它们缓存下来是安全的：同一个 session 里 `global` 不会变，缓存的渲染结果自然也不会过期。缓存的直接收益是给 OpenRouter/DeepSeek 之类支持 prompt 前缀缓存的后端一个**跨请求完全不变的 system 消息**，不会像"每个 Step 都带一份不同的当前时间/step 数"那样把缓存前缀每次都打断。`SystemPromptPlugin.apply()` 返回的新 `BeforeModelCall` 会把 `variables=ctx.variables` 原样带上。**`TruncatorPlugin`/`TokenBudgetPlugin` 在它们真正改写消息列表时也必须转发 `variables=ctx.variables`**——`ExtraPromptPlugin` 排在它们之后，会用 `ctx.variables` 渲染动态 section，如果这两者中任何一个在构造自己的 `BeforeModelCall` 时漏掉 `variables`（默认值是空 dict `{}`），`ExtraPromptPlugin` 拿到的 `ctx.variables` 就不含 `global`/`session`/`turn` 任何一个 key，`Template(text).render(**ctx.variables)` 渲染 `{{ turn.now }}` 会直接抛出 `jinja2.exceptions.UndefinedError: 'turn' is undefined`（真实出现过的 bug：`TruncatorPlugin.apply()`/`TokenBudgetPlugin.apply()` 早期实现里 `return BeforeModelCall(...)` 都没带 `variables`，因为写这段代码时 `ExtraPromptPlugin` 还没引入、链上确实没人在它们之后读 `variables`；后来把 `ExtraPromptPlugin` 加到链尾读 `ctx.variables` 时，这两处忘了同步补上）。`tests/plugins/context/test_truncator.py::test_forwards_variables_when_truncating`、`test_token_budget.py::test_forwards_variables_when_summarizing` 和 `test_extra_prompt.py` 里两个 `test_survives_after_*_in_the_real_registry_chain_order` 端到端测试专门覆盖这一点。
 
-**会变的信息不再混进 system 消息，改成 `ExtraPromptPlugin` 拼进最后一条已有消息的 `content` 里**（`plugins/context/extra_prompt.py`，直接订阅 `BeforeModelCallEvent`，不再是 `BuildSystemPromptEvent` 的 section 贡献者）。它的收集机制和 `SystemPromptPlugin` 是同一套模式的镜像：`SystemPromptPlugin` 构造时接收一份 `section_plugins` 列表，emit `BuildSystemPromptEvent` 收集只读一次的 `global` 级 section；`ExtraPromptPlugin` 同样构造时接收一份 `section_plugins` 列表（目前只有 `DynamicStateSectionPlugin` 一个），但它在**每个 Step** 都重新 emit 新引入的 `BuildDynamicPromptEvent`（`meta.py`）收集 `session`/`turn` 级、逐 Step 会变的 section：
+**会变的信息不再混进 system 消息，改成 `ExtraPromptPlugin` 拼进最后一条已有消息的 `content` 里**（`plugins/context/extra_prompt.py`，直接订阅 `BeforeModelCallEvent`，不再是 `BuildSystemPromptEvent` 的 section 贡献者）。它的收集机制和 `SystemPromptPlugin` 是同一套模式的镜像：`SystemPromptPlugin` 构造时接收一份 `section_plugins` 列表，chain `BuildSystemPromptEvent` 收集只读一次的 `global` 级 section；`ExtraPromptPlugin` 同样构造时接收一份 `section_plugins` 列表（目前只有 `DynamicStateSectionPlugin` 一个），但它在**每个 Step** 都重新 chain 新引入的 `BuildDynamicPromptEvent`（`meta.py`）收集 `session`/`turn` 级、逐 Step 会变的 section：
 
 ```python
 class ExtraPromptPlugin:
@@ -220,12 +233,12 @@ class ExtraPromptPlugin:
         self._bus = bus
         for plugin in self._section_plugins:
             plugin.register(bus)
-        bus.on(meta.BeforeModelCallEvent, self.apply)
+        bus.on_chain(meta.BeforeModelCallEvent, self.apply)
 
     async def apply(self, ctx: BeforeModelCall) -> BeforeModelCall | None:
         if not ctx.messages:
             return None
-        sections_msg = await self._bus.emit(meta.BuildDynamicPromptEvent, BuildDynamicPrompt(sections={}))
+        sections_msg = await self._bus.chain(meta.BuildDynamicPromptEvent, BuildDynamicPrompt(sections={}))
         text = self._assemble(sections_msg.sections)
         text = Template(text).render(**ctx.variables)
         if not text:
@@ -266,7 +279,7 @@ Turns so far this session: 1
 
 这种带尖括号的标签结构不是常见 shell 命令/脚本输出会自然产生的形状，跟工具真实输出的区分度比 markdown 标题更高，也是 Cline/Aider 这类编码 agent 往工具结果里拼环境信息时的常见做法（例如 Cline 的 `<environment_details>`）。`SystemPromptPlugin._assemble()`（静态 system 消息用的那个同名方法，见上文）不受影响，仍然用 `## key` 标题风格——它只出现在一条独立的、明确是 system 角色的消息里，不会跟任何工具输出混在一起，没有这个顾虑。
 
-`DynamicStateSectionPlugin`（`plugins/context/sections/dynamic_state.py`）是目前唯一的 `BuildDynamicPromptEvent` 订阅者，贡献一个 `state` section，包含四个值：`{{ turn.now }}`/`{{ turn.step_count }}`/`{{ session.tokens_used }}`/`{{ session.turn_count }}`。这套"通过事件收集 section、再统一渲染"的机制和静态 system 消息完全对称，唯一的区别是 `BuildSystemPromptEvent` 只在 `SystemPromptPlugin` 第一次 `apply()` 时 emit 一次（结果被缓存），而 `BuildDynamicPromptEvent` 每个 Step 都重新 emit、重新渲染（不缓存）——因为它存在的意义就是承载会变的值。往这条动态 prompt 里加新内容，只需要写一个新的 section 插件订阅 `BuildDynamicPromptEvent`，塞进 `registry.py` 里 `ExtraPromptPlugin([...])` 的列表，不需要碰 `ExtraPromptPlugin` 或 `DynamicStateSectionPlugin` 本身。（早期版本这里还有第五个值 `{{ session.provider }}`，随 `_record_provider()` 一起被移除，见 8.2 节。）
+`DynamicStateSectionPlugin`（`plugins/context/sections/dynamic_state.py`）是目前唯一的 `BuildDynamicPromptEvent` 订阅者，贡献一个 `state` section，包含四个值：`{{ turn.now }}`/`{{ turn.step_count }}`/`{{ session.tokens_used }}`/`{{ session.turn_count }}`。这套"通过事件收集 section、再统一渲染"的机制和静态 system 消息完全对称，唯一的区别是 `BuildSystemPromptEvent` 只在 `SystemPromptPlugin` 第一次 `apply()` 时 chain 一次（结果被缓存），而 `BuildDynamicPromptEvent` 每个 Step 都重新 chain、重新渲染（不缓存）——因为它存在的意义就是承载会变的值。往这条动态 prompt 里加新内容，只需要写一个新的 section 插件订阅 `BuildDynamicPromptEvent`，塞进 `registry.py` 里 `ExtraPromptPlugin([...])` 的列表，不需要碰 `ExtraPromptPlugin` 或 `DynamicStateSectionPlugin` 本身。（早期版本这里还有第五个值 `{{ session.provider }}`，随 `_record_provider()` 一起被移除，见 8.2 节。）
 
 `ExtraPromptPlugin` 在 `context_plugins` 元组里排在 **`TruncatorPlugin`/`TokenBudgetPlugin` 之后（最后一个）**，这个顺序依然是必须的——`TruncatorPlugin.apply()` 按 **role 分桶**重组消息列表（所有 `system` 角色的消息一律被搬到最前面，不看原始位置）：
 
@@ -281,24 +294,24 @@ return BeforeModelCall(messages=[*system, *kept], tools=ctx.tools, variables=ctx
 ## 8. 各插件详细设计
 
 ### 8.1 LoopPlugin — ReactLoopPlugin
-唯一订阅 `user_input` 的编排者，持有本会话的 `storage_handle`，驱动整个 Turn/Step 流程。
+唯一消费 `steering.high` / `steering.low` mailbox 的编排者，持有本会话的 `storage_handle`，驱动整个 Turn/Step 流程。
 
 - 构造时除 `tool_schemas` 外还持有 `tool_payload_map: dict[str, type]`——工具的 `llm_name` → 该工具 `execute()` 参数类型（由 `PluginManager` 用 `infer_payload_type` 从签名自动推断），用于把模型返回的 `ToolCallSpec.args`（dict）转换成对应工具的 dataclass payload，再走 `bus.request(ToolCallRequestEvent, payload)`。
 - 系统提示词不落库：每个 Step 都从 `storage.load_history()` 取纯对话历史（不含 system），再交给 `BeforeModelCallEvent` 链（`SystemPromptPlugin` 会重新拼一份 system 消息临时前置），因此 system prompt 内容可以随 workspace/runtime 等运行时信息逐 Step 刷新，但不会污染持久化历史。
 - 单次工具调用若在 `ToolCallEvent`/`ToolCallRequestEvent`/`ToolCallResultEvent` 任一环节抛出普通异常，Loop 会捕获并把 `f"Error: {exc}"` 作为该 `tool_call_id` 的回复内容写回历史（保留原始 `call.id`，不中断整个 Turn）；`AbortTurn` 是这个局部 catch 的显式例外——即使在这三个环节里抛出（例如 `PermissionPolicyPlugin` 在 `before_tool_call` 里拒绝一次调用），也会先被 `except AbortTurn: raise` 放行，穿透到外层，和 `StepLimitPlugin` 那种在 `StepStartEvent` 抛出的 `AbortTurn` 一样，终止整个 Turn 并发 `ErrorEvent`。
-- 每个 Step 结束时（不论走"最终回答"分支还是"处理完所有工具调用"分支）都会 emit `StepEndEvent`，`step_index` 与该 Step 的 `StepStartEvent` 一致；Step 因 `AbortTurn` 中止时不会补发（与 `TurnEndEvent` 在出错时也不补发、改由 `ErrorEvent` 收尾的既有约定一致）。
-- `ToolExecutionStartEvent`/`ToolExecutionEndEvent` 括住 `bus.request(ToolCallRequestEvent, payload)` 这次实际派发：前者在 `before_tool_call` 策略检查通过、`payload` 构造完成后 emit；后者携带派发拿到的原始 `ToolCallResult`（在 `ToolCallResultEvent` 观察/改写链跑之前），用于区分"策略放行"与"真正开始执行"。两者都在同一个 `try` 块内，不改变 `AbortTurn`/普通异常的传播路径。
-- **实时状态展示**：每次 `ToolExecutionStartEvent` 之后紧跟着 emit `MessageUpdateEvent(MessageUpdate(text=self._format_tool_status(call_ctx.call)))`，其中 `_format_tool_status` 是通用格式化（不区分具体工具）：`f"🔧 {call.name}(" + ", ".join(f"{k}={v!r}" for k, v in call.args.items()) + ")"`，例如 `🔧 bash(command='ls -la')`。这个 emit 只负责"当前状态该显示成什么文字"，具体怎么把文字落到 Discord 消息上是 `DiscordThreadPlugin`（8.5）的职责，Loop 本身不知道、也不关心渲染细节。**`StepStartEvent` 本身不会触发"思考中"重置**——早期版本每个 Step 开始时都会把响应式消息打回"思考中"，但这会把上一个 Step 留下的、仍有意义的工具状态行/已流式输出文本无谓抹掉；"思考中"现在只在 `TurnStartEvent` 时由 `DiscordThreadPlugin` 发一次占位消息（见 8.5），之后完全靠 `MessageUpdateEvent`（工具状态）和 `MessageDeltaUpdateEvent`（模型流式文本）自然覆盖，Loop 不再主动"复位"。
-- 请求模型时把 `ModelRequest.stream_updates` 显式设为 `True`（`ModelRequest(messages=ctx.messages, tools=ctx.tools, stream_updates=True)`），让 `OpenRouterModelPlugin`（8.2）对本次调用走流式路径、逐 token emit `MessageDeltaUpdateEvent`。`AssistantMessageEvent`/`ErrorEvent`/`TurnEndEvent` 的 emit 时机和内容完全不变——Loop 不需要为"把消息编辑成最终答案"做任何特殊处理，这仍然是 `DiscordThreadPlugin` 订阅这两个既有事件后自己完成的。
+- 每个 Step 结束时（不论走"最终回答"分支还是"处理完所有工具调用"分支）都会 chain `StepEndEvent`，`step_index` 与该 Step 的 `StepStartEvent` 一致；Step 因 `AbortTurn` 中止时不会补发。
+- `ToolExecutionStartEvent`/`ToolExecutionEndEvent` 括住 `bus.request(ToolCallRequestEvent, payload)` 这次实际派发：前者在 `before_tool_call` 策略检查通过、`payload` 构造完成后 chain；后者携带派发拿到的原始 `ToolCallResult`（在 `ToolCallResultEvent` 观察/改写链跑之前），用于区分"策略放行"与"真正开始执行"。两者都在同一个 `try` 块内，不改变 `AbortTurn`/普通异常的传播路径。
+- **实时状态展示**：每次 `ToolExecutionStartEvent` 之后紧跟着 chain `MessageUpdateEvent(MessageUpdate(text=self._format_tool_status(call_ctx.call)))`，其中 `_format_tool_status` 是通用格式化（不区分具体工具）：`f"🔧 {call.name}(" + ", ".join(f"{k}={v!r}" for k, v in call.args.items() if v != "" and v != []) + ")"`，例如 `🔧 bash(command='ls -la')`。这个 chain 只负责"当前状态该显示成什么文字"，具体怎么把文字落到 Discord 消息上是 `DiscordThreadPlugin`（8.5）的职责，Loop 本身不知道、也不关心渲染细节。**`StepStartEvent` 本身不会触发"思考中"重置**——早期版本每个 Step 开始时都会把响应式消息打回"思考中"，但这会把上一个 Step 留下的、仍有意义的工具状态行/已流式输出文本无谓抹掉；"思考中"现在只在 `TurnStartEvent` 时由 `DiscordThreadPlugin` 发一次占位消息（见 8.5），之后完全靠 `MessageUpdateEvent`（工具状态）和 `MessageDeltaUpdateEvent`（模型流式文本）自然覆盖，Loop 不再主动"复位"。
+- 请求模型时把 `ModelRequest.stream_updates` 显式设为 `True`（`ModelRequest(messages=ctx.messages, tools=ctx.tools, stream_updates=True)`），让 `OpenRouterModelPlugin`（8.2）对本次调用走流式路径、逐 token chain `MessageDeltaUpdateEvent`。`AssistantMessageEvent`/`ErrorEvent`/`TurnEndEvent` 的 chain 时机和内容完全不变——Loop 不需要为"把消息编辑成最终答案"做任何特殊处理，这仍然是 `DiscordThreadPlugin` 订阅这两个既有事件后自己完成的。
 
 ### 8.2 BackendPlugin — OpenRouterModelPlugin
 唯一应答 `model_request`，用 openai SDK 调用 OpenRouter API。
 
-`register()` 额外保存一份 `self._bus`（原来不需要，现在流式分支要用它 emit chunk）。`complete()` 按 `msg.stream_updates` 分两条路径：
+`register()` 额外保存一份 `self._bus`（流式分支要用它 chain chunk）。`complete()` 按 `msg.stream_updates` 分两条路径：
 
 - **`stream_updates=False`（默认）**：和原来完全一样的一次性阻塞调用，`SummarizerPlugin` 内部摘要用的 `ModelRequest` 从不设这个字段，永远走这条路径——摘要生成不会驱动任何 Discord 更新。
 - **`stream_updates=True`（`ReactLoopPlugin` 每次真正驱动 Turn 的模型调用都会用到）**：改为 `stream=True` 调用 OpenAI SDK，边迭代 chunk 边组装：
-  - 每个 chunk 的 `delta.content` 只要非空，就追加进 `content_parts` 并 `bus.emit(MessageDeltaUpdateEvent, MessageDeltaUpdate(text_delta=delta.content))`；工具调用参数的 JSON 片段（`delta.tool_calls[i].function.arguments`）**不会**触发这个事件，用户看不到原始参数流。
+  - 每个 chunk 的 `delta.content` 只要非空，就追加进 `content_parts` 并 `bus.chain(MessageDeltaUpdateEvent, MessageDeltaUpdate(text_delta=delta.content))`；工具调用参数的 JSON 片段（`delta.tool_calls[i].function.arguments`）**不会**触发这个事件，用户看不到原始参数流。
   - `tool_calls` 的增量按 `index` 累加进 `dict[int, dict]`（`id`/`name` 只在各自 index 的首个 chunk 出现一次，`arguments` 是要靠 index 拼接的 JSON 字符串片段），收尾按 index 排序、`json.loads` 解析出最终 `ToolCallSpec` 列表；某个工具调用全程没有 `arguments` 片段时用 `{}` 兜底，避免 `json.loads("")` 抛异常。
   - 组装出的 `raw_message` dict 只重建了 `role`/`content`/`tool_calls` 这个**兼容子集**，足以支撑会话历史回放，但并不需要（也做不到）和非流式分支的 `message.model_dump()` 逐字节一致——非流式分支的 `model_dump()` 会带上 provider 返回的所有字段（例如 `refusal`、`reasoning` 等 provider 专属字段），流式分支不会重建这些。`tool_calls` 字段是 `[{"id":.., "type": "function", "function": {"name":.., "arguments": json.dumps(tc.args)}}] or None`——注意这里要把 `ToolCallSpec.args`（解析后的 dict，方便 Loop 直接构造工具 payload）重新 `json.dumps` 回字符串，两种表示是反着来的。
 
@@ -336,13 +349,14 @@ return BeforeModelCall(messages=[*system, *kept], tools=ctx.tools, variables=ctx
 ### 8.4 DiscordGateway（Core Service，实现 `Gateway` Protocol）
 进程级 discord.py 连接持有者，维护 `{thread_id: SessionScope}` 路由表。在 `conic/discord/gateway.py`。
 
-- 会话生命周期事件由 **Gateway 自己 emit，不是 `PluginManager`**：`handle_start_command`/`resume_active_sessions` 在 `PluginManager.start_session()` 返回后立刻 `scope.bus.emit(SessionStartEvent, SessionStart(reason="new"/"resume"))`；`handle_stop_command` 在 `scope.lock` 内、`SessionStopEvent` 之后、`PluginManager.stop_session()` 之前 emit `SessionEndEvent(reason="user_stop")`。选择让 Gateway 而不是 `PluginManager` emit，是因为"reason"是调用方（Gateway）才知道的信息，这样 `PluginManager.start_session`/`stop_session` 保持同步、无需改造。`resume_active_sessions` 里线程确实丢失（`fetch_thread` 失败）的分支没有 bus 可 emit——session 从未真正建起。
-- `handle_message` 在把文本转成 `UserInputEvent` 之前，先在同一把 `scope.lock` 内链式 emit `InputEvent(Input(text=text))`：钩子可返回改写过 `text` 的 `Input`（继续走 loop，但用新文本），或把 `handled` 置 `True` 完全拦下（`UserInputEvent` 不发出，方法直接返回）。
+- 会话生命周期的 `SessionStartEvent` 由 `PluginManager.start_session()` 发出，`reason` 由调用方传入：`handle_start_command(..., reason="new")`，`resume_active_sessions(..., reason="resume")`。`DiscordGateway` 不再自己 chain `SessionStartEvent`。
+- `handle_message` 只做路由：找到 `SessionScope` 后 `await scope.queue.put(text)`。后续由每会话的 `SessionGatewayPlugin.run()` 串行消费 queue、chain `InputEvent(Input(text=...))`，再把未处理输入转为 `SteeringUserMessage` 投递到 `steering.high`。
+- `handle_stop_command` 向 `steering.high` 投递 `SteeringStopCommand()`，把 `scope.closing` 置为 `True`，从路由表移除 session，并归档/锁定 Discord thread。Loop 消费 stop 命令后通过 `SessionEndEvent(reason="agent_stop")` 结束 session；如果进程在归档后、状态落库前崩溃，下一次 `resume_active_sessions()` 看到远端 thread 已归档，会把该 session 标为 `ended`。
 
 ### 8.5 DiscordThreadPlugin（Plugin）
-每会话一份，订阅 `AssistantMessageEvent`/`ErrorEvent`/`TurnStartEvent`/`StepStartEvent`/`MessageUpdateEvent`/`MessageDeltaUpdateEvent`/`TurnEndEvent`/`SessionStopEvent`/`BuildSystemPromptEvent`（贡献 `output` prompt section，见第 7 节）。TurnStart/StepStart 时启动或续接 typing indicator（`TYPING_INTERVAL=8s` 刷新一次 `thread.typing()`，`TYPING_TIMEOUT=20s` 兜底超时自动停止单段任务），TurnEnd/Error/SessionStop 时停止。由于单段任务有 20s 上限，多 Step 的长 Turn 靠每个 `StepStartEvent` 重新拉起一个新任务（若旧任务已超时结束）来续接，避免指示器在 Turn 中途消失。在 `conic/plugins/channels/discord.py`。
+每会话一份，订阅 `SessionEndEvent`/`AssistantMessageEvent`/`ErrorEvent`/`TurnStartEvent`/`StepStartEvent`/`MessageUpdateEvent`/`MessageDeltaUpdateEvent`/`TurnEndEvent`/`BuildSystemPromptEvent`（贡献 `output` prompt section，见第 7 节）。TurnStart/StepStart 时启动或续接 typing indicator（`TYPING_INTERVAL=8s` 刷新一次 `thread.typing()`，`TYPING_TIMEOUT=20s` 兜底超时自动停止单段任务），TurnEnd/Error/SessionEnd 时停止。由于单段任务有 20s 上限，多 Step 的长 Turn 靠每个 `StepStartEvent` 重新拉起一个新任务（若旧任务已超时结束）来续接，避免指示器在 Turn 中途消失。在 `conic/plugins/channels/discord.py`。
 
-- `SessionStopEvent`（`agent_stop` 命令触发）会把内部 `_stopped` 标记置位；之后任何 `AssistantMessageEvent`/`ErrorEvent` 都会被忽略——防止会话已停止（thread 即将被 archive/lock）后模型仍在跑最后一个 Step 时把消息发进已关闭的线程。
+- `SessionEndEvent` 会把内部 `_stopped` 标记置位；之后任何 `AssistantMessageEvent`/`ErrorEvent` 都会被忽略——防止会话已停止（thread 已被 archive/lock 或即将关闭）后模型仍在跑最后一个 Step 时把消息发进已关闭的线程。
 - `_send()` 按 `DISCORD_MESSAGE_LIMIT=2000` 字符切片分段发送，应对 Discord 单条消息长度限制。
 
 **实时状态消息 + token 流式输出**：
@@ -365,9 +379,10 @@ return BeforeModelCall(messages=[*system, *kept], tools=ctx.tools, variables=ctx
 - `StepLimitPlugin`：超过 `MAX_STEPS_PER_TURN` 时 `raise AbortTurn`
 
 ### 8.7 Context 插件链
-- `SystemPromptPlugin`：emit `BuildSystemPromptEvent` 收集 sections 并组装系统消息；仅当 `ctx.messages[0]` 还不是 `system` 角色时才前置（防御性判断，正常流程下每个 Step 都会重新拼一份）
+- `SystemPromptPlugin`：chain `BuildSystemPromptEvent` 收集 sections 并组装系统消息；仅当 `ctx.messages[0]` 还不是 `system` 角色时才前置。每 session 第一次收集并渲染后缓存静态 system 文本，后续 Step 复用缓存。
 - `TruncatorPlugin`：非 system 消息数超过 `keep_last_n`（默认 40）时，从尾部保留最近 N 条，system 消息始终保留
-- `TokenBudgetPlugin`：用 `core/tokencount.estimate_tokens`（`总字符数 // 4`的粗略估算，不依赖 tokenizer）统计 token 数，超预算时先链式 emit `BeforeSummarizeEvent(BeforeSummarize(request, cancelled=False))`——钩子可改写 `request.instructions` 定制摘要提示词，或把 `cancelled` 置 `True` 跳过本次摘要（`apply()` 直接返回 `None`）；未取消则用（可能被改写的）`request` 发起 `SummarizeEvent`，成功后 emit `SummarizeDoneEvent(SummarizeDone(result))`，失败则先 emit `SummarizeFailedEvent(SummarizeFailed(exc))` 再重新抛出（摘要失败仍会中止整个 Turn，这一行为不变，只是失败前多了一次可观测通知）
+- `TokenBudgetPlugin`：用 `core/tokencount.estimate_tokens`（`总字符数 // 4`的粗略估算，不依赖 tokenizer）统计 token 数，超预算时先链式 chain `BeforeSummarizeEvent(BeforeSummarize(request, cancelled=False))`——钩子可改写 `request.instructions` 定制摘要提示词，或把 `cancelled` 置 `True` 跳过本次摘要（`apply()` 直接返回 `None`）；未取消则用（可能被改写的）`request` 发起 `SummarizeEvent`，成功后 chain `SummarizeDoneEvent(SummarizeDone(result))`，失败则先 chain `SummarizeFailedEvent(SummarizeFailed(exc))` 再重新抛出（摘要失败仍会中止整个 Turn，这一行为不变，只是失败前多了一次可观测通知）
+- `ExtraPromptPlugin`：排在链尾，每个 Step chain `BuildDynamicPromptEvent`，把动态状态拼进最终发给模型的最后一条消息 content，不新增 message role。
 
 Truncator 和 Summarizer 的裁切点都要经过 `core/messagealign.align_cut(messages, cut_index)`：如果提议的裁切点落在一条 `role: "tool"` 消息上（即会把某个 `tool_calls` 消息和它对应的工具回复截断成孤儿），就把裁切点持续前移，直到落在完整的 assistant+tool回复 消息组之前，保证任何被保留的 `tool` 消息都能在保留区间内找到它所回复的 assistant 消息。
 
@@ -386,7 +401,8 @@ CREATE TABLE sessions (
     session_key VARCHAR PRIMARY KEY,   -- "{channel}:{native_id}"，如 "discord:123456"
     channel VARCHAR, native_id VARCHAR, workspace_dir VARCHAR,
     model VARCHAR, status VARCHAR,     -- status: "active" | "ended"
-    created_at VARCHAR
+    created_at VARCHAR,
+    variables VARCHAR DEFAULT '{}'
 )
 CREATE TABLE messages (
     session_key VARCHAR, seq INTEGER,  -- 每会话独立递增（MAX(seq)+1），不用自增列
@@ -396,9 +412,9 @@ CREATE TABLE messages (
 )
 ```
 
-SQL 语句集中在 `src/conic/services/queries.py` 中，每句包装为返回 `(sql, params)` 的函数。数据模型使用 pydantic `Session`/`Message` 类型（`src/conic/services/models.py`）。
+SQL 语句集中在 `src/conic/services/queries.py` 中，每句包装为返回 `(sql, params)` 的函数。数据模型使用 pydantic `Session`/`Message` 类型（`src/conic/services/models.py`）。`startup()` 会执行 `ALTER TABLE sessions ADD COLUMN IF NOT EXISTS variables VARCHAR DEFAULT '{}'`，兼容旧库。
 
-`StorageService`（进程级单例，持有 DuckDB 连接）与 `SessionHandle`（`storage.handle_for(row)` 返回，仅包装 `session_key` + 连接引用）职责分离：前者管理会话行的创建/恢复/状态流转（`get_or_create`/`active_sessions`/`set_status`），后者是 `ReactLoopPlugin` 直接持有、每次读写历史消息时使用的窄接口（`append_message`/`load_history`），Loop 不直接接触 `StorageService` 或原始连接。`get_or_create()` 首次创建会话时会按 `{workspace_root}/{channel}/{native_id}` 派生并 `mkdir` 出 workspace 目录，写入 `workspace_dir` 字段供后续该会话所有 ToolPlugin 复用。
+`StorageService`（进程级单例，持有 DuckDB 连接）与 `SessionHandle`（`storage.handle_for(row)` 返回，仅包装 `session_key` + 连接引用）职责分离：前者管理会话行的创建/恢复/状态流转（`get_or_create`/`active_sessions`/`set_status`），后者是 `ReactLoopPlugin` 直接持有、每次读写历史消息时使用的窄接口（`append_message`/`load_history`/`save_variables`），Loop 不直接接触 `StorageService` 或原始连接。`get_or_create()` 首次创建会话时会按 `{workspace_root}/{channel}/{native_id}` 派生并 `mkdir` 出 workspace 目录，写入 `workspace_dir` 字段供后续该会话所有 ToolPlugin 复用。
 
 ## 10. 配置项
 
@@ -443,13 +459,14 @@ conic/                     # 项目根（main.py 与 pyproject.toml 同级，不
     core/
       bus.py              # MessageBus
       manager.py          # PluginManager, PluginSet
+      session_gateway.py  # SessionGatewayPlugin：queue → InputEvent → steering.high
       messagealign.py     # align_cut：截断对齐，防止 orphan tool replies
       tokencount.py       # estimate_tokens：字符数 // 4 的粗略估算
     types/                 # 纯类型定义（dataclass / Protocol / 异常类），无行为逻辑
       gateway.py          # Gateway Protocol
-      session.py          # SessionScope（含 per-session asyncio.Lock）
+      session.py          # SessionScope（bus / row / closing / queue / tasks）
       messages.py         # 所有消息 dataclass
-      errors.py           # AbortTurn、NoResponderError、DuplicateResponderError
+      errors.py           # AbortTurn、NoResponderError、DuplicateResponderError、mailbox 相关错误
     plugins/
       meta.py             # 总线 topic 名称常量 (*Event)
       registry.py         # build_plugin_set()：组装 PluginSet，泛化加载 prompts/*.md
@@ -498,14 +515,14 @@ conic/                     # 项目根（main.py 与 pyproject.toml 同级，不
 ## 13. 错误处理
 
 - 工具执行失败 → 返回 `ToolCallResult(error=...)`，反馈给模型
-- 任意钩子 `raise AbortTurn` → Loop 捕获 → `bus.emit("error", ...)` → Turn 干净结束
+- 任意钩子 `raise AbortTurn` → Loop 捕获 → `bus.chain(ErrorEvent, ...)` → Turn 干净结束；`USER_ABORT` 会结束整个 session
 - OpenRouter API 异常 → 转为 error 事件上报
 - Discord 单条消息 2000 字符限制 → `DiscordThreadPlugin` 负责分段发送
-- Typing indicator：TurnStart 启动，TurnEnd/Error 停止，60s 超时保护
+- Typing indicator：TurnStart/StepStart 启动或续接，TurnEnd/Error/SessionEnd 停止，20s 单段超时保护
 
 ## 14. v1 范围界定
 
-**包含**：6 个核心工具（bash/read_file/write_file/edit_file/web_search/web_fetch）、OpenRouter 单一 backend、Discord 单一 channel、DuckDB 持久化、完整的 ContextBuilder 链（含 Summarizer/TokenBudget）、composable system prompt、StepLimit 安全阀、typing indicator、loguru 日志。
+**包含**：4 个本地核心工具（bash/read_file/write_file/edit_file）和按 API key 条件注册的 web_search/web_fetch、OpenRouter 单一 backend、Discord 单一 channel、DuckDB 持久化、完整的 ContextBuilder 链（含 Summarizer/TokenBudget/ExtraPrompt）、composable system prompt、StepLimit 安全阀、typing indicator、loguru 日志。
 
 **不包含（架构已预留空间）**：
 - 多 channel 同时运行
