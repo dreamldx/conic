@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Pull latest code on boot/start. Do not block startup on failure.
+set -u
+cd @PROJECT_DIR@ || exit 1
+git pull --ff-only origin master >/dev/null 2>&1
+# Resync venv if dependencies changed (failure does not block)
+.venv/bin/pip install -e . -q >/dev/null 2>&1 || true
+exit 0

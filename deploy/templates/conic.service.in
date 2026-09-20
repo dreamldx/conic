@@ -1,0 +1,21 @@
+[Unit]
+Description=Conic Discord agentic bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=@PROJECT_DIR@
+# Pull latest code on every start (incl. boot); failure does not block startup
+ExecStartPre=@PROJECT_DIR@/update.sh
+ExecStartPre=/bin/sh -c 'cd @PROJECT_DIR@ && @UV@ sync || true'
+ExecStart=@PROJECT_DIR@/.venv/bin/python @PROJECT_DIR@/main.py
+Restart=always
+RestartSec=5
+TimeoutStartSec=90
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
