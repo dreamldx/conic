@@ -9,6 +9,7 @@ User=root
 WorkingDirectory=/home/dreamldx/Projects/conic
 # 每次启动（含开机）先拉最新代码，失败不阻塞
 ExecStartPre=/home/dreamldx/Projects/conic/deploy/linux/update.sh
+ExecStartPre=/bin/sh -c 'cd /home/dreamldx/Projects/conic && /home/dreamldx/.local/bin/uv sync || true'
 ExecStart=/home/dreamldx/Projects/conic/.venv/bin/python /home/dreamldx/Projects/conic/main.py
 Restart=always
 RestartSec=5
