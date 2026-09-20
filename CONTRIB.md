@@ -45,7 +45,9 @@ def load_config(env: dict[str, str] | None = None) -> Config:
 
 ### Comments
 
-Do not add comments to source code.
+Do not add comments to source code. If a comment is truly necessary (e.g. a
+non-obvious workaround or a deployment/template file), write it in **English**
+only — Chinese or other non-English comments are not allowed.
 
 ### Logging
 
