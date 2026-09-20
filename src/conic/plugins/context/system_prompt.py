@@ -3,7 +3,7 @@ from jinja2 import Template
 from conic.plugins import meta
 from conic.types.messages import BeforeModelCall, BuildSystemPrompt
 
-SECTION_ORDER = ["identity", "tooling", "workspace", "runtime", "execution"]
+SECTION_ORDER = ["identity", "tooling", "skills", "workspace", "runtime", "execution"]
 
 
 class SystemPromptPlugin:

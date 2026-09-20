@@ -98,3 +98,8 @@ async def test_system_content_is_rendered_once_and_cached_across_calls():
     assert result1.messages[0]["content"] == result2.messages[0]["content"]
     assert "T1" in result2.messages[0]["content"]
     assert "T2" not in result2.messages[0]["content"]
+
+
+def test_section_order_places_skills_right_after_tooling():
+    from conic.plugins.context.system_prompt import SECTION_ORDER
+    assert SECTION_ORDER.index("skills") == SECTION_ORDER.index("tooling") + 1

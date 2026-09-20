@@ -12,6 +12,7 @@ from conic.plugins.context.sections.dynamic_state import DynamicStateSectionPlug
 from conic.plugins.context.sections.execution import ExecutionBiasSectionPlugin
 from conic.plugins.context.sections.identity import IdentitySectionPlugin
 from conic.plugins.context.sections.runtime import RuntimeSectionPlugin
+from conic.plugins.context.sections.skills import SkillsSectionPlugin
 from conic.plugins.context.sections.tooling import ToolingSectionPlugin
 from conic.plugins.context.sections.workspace import WorkspaceSectionPlugin
 from conic.plugins.context.summarizer import SummarizerPlugin
@@ -26,6 +27,7 @@ from conic.plugins.policy.step_limit import StepLimitPlugin
 from conic.plugins.tools.bash import BashToolPlugin
 from conic.plugins.tools.edit_file import EditFileToolPlugin
 from conic.plugins.tools.read_file import ReadFileToolPlugin
+from conic.plugins.tools.skills import ListSkillsToolPlugin, LoadSkillToolPlugin
 from conic.plugins.tools.web_fetch import WebFetchToolPlugin, build_web_fetch_schema
 from conic.plugins.tools.web_search import WebSearchToolPlugin
 from conic.plugins.tools.write_file import WriteFileToolPlugin
@@ -65,7 +67,18 @@ def build_plugin_set(config: Config, global_variables: dict | None = None) -> Pl
         def __init__(self, workspace_dir: str):
             super().__init__(workspace_dir=workspace_dir, timeout=config.bash_timeout)
 
-    tool_classes: list[type] = [ConfiguredBashToolPlugin, ReadFileToolPlugin, WriteFileToolPlugin, EditFileToolPlugin]
+    class ConfiguredListSkillsToolPlugin(ListSkillsToolPlugin):
+        def __init__(self, workspace_dir: str):
+            super().__init__(workspace_dir=workspace_dir, project_root=config.project_root)
+
+    class ConfiguredLoadSkillToolPlugin(LoadSkillToolPlugin):
+        def __init__(self, workspace_dir: str):
+            super().__init__(workspace_dir=workspace_dir, project_root=config.project_root)
+
+    tool_classes: list[type] = [
+        ConfiguredBashToolPlugin, ReadFileToolPlugin, WriteFileToolPlugin, EditFileToolPlugin,
+        ConfiguredListSkillsToolPlugin, ConfiguredLoadSkillToolPlugin,
+    ]
 
     if config.tavily_api_key:
         class ConfiguredWebSearchToolPlugin(WebSearchToolPlugin):
@@ -101,6 +114,7 @@ def build_plugin_set(config: Config, global_variables: dict | None = None) -> Pl
             lambda ws, schemas: SystemPromptPlugin([
                 IdentitySectionPlugin(prompts.get("identity", "")),
                 ToolingSectionPlugin(schemas),
+                SkillsSectionPlugin(ws, config.project_root),
                 WorkspaceSectionPlugin(ws),
                 RuntimeSectionPlugin(),
                 ExecutionBiasSectionPlugin(prompts.get("execution", "")),

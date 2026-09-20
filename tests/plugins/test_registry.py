@@ -12,6 +12,7 @@ from conic.plugins.registry import _detect_shell, build_plugin_set
 from conic.plugins.tools.bash import BashToolPlugin
 from conic.plugins.tools.edit_file import EditFileToolPlugin
 from conic.plugins.tools.read_file import ReadFileToolPlugin
+from conic.plugins.tools.skills import ListSkillsToolPlugin, LoadSkillToolPlugin
 from conic.plugins.tools.write_file import WriteFileToolPlugin
 
 
@@ -26,10 +27,35 @@ def make_config():
     )
 
 
-def test_build_plugin_set_wires_the_four_v1_tools():
+def test_build_plugin_set_wires_the_v1_tools():
     plugin_set = build_plugin_set(make_config())
     assert issubclass(plugin_set.tool_classes[0], BashToolPlugin)
-    assert plugin_set.tool_classes[1:] == (ReadFileToolPlugin, WriteFileToolPlugin, EditFileToolPlugin)
+    assert plugin_set.tool_classes[1:4] == (ReadFileToolPlugin, WriteFileToolPlugin, EditFileToolPlugin)
+    assert issubclass(plugin_set.tool_classes[4], ListSkillsToolPlugin)
+    assert issubclass(plugin_set.tool_classes[5], LoadSkillToolPlugin)
+
+
+def test_build_plugin_set_wires_skill_tools_with_project_root():
+    plugin_set = build_plugin_set(make_config())
+    list_cls = next(c for c in plugin_set.tool_classes if issubclass(c, ListSkillsToolPlugin))
+    load_cls = next(c for c in plugin_set.tool_classes if issubclass(c, LoadSkillToolPlugin))
+
+    list_tool = list_cls(workspace_dir="/tmp/ws")
+    load_tool = load_cls(workspace_dir="/tmp/ws")
+
+    assert list_tool._workspace_dir == "/tmp/ws"
+    assert list_tool._project_root == "/tmp"
+    assert load_tool._workspace_dir == "/tmp/ws"
+    assert load_tool._project_root == "/tmp"
+
+
+def test_build_plugin_set_wires_skills_section_plugin():
+    from conic.plugins.context.sections.skills import SkillsSectionPlugin
+
+    plugin_set = build_plugin_set(make_config())
+    system_prompt_plugin = plugin_set.context_plugins[1]("/tmp/ws", [])
+    kinds = [type(p) for p in system_prompt_plugin._section_plugins]
+    assert SkillsSectionPlugin in kinds
 
 
 def test_build_plugin_set_wires_bash_tool_with_configured_timeout():
