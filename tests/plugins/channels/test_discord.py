@@ -253,6 +253,20 @@ async def test_first_delta_update_with_empty_delta_falls_back_to_thinking_placeh
     assert placeholder.edits[-1] == thread.sent[0]
 
 
+async def test_first_delta_update_with_whitespace_only_delta_falls_back_to_thinking_placeholder():
+    thread = FakeThread()
+    plugin = DiscordThreadPlugin(thread)
+    bus = MessageBus()
+    plugin.register(bus)
+
+    await bus.chain(meta.TurnStartEvent, TurnStart())
+    placeholder = thread.messages[0]
+
+    await bus.chain(meta.MessageDeltaUpdateEvent, MessageDeltaUpdate(text_delta=" \n"))
+
+    assert placeholder.edits[-1] == thread.sent[0]
+
+
 async def test_assistant_message_finalizes_by_editing_the_placeholder():
     thread = FakeThread()
     plugin = DiscordThreadPlugin(thread)
