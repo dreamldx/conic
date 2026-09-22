@@ -19,12 +19,51 @@ def make_plugin():
     return plugin, bus
 
 
-async def test_appends_rendered_extra_content_to_the_last_message():
-    """The dynamic content must be folded into the content of the last
-    existing message, not added as a brand-new message -- inserting a bare
-    system-role message after a tool reply (or anywhere mid-conversation)
-    breaks the strict role alternation many chat/tool-calling models expect
-    and produces garbled output."""
+async def test_inserts_new_user_message_before_this_turns_steering_messages():
+    """The dynamic content is only produced at Step 0 of a Turn, added as a
+    brand-new `user`-role message (never folded into an existing message's
+    content -- a live A/B test across deepseek/qwen/glm/claude/openai
+    confirmed `user` role is safe here; `system` role made DeepSeek silently
+    drop tool_calls in ~80% of multi-turn requests, because DeepSeek's chat
+    template collects every system-role message, regardless of its position
+    in the array, and renders them all together before the first user
+    message -- `user`/`assistant` messages keep their real position).
+
+    It's spliced in BEFORE this turn's own steering-injected messages (the
+    last `turn.steering_count` entries of ctx.messages), not appended after
+    them, so it reads as context established ahead of the turn's actual
+    input rather than a trailing note glued onto it."""
+    plugin, _bus = make_plugin()
+    ctx = BeforeModelCall(
+        messages=[
+            {"role": "system", "content": "static system prompt"},
+            {"role": "assistant", "content": "previous turn's answer"},
+            {"role": "user", "content": "this turn's new input"},
+        ],
+        tools=[],
+        variables={
+            "global": {},
+            "session": {"tokens_used": 42, "turn_count": 3},
+            "turn": {"now": "2026-09-16T00:00:00+00:00", "step_count": 0, "steering_count": 1},
+        },
+    )
+    result = await plugin.apply(ctx)
+
+    assert len(result.messages) == 4
+    assert result.messages[0] == ctx.messages[0]
+    assert result.messages[1] == ctx.messages[1]
+    new = result.messages[2]
+    assert new["role"] == "user"
+    assert "2026-09-16T00:00:00+00:00" in new["content"]
+    assert "42" in new["content"]
+    assert "3" in new["content"]
+    assert result.messages[3] == ctx.messages[2]
+
+
+async def test_appends_at_the_end_when_steering_count_is_unknown_or_zero():
+    """With no steering_count (or zero), there's nothing this turn's steering
+    injected to insert ahead of, so the new message falls back to the end of
+    the list."""
     plugin, _bus = make_plugin()
     ctx = BeforeModelCall(
         messages=[
@@ -35,22 +74,39 @@ async def test_appends_rendered_extra_content_to_the_last_message():
         variables={
             "global": {},
             "session": {"tokens_used": 42, "turn_count": 3},
-            "turn": {"now": "2026-09-16T00:00:00+00:00", "step_count": 1},
+            "turn": {"now": "2026-09-16T00:00:00+00:00", "step_count": 0},
         },
     )
     result = await plugin.apply(ctx)
 
-    assert len(result.messages) == 2
+    assert len(result.messages) == 3
     assert result.messages[0] == ctx.messages[0]
-    last = result.messages[-1]
-    assert last["role"] == "user"
-    assert last["content"].startswith("hi")
-    assert "2026-09-16T00:00:00+00:00" in last["content"]
-    assert "42" in last["content"]
-    assert "3" in last["content"]
+    assert result.messages[1] == ctx.messages[1]
+    new = result.messages[-1]
+    assert new["role"] == "user"
+    assert "2026-09-16T00:00:00+00:00" in new["content"]
+    assert "42" in new["content"]
+    assert "3" in new["content"]
 
 
-async def test_preserves_last_message_role_when_it_is_a_tool_reply():
+async def test_produces_nothing_after_step_zero():
+    """Only Step 0 of a Turn gets this content -- later Steps within the same
+    Turn (step_count 1, 2, ...) must not repeat it."""
+    plugin, _bus = make_plugin()
+    ctx = BeforeModelCall(
+        messages=[{"role": "user", "content": "hi"}],
+        tools=[],
+        variables={
+            "global": {},
+            "session": {"tokens_used": 42, "turn_count": 3},
+            "turn": {"now": "T1", "step_count": 1},
+        },
+    )
+    result = await plugin.apply(ctx)
+    assert result is None
+
+
+async def test_preserves_existing_messages_when_last_one_is_a_tool_reply():
     plugin, _bus = make_plugin()
     ctx = BeforeModelCall(
         messages=[
@@ -58,16 +114,16 @@ async def test_preserves_last_message_role_when_it_is_a_tool_reply():
             {"role": "tool", "tool_call_id": "c1", "content": "ran ls"},
         ],
         tools=[],
-        variables={"global": {}, "session": {}, "turn": {"now": "T1"}},
+        variables={"global": {}, "session": {}, "turn": {"now": "T1", "step_count": 0}},
     )
     result = await plugin.apply(ctx)
 
-    assert len(result.messages) == 2
-    last = result.messages[-1]
-    assert last["role"] == "tool"
-    assert last["tool_call_id"] == "c1"
-    assert last["content"].startswith("ran ls")
-    assert "T1" in last["content"]
+    assert len(result.messages) == 3
+    assert result.messages[0] == ctx.messages[0]
+    assert result.messages[1] == ctx.messages[1]
+    new = result.messages[-1]
+    assert new["role"] == "user"
+    assert "T1" in new["content"]
 
 
 async def test_forwards_tools_and_variables_unchanged():
@@ -75,7 +131,7 @@ async def test_forwards_tools_and_variables_unchanged():
     ctx = BeforeModelCall(
         messages=[{"role": "user", "content": "hi"}],
         tools=[{"type": "function", "function": {"name": "bash"}}],
-        variables={"global": {}, "session": {}, "turn": {}},
+        variables={"global": {}, "session": {}, "turn": {"step_count": 0}},
     )
     result = await plugin.apply(ctx)
 
@@ -83,22 +139,24 @@ async def test_forwards_tools_and_variables_unchanged():
     assert result.variables is ctx.variables
 
 
-async def test_emit_on_before_model_call_appends_to_last_message():
+async def test_emit_on_before_model_call_appends_a_new_message():
     _plugin, bus = make_plugin()
     ctx = BeforeModelCall(
         messages=[{"role": "user", "content": "hi"}],
         tools=[],
-        variables={"global": {}, "session": {}, "turn": {}},
+        variables={"global": {}, "session": {}, "turn": {"step_count": 0}},
     )
     result = await bus.chain("before_model_call", ctx)
-    assert len(result.messages) == 1
-    assert result.messages[0]["role"] == "user"
-    assert result.messages[0]["content"].startswith("hi")
+    assert len(result.messages) == 2
+    assert result.messages[0] == ctx.messages[0]
+    assert result.messages[-1]["role"] == "user"
 
 
 async def test_no_messages_is_a_noop():
     plugin, _bus = make_plugin()
-    ctx = BeforeModelCall(messages=[], tools=[], variables={"global": {}, "session": {}, "turn": {}})
+    ctx = BeforeModelCall(
+        messages=[], tools=[], variables={"global": {}, "session": {}, "turn": {"step_count": 0}}
+    )
     result = await plugin.apply(ctx)
     assert result is None
 
@@ -117,7 +175,7 @@ async def test_emits_build_dynamic_prompt_event_to_collect_sections():
     ctx = BeforeModelCall(
         messages=[{"role": "user", "content": "hi"}],
         tools=[],
-        variables={"global": {}, "session": {}, "turn": {"now": "T1"}},
+        variables={"global": {}, "session": {}, "turn": {"now": "T1", "step_count": 0}},
     )
     result = await plugin.apply(ctx)
 
@@ -125,10 +183,9 @@ async def test_emits_build_dynamic_prompt_event_to_collect_sections():
 
 
 async def test_assemble_wraps_sections_in_xml_style_tags():
-    """A distinct, non-markdown delimiter matters here: this text gets folded
-    into the content of a real conversation message (often a tool result),
-    so it must not look like plausible tool stdout the model could confuse
-    with the tool's actual output."""
+    """A distinct, non-markdown delimiter matters here: the state message is
+    appended as a standalone user-role message, but it's still good practice
+    to keep the content structured rather than a wall of plain text."""
     result = ExtraPromptPlugin._assemble({"a": "content a", "b": "content b"})
     assert result.startswith("<context_state>")
     assert result.endswith("</context_state>")
@@ -145,7 +202,9 @@ async def test_no_section_plugins_is_a_noop():
     bus = MessageBus()
     plugin.register(bus)
     ctx = BeforeModelCall(
-        messages=[{"role": "user", "content": "hi"}], tools=[], variables={"global": {}, "session": {}, "turn": {}}
+        messages=[{"role": "user", "content": "hi"}],
+        tools=[],
+        variables={"global": {}, "session": {}, "turn": {"step_count": 0}},
     )
     result = await plugin.apply(ctx)
     assert result is None
@@ -180,7 +239,7 @@ async def test_survives_after_truncation_in_the_real_registry_chain_order():
 
     result = await bus.chain(meta.BeforeModelCallEvent, ctx)
 
-    assert len(result.messages) == 2
+    assert len(result.messages) == 3
     assert "T1" in result.messages[-1]["content"]
 
 

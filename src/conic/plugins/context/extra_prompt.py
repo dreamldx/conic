@@ -18,6 +18,8 @@ class ExtraPromptPlugin:
     async def apply(self, ctx: BeforeModelCall) -> BeforeModelCall | None:
         if not ctx.messages:
             return None
+        if ctx.variables.get("turn", {}).get("step_count") != 0:
+            return None
 
         sections_msg = await self._bus.chain(
             meta.BuildDynamicPromptEvent, BuildDynamicPrompt(sections={})
@@ -27,11 +29,16 @@ class ExtraPromptPlugin:
         if not text:
             return None
 
-        *rest, last = ctx.messages
-        content = last.get("content") or ""
-        appended = {**last, "content": f"{content}\n\n{text}"}
+        # Insert before this turn's own steering-injected messages (rather
+        # than after them) so the state snapshot reads as context established
+        # ahead of the turn's actual input, not a trailing note appended to
+        # it. steering_count is however many of the most recent messages in
+        # ctx.messages belong to this turn's steering injection.
+        steering_count = ctx.variables.get("turn", {}).get("steering_count", 0)
+        insert_at = max(0, len(ctx.messages) - steering_count)
+        messages = [*ctx.messages[:insert_at], {"role": "user", "content": text}, *ctx.messages[insert_at:]]
         return BeforeModelCall(
-            messages=[*rest, appended],
+            messages=messages,
             tools=ctx.tools,
             variables=ctx.variables,
         )

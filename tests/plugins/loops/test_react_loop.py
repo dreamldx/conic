@@ -503,7 +503,31 @@ async def test_variables_has_global_session_turn_scopes():
 
     assert seen[0]["global"] == {"model": "gpt-test"}
     assert seen[0]["session"] == {"workspace_dir": "/tmp/ws", "tokens_used": 0, "turn_count": 1}
-    assert seen[0]["turn"] == {"step_count": 0}
+    assert seen[0]["turn"] == {"step_count": 0, "steering_count": 1}
+
+
+async def test_steering_count_reflects_total_injected_history_entries():
+    """steering_count must count actual history entries produced by every
+    injected item (high and low combined), not the number of items -- lets
+    ExtraPromptPlugin splice its state message ahead of exactly this many
+    trailing messages in ctx.messages."""
+    handle = FakeStorageHandle()
+    responses = [ModelResponse(text="hi", tool_calls=[], raw_message={})]
+    bus, loop = make_loop(handle, responses)
+
+    seen = []
+
+    async def observe(msg: BeforeModelCall) -> None:
+        seen.append(msg.variables["turn"]["steering_count"])
+
+    bus.on_chain("before_model_call", observe)
+
+    await loop._run_turn(
+        [SteeringUserMessage("hello")],
+        [SteeringBackgroundResult(task_id="t1", exit_code=0, output="build ok")],
+    )
+
+    assert seen == [2]
 
 
 async def test_session_variables_seeded_from_persisted_values():

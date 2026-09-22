@@ -58,10 +58,13 @@ class ReactLoopPlugin:
         args = ", ".join(f"{k}={v!r}" for k, v in call.args.items() if v != "" and v != [])
         return f"🔧 {call.name}({args})"
 
-    def _inject(self, items: list[SteeringItem], turn_id: int) -> None:
+    def _inject(self, items: list[SteeringItem], turn_id: int) -> int:
+        count = 0
         for item in items:
             for entry in item.to_history_entries():
                 self._storage.append_message(entry, turn_id)
+                count += 1
+        return count
 
     async def run_loop(self) -> None:
         bus = self._bus
@@ -95,7 +98,7 @@ class ReactLoopPlugin:
             "session": self._session_variables,
             "turn": {},
         }
-        self._inject([*high, *low], turn_id)
+        variables["turn"]["steering_count"] = self._inject([*high, *low], turn_id)
 
         await bus.chain(meta.TurnStartEvent, TurnStart(variables=variables))
         step_index = 0
