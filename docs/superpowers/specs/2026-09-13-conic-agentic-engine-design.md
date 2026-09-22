@@ -145,7 +145,7 @@ class Gateway(Protocol):
 | `ErrorEvent` | chain | `Error` | DiscordThreadPlugin |
 | `TurnEndEvent` | chain | `TurnEnd` | DiscordThreadPlugin（停止 typing） |
 | `BuildSystemPromptEvent` | chain | `BuildSystemPrompt` | Section 插件链（只在每 session 第一次 `BeforeModelCallEvent` 时 chain 一次，结果被 `SystemPromptPlugin` 缓存，见 7.1） |
-| `BuildDynamicPromptEvent` | chain | `BuildDynamicPrompt` | `DynamicStateSectionPlugin`（每次 `BeforeModelCallEvent` 都重新 chain，不缓存，见 7.1） |
+| `BuildDynamicPromptEvent` | chain | `BuildDynamicPrompt` | `DynamicStateSectionPlugin`（只在每个 Turn 的 Step 0 chain 一次，不缓存但也不逐 Step 重复，见 7.1） |
 | `SessionEndEvent` | chain | `SessionEnd` | DiscordThreadPlugin（标记停止并停止 typing）以及 PluginManager 内部的结束标记 handler；reason 可能是 `agent_stop` / `unexpected_exit` 等 |
 
 ## 7. 系统提示词（System Prompt）
@@ -193,7 +193,7 @@ variables: dict = {
 
 并把同一个 `variables` 引用传给该 Turn 内所有 Turn/Step/工具生命周期事件的 payload（`TurnStart`/`TurnEnd`/`StepStart`/`StepEnd`/`BeforeModelCall`/`ToolCall`/`ToolExecutionStart`/`ToolExecutionEnd`/`AssistantMessage`/`Error`，均带 `variables: dict = field(default_factory=dict)` 字段），以及 `ModelRequest`（同样带 `variables` 字段，专门为了让 `OpenRouterModelPlugin` 能回写 `session.tokens_used`，见下）。因为 `global`/`session`/`turn` 三个子 dict 都是引用（不是逐次拷贝），任何事件订阅者往 `msg.variables["turn"]` 里写入的键，本 Turn 后续事件的订阅者都能读到；`global`/`session` 也会被订阅者原地修改——`OpenRouterModelPlugin` 就是这么更新 `session["tokens_used"]` 的（见下）。除 `ModelRequest` 外，其余请求/响应类 payload（`ModelResponse`/`ToolCallSpec`/`ToolCallResult`/`SummarizeRequest`/`SummarizeResult` 等）以及非 Turn 生命周期事件（`BuildSystemPrompt` 等）仍不携带 `variables`。
 
-`TurnVariableUpdaterPlugin`（`plugins/context/variables.py`，无构造参数）订阅 `TurnStartEvent`，只做一件事：`msg.variables["turn"]["now"] = ...`。它在 `registry.py` 的 `context_plugins` 元组里排第一位，保证同一 Turn 后续任何事件读取 `variables["turn"]["now"]` 时这个键已经存在。`turn.step_count` 不经过插件，直接由 `ReactLoopPlugin._run_turn()` 在 while 循环体顶部（`this_step = step_index` 之后）写入 `variables["turn"]["step_count"] = this_step`，与该次 `StepStartEvent` 的 `step_index` 保持一致，因此 `ExtraPromptPlugin` 每个 Step 渲染动态提示词时总能读到当前 Step 序号。`SystemPromptPlugin` 的静态系统提示词只在本 session 第一次 `BeforeModelCallEvent` 时渲染并缓存，不会随后续 Step 重新渲染 `turn.*`。
+`TurnVariableUpdaterPlugin`（`plugins/context/variables.py`，无构造参数）订阅 `TurnStartEvent`，只做一件事：`msg.variables["turn"]["now"] = ...`。它在 `registry.py` 的 `context_plugins` 元组里排第一位，保证同一 Turn 后续任何事件读取 `variables["turn"]["now"]` 时这个键已经存在。`turn.step_count` 不经过插件，直接由 `ReactLoopPlugin._run_turn()` 在 while 循环体顶部（`this_step = step_index` 之后）写入 `variables["turn"]["step_count"] = this_step`，与该次 `StepStartEvent` 的 `step_index` 保持一致；`ExtraPromptPlugin` 正是靠这个值判断"是不是这个 Turn 的第一个 Step"，只在 `step_count == 0` 时产生动态内容（见 7.1 后文）。`turn.steering_count`（同样由 `_run_turn()` 写入，`_inject([*high, *low], turn_id)` 的返回值）记录这轮 steering 注入了多少条 history，供 `ExtraPromptPlugin` 计算插入位置。`SystemPromptPlugin` 的静态系统提示词只在本 session 第一次 `BeforeModelCallEvent` 时渲染并缓存，不会随后续 Step 重新渲染 `turn.*`。
 
 `global`/`session` 两层的建立入口不在 `TurnVariableUpdaterPlugin` 里，而是：
 - `registry.py::build_plugin_set(config, global_variables=None)` 计算 `resolved_global_variables = {"model": ..., "platform": ..., "shell": ..., "timezone": ..., **(global_variables or {})}`，通过闭包捕获进 `loop_factory`。`shell` 由私有函数 `_detect_shell()` 算出，故意不探测 conic 进程自己跑在哪个交互式 shell 下（那和实际执行工具调用的解释器是两回事），而是直接对齐 `BashToolPlugin.execute()` 底层 `asyncio.create_subprocess_shell`（`shell=True`）真正会 spawn 的程序：Windows 读 `ComSpec` 环境变量取文件名（未设置时回退 `"C:\Windows\System32\cmd.exe"` 的文件名 `"cmd.exe"`——CPython `subprocess.py` 的 Windows `_execute_child` 在 `shell=True` 时就是这么解析 `comspec` 并拼成 `"{comspec} /c \"{args}\""` 的，逐行读源码 + 用 `echo %ComSpec%` 这种只有 cmd.exe 才会展开 `%VAR%` 的探测命令实测验证过），其他平台固定 `"/bin/sh"`（CPython 同一份 `_execute_child` 的 POSIX 分支里 `shell=True` 固定 `args = ["/bin/sh", "-c"] + args`，不读 `$SHELL`）。`RuntimeSectionPlugin` 早期版本硬编码过 "PowerShell 5.1"，这条提示词本来就是错的（Windows 上 `shell=True` 走的是 `ComSpec`／通常是 `cmd.exe`，不是 PowerShell）；中途还试过用第三方库 `shellingham` 探测父进程链识别的交互式 shell，但那反映的是"conic 进程本身在哪个 shell 里启动"，跟"`BashToolPlugin` 的每条命令实际被哪个解释器执行"是两个不同的问题——已改回直接对齐后者；
@@ -221,37 +221,50 @@ if self._cached_content is None:
 
 **system 消息只渲染一次、之后全 session 复用（`SystemPromptPlugin.__init__` 里的 `self._cached_content: str | None = None`）**：`SystemPromptPlugin` 是每 session 一个新实例（`context_plugins` 工厂闭包保证），所以这个缓存天然是 session 级的——第一次 `apply()`（本 session 第一个 Step）才会真正 chain `BuildSystemPromptEvent` + `_assemble()` + `Template(...).render()`，之后每个 Step 的 `apply()` 直接复用 `self._cached_content`，不再重新收集 section、不再重新渲染。这要求参与这次渲染的所有 section **只能引用 `global.*`**——`identity`（`global.model`）、`tooling`/`workspace`（不含模板语法，构造时就是定值）、`runtime`（`global.platform`/`global.shell`/`global.model`/`global.timezone`）、`execution`、各工具的静态 section 都满足这一条件，因此把它们缓存下来是安全的：同一个 session 里 `global` 不会变，缓存的渲染结果自然也不会过期。缓存的直接收益是给 OpenRouter/DeepSeek 之类支持 prompt 前缀缓存的后端一个**跨请求完全不变的 system 消息**，不会像"每个 Step 都带一份不同的当前时间/step 数"那样把缓存前缀每次都打断。`SystemPromptPlugin.apply()` 返回的新 `BeforeModelCall` 会把 `variables=ctx.variables` 原样带上。**`TruncatorPlugin`/`TokenBudgetPlugin` 在它们真正改写消息列表时也必须转发 `variables=ctx.variables`**——`ExtraPromptPlugin` 排在它们之后，会用 `ctx.variables` 渲染动态 section，如果这两者中任何一个在构造自己的 `BeforeModelCall` 时漏掉 `variables`（默认值是空 dict `{}`），`ExtraPromptPlugin` 拿到的 `ctx.variables` 就不含 `global`/`session`/`turn` 任何一个 key，`Template(text).render(**ctx.variables)` 渲染 `{{ turn.now }}` 会直接抛出 `jinja2.exceptions.UndefinedError: 'turn' is undefined`（真实出现过的 bug：`TruncatorPlugin.apply()`/`TokenBudgetPlugin.apply()` 早期实现里 `return BeforeModelCall(...)` 都没带 `variables`，因为写这段代码时 `ExtraPromptPlugin` 还没引入、链上确实没人在它们之后读 `variables`；后来把 `ExtraPromptPlugin` 加到链尾读 `ctx.variables` 时，这两处忘了同步补上）。`tests/plugins/context/test_truncator.py::test_forwards_variables_when_truncating`、`test_token_budget.py::test_forwards_variables_when_summarizing` 和 `test_extra_prompt.py` 里两个 `test_survives_after_*_in_the_real_registry_chain_order` 端到端测试专门覆盖这一点。
 
-**会变的信息不再混进 system 消息，改成 `ExtraPromptPlugin` 拼进最后一条已有消息的 `content` 里**（`plugins/context/extra_prompt.py`，直接订阅 `BeforeModelCallEvent`，不再是 `BuildSystemPromptEvent` 的 section 贡献者）。它的收集机制和 `SystemPromptPlugin` 是同一套模式的镜像：`SystemPromptPlugin` 构造时接收一份 `section_plugins` 列表，chain `BuildSystemPromptEvent` 收集只读一次的 `global` 级 section；`ExtraPromptPlugin` 同样构造时接收一份 `section_plugins` 列表（目前只有 `DynamicStateSectionPlugin` 一个），但它在**每个 Step** 都重新 chain 新引入的 `BuildDynamicPromptEvent`（`meta.py`）收集 `session`/`turn` 级、逐 Step 会变的 section：
+**会变的信息不再混进 system 消息，改成 `ExtraPromptPlugin` 在每个 Turn 的 Step 0 插入一条独立的 `user`-role 消息**（`plugins/context/extra_prompt.py`，直接订阅 `BeforeModelCallEvent`，不再是 `BuildSystemPromptEvent` 的 section 贡献者）。它的收集机制和 `SystemPromptPlugin` 是同一套模式的镜像：`SystemPromptPlugin` 构造时接收一份 `section_plugins` 列表，chain `BuildSystemPromptEvent` 收集只读一次的 `global` 级 section；`ExtraPromptPlugin` 同样构造时接收一份 `section_plugins` 列表（目前只有 `DynamicStateSectionPlugin` 一个），chain 新引入的 `BuildDynamicPromptEvent`（`meta.py`）收集 `session`/`turn` 级、会变的 section——但只在 **Turn 的第一个 Step**（`turn.step_count == 0`）做一次，后续同一 Turn 内的 Step 完全不重复：
 
 ```python
-class ExtraPromptPlugin:
-    def __init__(self, section_plugins: list):
-        self._section_plugins = section_plugins
-        self._bus = None
+async def apply(self, ctx: BeforeModelCall) -> BeforeModelCall | None:
+    if not ctx.messages:
+        return None
+    if ctx.variables.get("turn", {}).get("step_count") != 0:
+        return None
 
-    def register(self, bus) -> None:
-        self._bus = bus
-        for plugin in self._section_plugins:
-            plugin.register(bus)
-        bus.on_chain(meta.BeforeModelCallEvent, self.apply)
+    sections_msg = await self._bus.chain(meta.BuildDynamicPromptEvent, BuildDynamicPrompt(sections={}))
+    text = self._assemble(sections_msg.sections)
+    text = Template(text).render(**ctx.variables)
+    if not text:
+        return None
 
-    async def apply(self, ctx: BeforeModelCall) -> BeforeModelCall | None:
-        if not ctx.messages:
-            return None
-        sections_msg = await self._bus.chain(meta.BuildDynamicPromptEvent, BuildDynamicPrompt(sections={}))
-        text = self._assemble(sections_msg.sections)
-        text = Template(text).render(**ctx.variables)
-        if not text:
-            return None
-        *rest, last = ctx.messages
-        content = last.get("content") or ""
-        appended = {**last, "content": f"{content}\n\n{text}"}
-        return BeforeModelCall(messages=[*rest, appended], tools=ctx.tools, variables=ctx.variables)
+    steering_count = ctx.variables.get("turn", {}).get("steering_count", 0)
+    insert_at = max(0, len(ctx.messages) - steering_count)
+    messages = [*ctx.messages[:insert_at], {"role": "user", "content": text}, *ctx.messages[insert_at:]]
+    return BeforeModelCall(messages=messages, tools=ctx.tools, variables=ctx.variables)
 ```
 
-**第一版实现曾经把这段动态内容作为一条新的 `{"role": "system", ...}` 消息追加在 `messages` 最末尾，实测会让模型（DeepSeek chat/agent 系）回答错乱。** 原因是 OpenAI 兼容的 chat completions 接口对角色顺序有隐性预期——尤其是"assistant(tool_calls) → tool(reply) → 下一个 assistant" 这种紧邻结构，很多按此结构训练/微调过的模型（包括工具调用场景）没见过在这中间or末尾插进来一条陌生的 `system` 消息，会导致输出不稳定。修复方式是**不新增消息，把渲染好的动态内容直接拼接到 `ctx.messages` 最后一条消息（不论其 role 是 `user` 还是 `tool`）的 `content` 末尾**——消息条数、每条消息的 role 完全不变，只是最后一条消息的文本变长了，这就规避了角色顺序被打断的问题，同时依然保留"离生成最近"这个位置优势。
+**这个设计经过两次修正，两次都是靠实测（不是猜测）定下来的。**
 
-拼接对象是 `user` 消息时问题不大，但**当最后一条消息是 `tool` 角色的返回值时**，拼进去的动态信息和工具真实输出混在同一个 `content` 字符串里——如果分隔符长得像工具会自然产出的文本（比如 markdown 的 `## key` 标题），模型有极小概率把它误当成工具输出的一部分去解读。因此 `ExtraPromptPlugin._assemble()` 用 XML 风格标签包裹每个 section，外层再套一层 `<context_state>`：
+*第一版*把这段动态内容拼进最后一条已有消息的 `content` 里，不新增消息——因为再往前一版曾经把它当一条新的 `{"role": "system", ...}` 消息追加在 `messages` 最末尾，实测会让 DeepSeek chat/agent 系模型回答错乱，所以改成"不新增消息、只拼内容"来规避。
+
+*第二版（当前实现）*：因为要求变成"每 Turn 只在 Step 0 出现一次、且必须插在这轮 steering 消息之前"（而不是每个 Step 都拼在当时最后一条消息后面），"拼进已有消息 content"这个技巧不再适用——Step 0 时"这轮 steering 消息之前"和"这轮 steering 消息之后"是完全不同的两条消息，没法靠"改内容"实现，必须真的插入一条新消息。这就重新把"新消息用什么 role"这个问题摆到台面上。这次没有凭经验猜，而是：
+
+1. 直接抓取 HuggingFace 上 `deepseek-ai/DeepSeek-R1` 的 `tokenizer_config.json`，确认了它的 Jinja2 chat template 会把 **所有** `role == "system"` 的消息（不管在 `messages` 数组里处于什么位置）统一收集、用 `\n\n` 拼接，渲染在 `<bos>` 之后、第一条 user 消息之前：
+   ```jinja2
+   {%- for message in messages %}
+     {%- if message['role'] == 'system' %}
+       {%- if ns.is_first_sp %}
+         {% set ns.system_prompt = ns.system_prompt + message['content'] %}
+       {%- else %}
+         {% set ns.system_prompt = ns.system_prompt + '\n\n' + message['content'] %}
+   ...
+   {{ bos_token }}{{ ns.system_prompt }}
+   ```
+   也就是说，不管把 `system` 消息插在 API 请求 `messages` 数组的哪个位置，DeepSeek 模板都会把它拽走、跟静态 system prompt 混在一起——`system` role 对这个用例在架构层面就不可行，不是"训练分布没见过"这种软风险。
+2. 用项目实际配置的 OpenRouter key，对 deepseek/qwen/glm/claude/openai 五个厂商做了真实请求的 A/B 测试（多轮工具调用场景：`assistant(上轮答案) → user(这轮输入) → 插入的消息 → 生成`，预期模型正确调用工具）。结果：`system` role 在 DeepSeek 上约 4/5 的请求直接把 `tool_calls` 吞掉（`finish_reason: "stop"`，空响应）——跟第 1 点的模板行为吻合；`user` role 在同样场景下 5/5 稳定，且其余四个厂商无论哪种 role 都没出现问题。额外做了"recall"测试（追加一条只问"state 里的 tokens_used/turn_count 是多少"的问题，不带工具）验证插入的信息确实被模型读到、用到，五个厂商全部正确报出数值。
+
+结论：**用 `user` role**，因为它不会被任何测试过的厂商模板重新收集/挪位置，始终保持在数组里的真实位置。
+
+`ExtraPromptPlugin._assemble()` 仍然用 XML 风格标签包裹每个 section、外层套一层 `<context_state>`（不是必须，但保持内容结构化、不是一坨纯文本，是良好实践）：
 
 ```python
 @staticmethod
@@ -262,12 +275,12 @@ def _assemble(sections: dict[str, str]) -> str:
     return f"<context_state>\n{body}\n</context_state>"
 ```
 
-实际拼接效果（一条 `tool` 消息）：
+实际插入效果（Turn 开始、Step 0，这轮只有一条 steering 消息）：
 
 ```
-ran ls -la
-
-<context_state>
+...
+assistant: 上一轮的最终答案
+user: <context_state>
 <state>
 Current time: 2026-09-16T06:12:30+00:00
 Current step: 0
@@ -275,11 +288,13 @@ Tokens used: 0
 Turns so far this session: 1
 </state>
 </context_state>
+user: 这轮用户真正的新输入        <- 这轮的 steering 消息，排在插入内容之后
+[Step 0 在这里请求模型]
 ```
 
-这种带尖括号的标签结构不是常见 shell 命令/脚本输出会自然产生的形状，跟工具真实输出的区分度比 markdown 标题更高，也是 Cline/Aider 这类编码 agent 往工具结果里拼环境信息时的常见做法（例如 Cline 的 `<environment_details>`）。`SystemPromptPlugin._assemble()`（静态 system 消息用的那个同名方法，见上文）不受影响，仍然用 `## key` 标题风格——它只出现在一条独立的、明确是 system 角色的消息里，不会跟任何工具输出混在一起，没有这个顾虑。
+**`turn.steering_count`**（`ReactLoopPlugin._run_turn()` 写入）是这轮 steering 注入产生的 history 条目数：`_inject()` 现在返回它实际写入了多少条（`for item in items: for entry in item.to_history_entries(): ...; count += 1`），`_run_turn()` 在调用 `self._inject([*high, *low], turn_id)` 时把返回值存进 `variables["turn"]["steering_count"]`。`ExtraPromptPlugin` 用它计算插入点：`ctx.messages` 里从末尾往前数 `steering_count` 条就是"这轮 steering 消息"，插入点定在它们前面（`insert_at = len(ctx.messages) - steering_count`）。Step 0 时本轮还没有任何 assistant/tool 消息（那些要等模型响应后才追加），所以这轮 steering 消息必然正好是 `ctx.messages` 末尾那几条，这个位置计算是准确的；`steering_count` 缺失或为 0 时退化成"插在末尾"（没有 steering 消息可以插在其前面）。
 
-`DynamicStateSectionPlugin`（`plugins/context/sections/dynamic_state.py`）是目前唯一的 `BuildDynamicPromptEvent` 订阅者，贡献一个 `state` section，包含四个值：`{{ turn.now }}`/`{{ turn.step_count }}`/`{{ session.tokens_used }}`/`{{ session.turn_count }}`。这套"通过事件收集 section、再统一渲染"的机制和静态 system 消息完全对称，唯一的区别是 `BuildSystemPromptEvent` 只在 `SystemPromptPlugin` 第一次 `apply()` 时 chain 一次（结果被缓存），而 `BuildDynamicPromptEvent` 每个 Step 都重新 chain、重新渲染（不缓存）——因为它存在的意义就是承载会变的值。往这条动态 prompt 里加新内容，只需要写一个新的 section 插件订阅 `BuildDynamicPromptEvent`，塞进 `registry.py` 里 `ExtraPromptPlugin([...])` 的列表，不需要碰 `ExtraPromptPlugin` 或 `DynamicStateSectionPlugin` 本身。（早期版本这里还有第五个值 `{{ session.provider }}`，随 `_record_provider()` 一起被移除，见 8.2 节。）
+`DynamicStateSectionPlugin`（`plugins/context/sections/dynamic_state.py`）是目前唯一的 `BuildDynamicPromptEvent` 订阅者，贡献一个 `state` section，包含四个值：`{{ turn.now }}`/`{{ turn.step_count }}`/`{{ session.tokens_used }}`/`{{ session.turn_count }}`。往这条动态 prompt 里加新内容，只需要写一个新的 section 插件订阅 `BuildDynamicPromptEvent`，塞进 `registry.py` 里 `ExtraPromptPlugin([...])` 的列表，不需要碰 `ExtraPromptPlugin` 或 `DynamicStateSectionPlugin` 本身。（早期版本这里还有第五个值 `{{ session.provider }}`，随 `_record_provider()` 一起被移除，见 8.2 节。）
 
 `ExtraPromptPlugin` 在 `context_plugins` 元组里排在 **`TruncatorPlugin`/`TokenBudgetPlugin` 之后（最后一个）**，这个顺序依然是必须的——`TruncatorPlugin.apply()` 按 **role 分桶**重组消息列表（所有 `system` 角色的消息一律被搬到最前面，不看原始位置）：
 
@@ -289,7 +304,7 @@ kept = non_system[cut_index:]
 return BeforeModelCall(messages=[*system, *kept], tools=ctx.tools, variables=ctx.variables)
 ```
 
-`ExtraPromptPlugin` 操作的是"当前 `ctx.messages` 的最后一条"，如果它排在 `TruncatorPlugin`/`TokenBudgetPlugin` 之前运行，后两者截断/摘要时完全可能把它刚拼接过的那条消息整个丢弃，或者（对 `TruncatorPlugin` 而言）如果拼接对象恰好是一条 `system` 消息，还会被按 role 分桶搬到最前面。排在它们之后，保证 `ExtraPromptPlugin` 拼接的永远是这一次实际发给模型的 `messages` 列表里真正的最后一条，不会被截断/摘要逻辑抢先处理掉或搬移位置。
+`ExtraPromptPlugin` 插入的是 `user`-role 消息，不受这条 role 分桶规则影响；但如果它排在 `TruncatorPlugin`/`TokenBudgetPlugin` 之前运行，`steering_count` 是按"注入时的原始 history 长度"算的，Truncator/TokenBudget 一旦先把消息列表整体换成裁剪/摘要后的新列表，`ctx.messages` 的长度和 `steering_count` 就对不上了，插入位置会算错。排在它们之后，保证 `ExtraPromptPlugin` 看到的永远是这一次实际发给模型、已经裁剪/摘要完毕的最终 `ctx.messages`，插入位置计算才是准确的。
 
 ## 8. 各插件详细设计
 
@@ -382,7 +397,7 @@ return BeforeModelCall(messages=[*system, *kept], tools=ctx.tools, variables=ctx
 - `SystemPromptPlugin`：chain `BuildSystemPromptEvent` 收集 sections 并组装系统消息；仅当 `ctx.messages[0]` 还不是 `system` 角色时才前置。每 session 第一次收集并渲染后缓存静态 system 文本，后续 Step 复用缓存。
 - `TruncatorPlugin`：非 system 消息数超过 `keep_last_n`（默认 40）时，从尾部保留最近 N 条，system 消息始终保留
 - `TokenBudgetPlugin`：用 `core/tokencount.estimate_tokens`（`总字符数 // 4`的粗略估算，不依赖 tokenizer）统计 token 数，超预算时先链式 chain `BeforeSummarizeEvent(BeforeSummarize(request, cancelled=False))`——钩子可改写 `request.instructions` 定制摘要提示词，或把 `cancelled` 置 `True` 跳过本次摘要（`apply()` 直接返回 `None`）；未取消则用（可能被改写的）`request` 发起 `SummarizeEvent`，成功后 chain `SummarizeDoneEvent(SummarizeDone(result))`，失败则先 chain `SummarizeFailedEvent(SummarizeFailed(exc))` 再重新抛出（摘要失败仍会中止整个 Turn，这一行为不变，只是失败前多了一次可观测通知）
-- `ExtraPromptPlugin`：排在链尾，每个 Step chain `BuildDynamicPromptEvent`，把动态状态拼进最终发给模型的最后一条消息 content，不新增 message role。
+- `ExtraPromptPlugin`：排在链尾，只在每个 Turn 的 Step 0 chain 一次 `BuildDynamicPromptEvent`，把动态状态作为一条新的 `user`-role 消息插在这轮 steering 消息之前。
 
 Truncator 和 Summarizer 的裁切点都要经过 `core/messagealign.align_cut(messages, cut_index)`：如果提议的裁切点落在一条 `role: "tool"` 消息上（即会把某个 `tool_calls` 消息和它对应的工具回复截断成孤儿），就把裁切点持续前移，直到落在完整的 assistant+tool回复 消息组之前，保证任何被保留的 `tool` 消息都能在保留区间内找到它所回复的 assistant 消息。
 
@@ -484,7 +499,7 @@ conic/                     # 项目根（main.py 与 pyproject.toml 同级，不
         web_fetch.py      # Firecrawl Scrape API
       context/
         system_prompt.py  # 组装系统提示词，缓存渲染结果
-        extra_prompt.py   # ExtraPromptPlugin，把逐 Step 变化的信息拼进最后一条消息的 content
+        extra_prompt.py   # ExtraPromptPlugin，Turn 的 Step 0 把动态状态插成一条新的 user 消息
         truncator.py
         token_budget.py
         summarizer.py
