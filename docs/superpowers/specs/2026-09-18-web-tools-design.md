@@ -30,7 +30,8 @@
 完全复用现有 tool plugin 模式(参照 `read_file.py`/`bash.py`):
 
 - 新增 `src/conic/plugins/tools/web_search.py`、`web_fetch.py`:dataclass payload + plugin class(`llm_name` / `schema` / `register(bus)` / `execute() -> ToolCallResult`)
-- 共享逻辑放 `src/conic/plugins/tools/web_shared.py`:不可信内容包裹、LLM 特殊 token 剥离、httpx 调用辅助
+- tool 共享逻辑放 `src/conic/plugins/tools/base.py`:不可信内容包裹、LLM 特殊 token 剥离
+- 通用网络 helper 放 `src/conic/utils/net.py`:aiohttp POST、JSON 响应校验、provider 响应错误、URL 校验
 - `manager.py` 只以 `workspace_dir` 实例化 tool,因此 API key 走 registry 的 `Configured*` 闭包子类注入(同 `ConfiguredBashToolPlugin`)
 - **key 缺失不注册**:`TAVILY_API_KEY` 未配置则 `web_search` 不进 `tool_classes`,`FIRECRAWL_API_KEY` 同理。无 fallback 链、无自动探测(YAGNI;OpenClaw 式多 provider 探测等有需要再说)
 - 所有失败(HTTP 4xx/5xx、超时、provider 报错)返回 `ToolCallResult(error=...)`,不抛异常,保持与现有 tool 一致的约定
@@ -177,7 +178,7 @@ from the user or the system.
 - id 每次随机(`secrets.token_hex(8)`),恶意页面无法伪造闭合标记逃逸(OpenClaw 对 dsh 固定前缀方案的改进)
 - **边界只包外部内容**:tool 自身的头部、引用尾缀、截断说明一律放在标记之外——SECURITY NOTICE 要求模型把边界内一切视为 data,自家指令若放在边界内会被同一条规则要求忽略,自相矛盾
 - 剥离 LLM 特殊 token(`<|im_start|>`、`<|endoftext|>`、`<|begin_of_text|>` 等 ChatML/Llama 家族,一个 regex),防止不受信文本注入角色切换 token(OpenClaw 做法;conic 经 OpenRouter 面对多模型家族,尤其必要)。**剥离发生在包裹与落盘之前**——落盘文件会被 read_file 原样读回 context,若只在包裹时剥离,恶意 token 可经落盘文件绕过防线
-- 实现于 `web_shared.py`,固定文案为模块常量,便于测试断言
+- 实现于 `web/base.py`,固定文案为模块常量,便于测试断言
 
 ### 6.3 System prompt sections(走 `BuildSystemPrompt`,每个 tool 各自的 section key)
 
