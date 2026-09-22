@@ -1,3 +1,5 @@
+import pytest
+
 from conic.core.bus import MessageBus
 from conic.plugins.tools.edit_file import EditFileCall, EditFileToolPlugin
 from conic.types.messages import BuildSystemPrompt
@@ -61,6 +63,11 @@ async def test_contributes_a_workspace_restriction_section_to_the_system_prompt(
 
 async def test_reports_oserror_on_write(tmp_path):
     import asyncio
+    import os
+    import sys
+
+    if sys.platform != "win32" and hasattr(os, "geteuid") and os.geteuid() == 0:
+        pytest.skip("root ignores file permission bits, so this can't force a write failure")
 
     ws = tmp_path / "ws"
     ws.mkdir()

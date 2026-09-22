@@ -1,6 +1,6 @@
 import os
 import platform
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 from loguru import logger
 from openai import AsyncOpenAI
@@ -46,7 +46,11 @@ def _detect_shell() -> str:
     # invokes under shell=True: %ComSpec% on Windows, always /bin/sh on POSIX --
     # not the interactive shell conic's own process happens to be running under.
     if platform.system() == "Windows":
-        return Path(os.environ.get("ComSpec", r"C:\Windows\System32\cmd.exe")).name
+        # PureWindowsPath (not Path) because this parses a Windows-style
+        # backslash path per Windows rules regardless of the host OS --
+        # plain Path resolves to PosixPath on a POSIX host and would treat
+        # the whole backslash string as one component, breaking .name.
+        return PureWindowsPath(os.environ.get("ComSpec", r"C:\Windows\System32\cmd.exe")).name
     return "/bin/sh"
 
 
