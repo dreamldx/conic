@@ -14,3 +14,5 @@ async def test_dynamic_state_section_contributes_turn_and_session_jinja_placehol
     assert "{{ turn.step_count }}" in result.sections["state"]
     assert "{{ session.tokens_used }}" in result.sections["state"]
     assert "{{ session.turn_count }}" in result.sections["state"]
+    assert "{{ global.model_context_length }}" in result.sections["state"]
+    assert "{{ session.context_usage }}" in result.sections["state"]

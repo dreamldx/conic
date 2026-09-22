@@ -6,7 +6,9 @@ import duckdb
 from loguru import logger
 
 from conic.services import queries
-from conic.services.models import Message, Session
+from conic.services.models import Message, ModelCatalogEntry, Session
+
+DEFAULT_MODEL_CONTEXT_LENGTH = 65535
 
 
 class SessionHandle:
@@ -61,6 +63,9 @@ class StorageService:
         self._conn.execute(*queries.create_messages_table_sql())
         self._conn.execute(*queries.add_sessions_variables_column_sql())
         self._conn.execute(*queries.add_messages_turn_id_column_sql())
+        self._conn.execute(*queries.create_model_catalog_table_sql())
+        for sql, params in queries.add_model_catalog_extra_columns_sql():
+            self._conn.execute(sql, params)
 
     def shutdown(self) -> None:
         if self._conn is not None:
@@ -100,6 +105,34 @@ class StorageService:
         sql, params = queries.list_active_sessions_sql(channel)
         rows = self._conn.execute(sql, params).fetchall()
         return [self._session_from_row(r) for r in rows]
+
+    def save_model_catalog(self, entries: list[ModelCatalogEntry]) -> None:
+        self._conn.execute(*queries.clear_model_catalog_sql())
+        for entry in entries:
+            sql, params = queries.insert_model_catalog_entry_sql(entry)
+            self._conn.execute(sql, params)
+
+    def list_model_catalog(self) -> list[ModelCatalogEntry]:
+        sql, params = queries.list_model_catalog_sql()
+        rows = self._conn.execute(sql, params).fetchall()
+        return [
+            ModelCatalogEntry(
+                id=r[0], name=r[1], description=r[2], context_length=r[3], supports_tools=r[4],
+                pricing_prompt=r[5], pricing_completion=r[6],
+                input_modalities=json.loads(r[7]) if r[7] else [],
+                output_modalities=json.loads(r[8]) if r[8] else [],
+                supported_parameters=json.loads(r[9]) if r[9] else [],
+                fetched_at=_parse_stored_datetime(r[10]),
+            )
+            for r in rows
+        ]
+
+    def get_model_context_length(self, model_id: str) -> int:
+        sql, params = queries.get_model_context_length_sql(model_id)
+        row = self._conn.execute(sql, params).fetchone()
+        if row is None or row[0] is None:
+            return DEFAULT_MODEL_CONTEXT_LENGTH
+        return row[0]
 
     @staticmethod
     def _session_from_row(r) -> Session:

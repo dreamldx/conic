@@ -135,6 +135,7 @@ async def test_complete_records_token_usage_into_session_variables():
     )
 
     assert variables["session"]["tokens_used"] == 15
+    assert variables["session"]["context_usage"] == 10
 
 
 async def test_complete_accumulates_token_usage_across_calls():
@@ -149,6 +150,39 @@ async def test_complete_accumulates_token_usage_across_calls():
     )
 
     assert variables["session"]["tokens_used"] == 115
+
+
+async def test_complete_records_context_usage_as_a_running_maximum_when_it_grows():
+    """Unlike tokens_used (a running total), context_usage tracks the peak
+    prompt size seen this session -- when the new call's prompt is bigger
+    than what's already recorded, it replaces it."""
+    message = make_message(content="hello there")
+    usage = SimpleNamespace(prompt_tokens=42, completion_tokens=5, total_tokens=47)
+    client = FakeClient(FakeCompletions(make_response(message, usage=usage)))
+    backend = OpenRouterModelPlugin(api_key="k", model="test-model", client=client)
+
+    variables = {"session": {"tokens_used": 0, "context_usage": 10}}
+    await backend.complete(
+        ModelRequest(messages=[{"role": "user", "content": "hi"}], tools=[], variables=variables)
+    )
+
+    assert variables["session"]["context_usage"] == 42
+
+
+async def test_complete_keeps_the_running_maximum_when_a_later_call_is_smaller():
+    """A later call with a smaller prompt (e.g. after truncation/summarization
+    trimmed the history) must not lower the recorded peak."""
+    message = make_message(content="hello there")
+    usage = SimpleNamespace(prompt_tokens=42, completion_tokens=5, total_tokens=47)
+    client = FakeClient(FakeCompletions(make_response(message, usage=usage)))
+    backend = OpenRouterModelPlugin(api_key="k", model="test-model", client=client)
+
+    variables = {"session": {"tokens_used": 0, "context_usage": 9999}}
+    await backend.complete(
+        ModelRequest(messages=[{"role": "user", "content": "hi"}], tools=[], variables=variables)
+    )
+
+    assert variables["session"]["context_usage"] == 9999
 
 
 async def test_complete_without_usage_or_session_does_not_raise():
@@ -348,6 +382,7 @@ async def test_streaming_complete_records_usage_from_final_chunk():
     )
 
     assert variables["session"]["tokens_used"] == 28
+    assert variables["session"]["context_usage"] == 20
     assert client.chat.completions.last_kwargs["stream_options"] == {"include_usage": True}
 
 

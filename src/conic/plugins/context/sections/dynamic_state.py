@@ -10,7 +10,9 @@ class DynamicStateSectionPlugin:
         msg.sections["state"] = (
             "Current time: {{ turn.now }}\n"
             "Current step: {{ turn.step_count }}\n"
-            "Tokens used: {{ session.tokens_used }}\n"
-            "Turns so far this session: {{ session.turn_count }}"
+            "Current turns: {{ session.turn_count }}\n"
+            "Session total tokens used: {{ session.tokens_used }} tokens\n"
+            "Context window used: {{ session.context_usage }} tokens\n"
+            "Model context window: {{ global.model_context_length }} tokens"
         )
         return msg

@@ -177,9 +177,9 @@ class Gateway(Protocol):
 
 | 作用域 | 生命周期 | 建立时机 | 键 | 更新者 |
 |---|---|---|---|---|
-| `global` | 与进程/`PluginSet` 同寿命，所有 session 共享同一份引用 | `build_plugin_set()` 调用时 | `model`（`config.openrouter_model`）、`platform`（`platform.system() + platform.release()`）、`shell`（`_detect_shell()`，见下）、`timezone`（`datetime.now().astimezone().tzinfo`），加上调用方可选传入的 `global_variables: dict`（覆盖同名默认键） | `registry.py::build_plugin_set()`，一次性计算，之后只读 |
-| `session` | 与一次 Discord 会话（一个 `ReactLoopPlugin` 实例）同寿命 | `ReactLoopPlugin.__init__()` 构造时 | `workspace_dir`；`tokens_used`（初值 0）；`turn_count`（初值 0） | `workspace_dir` 由 `__init__` 一次性写入；`tokens_used` 由 `OpenRouterModelPlugin` 在每次 `ModelRequestEvent` 完成后累加（阻塞/流式路径都支持，流式通过 `stream_options={"include_usage": True}` 从最后一个 chunk 拿 usage），跨 Turn 累计不清零；`turn_count` 由 `ReactLoopPlugin._run_turn()` 在方法一开始（`variables` 字典构造之前）`self._session_variables["turn_count"] += 1`，因此本 Turn 内读到的值就是"这是第几轮对话"（1-based），累计不清零 |
-| `turn` | 一次 Turn（一次 `_run_turn()` 调用） | 每次 `_run_turn()` 开始时新建空 dict | `now`（UTC ISO8601，精确到秒，由 `TurnVariableUpdaterPlugin` 在 `TurnStartEvent` 上写入）；`step_count`（当前 Step 序号，0-based，由 `ReactLoopPlugin` 在每次进入 while 循环体时写入，与该次 `StepStart.step_index` 一致） | `TurnVariableUpdaterPlugin`（`now`）、`ReactLoopPlugin._run_turn()`（`step_count`）；任何 Turn 内事件的订阅者都可以继续往 `turn` 里写 |
+| `global` | 与进程/`PluginSet` 同寿命，所有 session 共享同一份引用 | `build_plugin_set()` 调用时 | `model`（`config.openrouter_model`）、`platform`（`platform.system() + platform.release()`）、`shell`（`_detect_shell()`，见下）、`timezone`（`datetime.now().astimezone().tzinfo`）、`model_context_length`（当前配置模型的上下文窗口大小，见下），加上调用方可选传入的 `global_variables: dict`（覆盖同名默认键） | `registry.py::build_plugin_set()`，一次性计算，之后只读 |
+| `session` | 与一次 Discord 会话（一个 `ReactLoopPlugin` 实例）同寿命 | `ReactLoopPlugin.__init__()` 构造时 | `workspace_dir`；`tokens_used`（初值 0）；`turn_count`（初值 0）；`context_usage`（本 session 迄今为止最大的一次 prompt token 数，见下） | `workspace_dir` 由 `__init__` 一次性写入；`tokens_used` 由 `OpenRouterModelPlugin` 在每次 `ModelRequestEvent` 完成后累加（阻塞/流式路径都支持，流式通过 `stream_options={"include_usage": True}` 从最后一个 chunk 拿 usage），跨 Turn 累计不清零；`turn_count` 由 `ReactLoopPlugin._run_turn()` 在方法一开始（`variables` 字典构造之前）`self._session_variables["turn_count"] += 1`，因此本 Turn 内读到的值就是"这是第几轮对话"（1-based），累计不清零；`context_usage` 由 `OpenRouterModelPlugin._record_usage()` 每次模型响应后取 `max(旧值, usage.prompt_tokens)` 写回，见下 |
+| `turn` | 一次 Turn（一次 `_run_turn()` 调用） | 每次 `_run_turn()` 开始时新建空 dict | `now`（UTC ISO8601，精确到秒，由 `TurnVariableUpdaterPlugin` 在 `TurnStartEvent` 上写入）；`step_count`（当前 Step 序号，0-based，由 `ReactLoopPlugin` 在每次进入 while 循环体时写入，与该次 `StepStart.step_index` 一致）；`steering_count`（这轮 steering 注入产生的 history 条目数，由 `ReactLoopPlugin._run_turn()` 在 `_inject([*high, *low], turn_id)` 时写入，供 `ExtraPromptPlugin` 计算插入位置，见 7.1 后文） | `TurnVariableUpdaterPlugin`（`now`）、`ReactLoopPlugin._run_turn()`（`step_count`/`steering_count`）；任何 Turn 内事件的订阅者都可以继续往 `turn` 里写 |
 
 `ReactLoopPlugin._run_turn()` 在 Turn 开始时创建：
 
@@ -195,11 +195,14 @@ variables: dict = {
 
 `TurnVariableUpdaterPlugin`（`plugins/context/variables.py`，无构造参数）订阅 `TurnStartEvent`，只做一件事：`msg.variables["turn"]["now"] = ...`。它在 `registry.py` 的 `context_plugins` 元组里排第一位，保证同一 Turn 后续任何事件读取 `variables["turn"]["now"]` 时这个键已经存在。`turn.step_count` 不经过插件，直接由 `ReactLoopPlugin._run_turn()` 在 while 循环体顶部（`this_step = step_index` 之后）写入 `variables["turn"]["step_count"] = this_step`，与该次 `StepStartEvent` 的 `step_index` 保持一致；`ExtraPromptPlugin` 正是靠这个值判断"是不是这个 Turn 的第一个 Step"，只在 `step_count == 0` 时产生动态内容（见 7.1 后文）。`turn.steering_count`（同样由 `_run_turn()` 写入，`_inject([*high, *low], turn_id)` 的返回值）记录这轮 steering 注入了多少条 history，供 `ExtraPromptPlugin` 计算插入位置。`SystemPromptPlugin` 的静态系统提示词只在本 session 第一次 `BeforeModelCallEvent` 时渲染并缓存，不会随后续 Step 重新渲染 `turn.*`。
 
+**踩过的坑，记录一下以免以后重踩**：曾经尝试过在 `turn` 里加一个 `context_length`，本地用 `estimate_tokens(ctx.messages)` 估算"这次发给模型的上下文大概多大"，还想把它渲染进 `state` 段给模型自己看。结果撞上先有鸡还是先有蛋的问题——`state` 段本身是 `ExtraPromptPlugin` 在 `BeforeModelCallEvent` 链的最后一步插入的，如果要在这段文字里报告"这次发了多大"，这个数字理论上得等 state 段插入完才能精确算出来，但那时候模板已经渲染完了。当时的权宜解法是接受近似（在插入 state 消息之前，用不含它自己的 `ctx.messages` 先估一个近似值），但已经整体移除了：改成更直接的方式——见下文 `session.context_usage`，直接用模型响应里 provider 自己报出来的精确 `usage.prompt_tokens`，不再本地估算，也不再费劲塞进生成前的提示词里。
+
 `global`/`session` 两层的建立入口不在 `TurnVariableUpdaterPlugin` 里，而是：
 - `registry.py::build_plugin_set(config, global_variables=None)` 计算 `resolved_global_variables = {"model": ..., "platform": ..., "shell": ..., "timezone": ..., **(global_variables or {})}`，通过闭包捕获进 `loop_factory`。`shell` 由私有函数 `_detect_shell()` 算出，故意不探测 conic 进程自己跑在哪个交互式 shell 下（那和实际执行工具调用的解释器是两回事），而是直接对齐 `BashToolPlugin.execute()` 底层 `asyncio.create_subprocess_shell`（`shell=True`）真正会 spawn 的程序：Windows 读 `ComSpec` 环境变量取文件名（未设置时回退 `"C:\Windows\System32\cmd.exe"` 的文件名 `"cmd.exe"`——CPython `subprocess.py` 的 Windows `_execute_child` 在 `shell=True` 时就是这么解析 `comspec` 并拼成 `"{comspec} /c \"{args}\""` 的，逐行读源码 + 用 `echo %ComSpec%` 这种只有 cmd.exe 才会展开 `%VAR%` 的探测命令实测验证过），其他平台固定 `"/bin/sh"`（CPython 同一份 `_execute_child` 的 POSIX 分支里 `shell=True` 固定 `args = ["/bin/sh", "-c"] + args`，不读 `$SHELL`）。`RuntimeSectionPlugin` 早期版本硬编码过 "PowerShell 5.1"，这条提示词本来就是错的（Windows 上 `shell=True` 走的是 `ComSpec`／通常是 `cmd.exe`，不是 PowerShell）；中途还试过用第三方库 `shellingham` 探测父进程链识别的交互式 shell，但那反映的是"conic 进程本身在哪个 shell 里启动"，跟"`BashToolPlugin` 的每条命令实际被哪个解释器执行"是两个不同的问题——已改回直接对齐后者；
 - `PluginSet.loop_factory` 签名是 `Callable[[handle, tool_schemas, tool_payload_map, workspace_dir, persisted_session_variables], object]`（比原来多了 `workspace_dir` 和 `persisted_session_variables` 两个参数），`core/manager.py::PluginManager.start_session()` 调用时传入 `row.workspace_dir` 和 `row.variables`（后者来自 storage，见下）；
+- `model_context_length` 由 `entry.py::build_app()` 在调 `build_plugin_set()` 之前算好、通过 `global_variables={"model_context_length": ...}` 传入（不是 `build_plugin_set()` 自己算的，因为它需要查 `StorageService`，而 `build_plugin_set()` 本身不持有 storage 引用）：`storage.get_model_context_length(config.openrouter_model)`（`services/storage.py`）按 id 精确查 `model_catalog` 表的 `context_length` 列（该表由后台 `run_periodic_sync` 定期同步，见 9.1 节），查不到（表还没同步过 / 配置的模型不在 OpenRouter 目录里）时返回 `DEFAULT_MODEL_CONTEXT_LENGTH = 65535`。这是一次**纯本地 DuckDB 读取，不发网络请求**，不违反 `build_app()` 不联网的既有约定（`test_build_app_wires_storage_and_gateway_without_connecting` 保护的那个不变式）。`DynamicStateSectionPlugin` 把它渲染进 `state` 段的 `Model context window: {{ global.model_context_length }} tokens` 一行。**⚠️ 待办／已知限制：这个值只在进程启动时算一次，此后不会自动刷新**——跟 `tokens_used` 那种每次读写都实时更新的 `session` 变量不同，`global_variables` 目前全程只读（见上表"更新者"一列：`build_plugin_set()` 一次性计算，之后只读）。如果以后要做"运行时切换模型"这个功能（当前明确不在范围内，见前文），**必须记得同步更新 `global_variables["model_context_length"]`**，否则 state 段会一直显示旧模型的上下文窗口大小，误导模型对自己实际可用上下文的判断。好消息是这一处比 `global.model`（被 `identity`/`runtime` 两个**静态、只渲染一次就缓存**的 system prompt section 引用，见下文"system 消息只渲染一次"）好改——`model_context_length` 只出现在 `DynamicStateSectionPlugin` 贡献的**动态**段里，每个 Turn 的 Step 0 都会用当前的 `ctx.variables["global"]` 重新渲染一次，所以切换模型时只要把 `self._global_variables`（`ReactLoopPlugin` 持有的那个引用）原地更新，下一次渲染就会自动生效，不需要额外的缓存失效逻辑；但 `global.model` 本身要是也要跟着切换模型变，则必须同时处理 `SystemPromptPlugin._cached_content` 的失效，是两个不同量级的问题；
 - `ReactLoopPlugin.__init__(..., workspace_dir="", global_variables=None, persisted_session_variables=None)` 建立 `self._session_variables = {"tokens_used": 0, "turn_count": 0, **(persisted_session_variables or {}), "workspace_dir": workspace_dir}`——先给默认值，再用持久化值覆盖（找回上次的 `tokens_used`/`turn_count` 等），最后强制用本次构造传入的 `workspace_dir` 覆盖（不信任持久化里的旧路径，永远以当前会话的实际路径为准）；
-- `OpenRouterModelPlugin.complete()`（阻塞与流式两条路径都会调用同一个 `_record_usage(msg, usage)` 辅助方法）在拿到模型响应的 `usage`（阻塞路径读 `response.usage`；流式路径给 `create()` 传 `stream_options={"include_usage": True}`，从不含 `choices` 的最后一个 chunk 读 `chunk.usage`）后，把 `usage.total_tokens` 累加进 `msg.variables["session"]["tokens_used"]`——因为 `session` 子 dict 和 `ReactLoopPlugin` 持有的是同一个引用，这个累加值跨 Turn 持续到会话结束都不会被重置。`usage` 为 `None`（如 fake/未启用用量统计的响应）或 `variables` 里没有 `session` key 时静默跳过，不抛异常。
+- `OpenRouterModelPlugin.complete()`（阻塞与流式两条路径都会调用同一个 `_record_usage(msg, usage)` 辅助方法）在拿到模型响应的 `usage`（阻塞路径读 `response.usage`；流式路径给 `create()` 传 `stream_options={"include_usage": True}`，从不含 `choices` 的最后一个 chunk 读 `chunk.usage`）后写两个字段：把 `usage.total_tokens` 累加进 `msg.variables["session"]["tokens_used"]`——因为 `session` 子 dict 和 `ReactLoopPlugin` 持有的是同一个引用，这个累加值跨 Turn 持续到会话结束都不会被重置；同时用 `usage.prompt_tokens`（provider 自己数出来的、这次请求 prompt 部分的精确 token 数，不是本地估算）更新 `msg.variables["session"]["context_usage"] = max(session.get("context_usage", 0), usage.prompt_tokens)`——取**本 session 迄今为止见过的最大值**，不是简单覆盖也不是累加：如果这次请求比之前任何一次都大，它就变大；如果这次因为刚发生过截断/摘要而变小了，之前记录的峰值不会被抹掉。目的是追踪"这个 session 历史上最接近过模型上下文上限的程度"，跟 `tokens_used`（累计用量，衡量成本）和 `global.model_context_length`（上限）是三个不同维度的量——`context_usage` 这个名字特意跟 `model_context_length` 区分开，避免让人误以为它也是某种"窗口/容量"而不是"用量峰值"（早期版本曾经也叫 `context_length`，命名上跟 `global.model_context_length` 太像、容易混淆，已经改掉）。时机上总是**慢一拍**：只有等模型响应回来才知道那次请求真实发了多少 token，所以它反映的是"已经发生过的调用里峰值是多少"，不是"这次即将发送的会有多大"——`DynamicStateSectionPlugin` 仍然把它渲染进 `state` section（见 7.1 后文），模型看到的是"目前为止见过的峰值"，不是这次请求本身的大小。`usage` 为 `None`（如 fake/未启用用量统计的响应）或 `variables` 里没有 `session` key 时两个字段都静默跳过，不抛异常。**⚠️ 待办**：`context_usage` 现在只涨不跌——一旦 `TokenBudgetPlugin` 的摘要/压缩真的把 history 缩小了（见 8.7/8.8 节），这个峰值不会跟着下降。等压缩逻辑真正落地时需要决定：`context_usage` 是继续保持"历史峰值"这个语义（当前行为），还是需要一个显式的重置/调整钩子，让它也能反映压缩后的真实大小（代码里 `_record_usage()` 旁边留了同样内容的 TODO 注释）。
 
 **持久化：** `session` 变量每个 Turn 结束都会写入 storage，会话恢复时从 storage 读回，跨进程重启也不丢：
 - Schema：`sessions` 表新增 `variables VARCHAR DEFAULT '{}'` 列（JSON 序列化的 `dict`）。新建表（`queries.create_sessions_table_sql()`）直接带这一列；已存在的旧库靠 `StorageService.startup()` 里额外执行的 `queries.add_sessions_variables_column_sql()`（`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS variables VARCHAR DEFAULT '{}'`，DuckDB 支持该语法，幂等）补齐。
@@ -284,8 +287,10 @@ user: <context_state>
 <state>
 Current time: 2026-09-16T06:12:30+00:00
 Current step: 0
-Tokens used: 0
-Turns so far this session: 1
+Current turns: 1
+Session total tokens used: 0 tokens
+Context window used: 0 tokens
+Model context window: 1310720 tokens
 </state>
 </context_state>
 user: 这轮用户真正的新输入        <- 这轮的 steering 消息，排在插入内容之后
@@ -294,7 +299,7 @@ user: 这轮用户真正的新输入        <- 这轮的 steering 消息，排�
 
 **`turn.steering_count`**（`ReactLoopPlugin._run_turn()` 写入）是这轮 steering 注入产生的 history 条目数：`_inject()` 现在返回它实际写入了多少条（`for item in items: for entry in item.to_history_entries(): ...; count += 1`），`_run_turn()` 在调用 `self._inject([*high, *low], turn_id)` 时把返回值存进 `variables["turn"]["steering_count"]`。`ExtraPromptPlugin` 用它计算插入点：`ctx.messages` 里从末尾往前数 `steering_count` 条就是"这轮 steering 消息"，插入点定在它们前面（`insert_at = len(ctx.messages) - steering_count`）。Step 0 时本轮还没有任何 assistant/tool 消息（那些要等模型响应后才追加），所以这轮 steering 消息必然正好是 `ctx.messages` 末尾那几条，这个位置计算是准确的；`steering_count` 缺失或为 0 时退化成"插在末尾"（没有 steering 消息可以插在其前面）。
 
-`DynamicStateSectionPlugin`（`plugins/context/sections/dynamic_state.py`）是目前唯一的 `BuildDynamicPromptEvent` 订阅者，贡献一个 `state` section，包含四个值：`{{ turn.now }}`/`{{ turn.step_count }}`/`{{ session.tokens_used }}`/`{{ session.turn_count }}`。往这条动态 prompt 里加新内容，只需要写一个新的 section 插件订阅 `BuildDynamicPromptEvent`，塞进 `registry.py` 里 `ExtraPromptPlugin([...])` 的列表，不需要碰 `ExtraPromptPlugin` 或 `DynamicStateSectionPlugin` 本身。（早期版本这里还有第五个值 `{{ session.provider }}`，随 `_record_provider()` 一起被移除，见 8.2 节。）
+`DynamicStateSectionPlugin`（`plugins/context/sections/dynamic_state.py`）是目前唯一的 `BuildDynamicPromptEvent` 订阅者，贡献一个 `state` section，包含六个值：`{{ turn.now }}`/`{{ turn.step_count }}`/`{{ session.turn_count }}`/`{{ session.tokens_used }}`/`{{ session.context_usage }}`/`{{ global.model_context_length }}`。`session.context_usage`（模型 usage 里报出来的峰值 prompt token 数，见上文 8.2 节）虽然语义上反映的是"已经发生过的调用"而不是"这次即将发送的内容"，但仍然渲染进了这个 section——跟 `{{ global.model_context_length }}`（上限）放在一起，让模型能直接看到"历史峰值 vs 总上限"这组对比，即使峰值本身是慢一拍的历史数据。往这条动态 prompt 里加新内容，只需要写一个新的 section 插件订阅 `BuildDynamicPromptEvent`，塞进 `registry.py` 里 `ExtraPromptPlugin([...])` 的列表，不需要碰 `ExtraPromptPlugin` 或 `DynamicStateSectionPlugin` 本身。（早期版本这里还有一个 `{{ session.provider }}`，随 `_record_provider()` 一起被移除，见 8.2 节。）
 
 `ExtraPromptPlugin` 在 `context_plugins` 元组里排在 **`TruncatorPlugin`/`TokenBudgetPlugin` 之后（最后一个）**，这个顺序依然是必须的——`TruncatorPlugin.apply()` 按 **role 分桶**重组消息列表（所有 `system` 角色的消息一律被搬到最前面，不看原始位置）：
 
@@ -336,7 +341,7 @@ return BeforeModelCall(messages=[*system, *kept], tools=ctx.tools, variables=ctx
 
 **Provider 黑名单（`OPENROUTER_PROVIDER_BLACKLIST`，可选，与粘性路由正交）**：`registry.py` 把这个逗号分隔的环境变量字符串切分、去空白、丢弃空片段后，作为 `provider_blacklist: list[str]` 传给 `OpenRouterModelPlugin`。`_extra_body()` 只看 `self._provider_blacklist` 是否非空，非空才返回 `{"provider": {"ignore": [...]}}`，否则回到 `None`。黑名单不会干扰粘性路由——它不设置 `provider.order`，只是从"OpenRouter 可以选的候选里"提前排除掉几个，OpenRouter 依然会在剩下的候选里做粘性路由。
 
-**不再观测/记录实际 provider**：`session_id` 换成 OpenRouter 服务端维持的粘性路由之后，紧接着又把"每次请求读 `openrouter_metadata`、记进 `session.provider`、打一条 info 日志"这层观测代码（`_record_provider()`、`X-OpenRouter-Metadata` 请求头、流式路径里的 `routing_metadata` 累积变量）整体删掉了——粘性路由是否生效完全由 OpenRouter 服务端负责，客户端不再需要为了"看一眼选中了谁"专门 opt-in 一个响应字段、每次请求解析它。`DynamicStateSectionPlugin` 的 `state` section 相应地去掉了 `Serving provider: {{ session.provider }}` 这一行（`session.provider` 不会再被任何代码写入，留着只会永远渲染成空字符串），现在只保留 `turn.now`/`turn.step_count`/`session.tokens_used`/`session.turn_count` 四个值。
+**不再观测/记录实际 provider**：`session_id` 换成 OpenRouter 服务端维持的粘性路由之后，紧接着又把"每次请求读 `openrouter_metadata`、记进 `session.provider`、打一条 info 日志"这层观测代码（`_record_provider()`、`X-OpenRouter-Metadata` 请求头、流式路径里的 `routing_metadata` 累积变量）整体删掉了——粘性路由是否生效完全由 OpenRouter 服务端负责，客户端不再需要为了"看一眼选中了谁"专门 opt-in 一个响应字段、每次请求解析它。`DynamicStateSectionPlugin` 的 `state` section 相应地去掉了 `Serving provider: {{ session.provider }}` 这一行（`session.provider` 不会再被任何代码写入，留着只会永远渲染成空字符串）——完整字段列表见 7.1 节末尾。
 
 **App 归属（`HTTP-Referer` + `X-OpenRouter-Title`）**：按 OpenRouter 官方 app-attribution 文档（`https://openrouter.ai/docs/app-attribution`），`HTTP-Referer` 才是必需的那个头——它是"这次调用属于哪个 app"的唯一标识，决定要不要在 OpenRouter 后台建一个 app page；`X-OpenRouter-Title` 是可选的，只负责给那个 app page 起个显示名字，**单独发不会建立 app page**（文档原文："Does not create an app page on its own; requires HTTP-Referer pairing"）。据此两个头分工不同、来源也不同：
 
@@ -409,7 +414,7 @@ Truncator 和 Summarizer 的裁切点都要经过 `core/messagealign.align_cut(m
 
 ## 9. StorageService（Core Service）
 
-DuckDB schema 保持简单，两张表：
+DuckDB schema 保持简单，三张表：
 
 ```sql
 CREATE TABLE sessions (
@@ -426,13 +431,34 @@ CREATE TABLE messages (
     turn_id INTEGER DEFAULT 0,         -- 该消息产生于第几轮 Turn，独立列，不进 content 这份 JSON
     PRIMARY KEY (session_key, seq)
 )
+CREATE TABLE model_catalog (
+    id VARCHAR PRIMARY KEY,            -- OpenRouter 模型 id，如 "deepseek/deepseek-v4-flash-0731"
+    name VARCHAR, description VARCHAR,
+    context_length INTEGER,
+    supports_tools BOOLEAN,
+    pricing_prompt DOUBLE, pricing_completion DOUBLE,  -- 每 token 输入/输出单价
+    input_modalities VARCHAR DEFAULT '[]',   -- JSON 数组，如 '["text"]'
+    output_modalities VARCHAR DEFAULT '[]',  -- JSON 数组
+    supported_parameters VARCHAR DEFAULT '[]', -- JSON 数组，完整能力列表（tools/reasoning/structured_outputs 等）
+    fetched_at VARCHAR
+)
 ```
 
-SQL 语句集中在 `src/conic/services/queries.py` 中，每句包装为返回 `(sql, params)` 的函数。数据模型使用 pydantic `Session`/`Message` 类型（`src/conic/services/models.py`）。`startup()` 会执行 `ALTER TABLE sessions ADD COLUMN IF NOT EXISTS variables VARCHAR DEFAULT '{}'` 和 `ALTER TABLE messages ADD COLUMN IF NOT EXISTS turn_id INTEGER DEFAULT 0`，兼容旧库。
+SQL 语句集中在 `src/conic/services/queries.py` 中，每句包装为返回 `(sql, params)` 的函数。数据模型使用 pydantic `Session`/`Message`/`ModelCatalogEntry` 类型（`src/conic/services/models.py`）。`startup()` 会执行 `ALTER TABLE sessions ADD COLUMN IF NOT EXISTS variables VARCHAR DEFAULT '{}'`、`ALTER TABLE messages ADD COLUMN IF NOT EXISTS turn_id INTEGER DEFAULT 0`，以及 `model_catalog` 每个非主键列各一条 `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`（`queries.add_model_catalog_extra_columns_sql()` 返回一组 `(sql, params)`，`startup()` 里循环执行），兼容旧库。
 
 **`turn_id` 只为将来"按 Turn 分组裁剪/压缩"做准备，当前没有任何压缩逻辑读它**：`SessionHandle.append_message(message, turn_id)` 把 `turn_id` 存进独立的表列，而不是塞进 `content` 这份 JSON——`ReactLoopPlugin._run_turn()` 在方法开头 `turn_count` 自增后立即取值（`turn_id = self._session_variables["turn_count"]`），本 Turn 内所有 `append_message`/`_inject` 调用（steering 注入、assistant 消息、模型 `raw_message`、tool 结果）都带上这同一个 `turn_id`，因此同一轮里 `assistant(tool_calls) → tool(reply)` 这种必须成对出现的消息永远同属一个 turn_id，不会被裁剪逻辑从中间切开。`load_history_sql` 只 `SELECT content`，不选 `turn_id` 这一列，所以发给模型的 `messages` 列表里永远不会出现这个字段——不需要在 `OpenRouterModelPlugin` 或别处额外过滤。**迁移前的历史消息全部回填成 `turn_id = 0`**（DuckDB `ALTER TABLE ... ADD COLUMN ... DEFAULT` 对已有行的行为）：无法从 role 序列可靠反推原始轮次边界，所以不做回填脚本，这批老消息在未来的按 turn 分组逻辑里会被当作同属一组处理，等价于回退到当前的整体粒度。
 
 `StorageService`（进程级单例，持有 DuckDB 连接）与 `SessionHandle`（`storage.handle_for(row)` 返回，仅包装 `session_key` + 连接引用）职责分离：前者管理会话行的创建/恢复/状态流转（`get_or_create`/`active_sessions`/`set_status`），后者是 `ReactLoopPlugin` 直接持有、每次读写历史消息时使用的窄接口（`append_message`/`load_history`/`save_variables`），Loop 不直接接触 `StorageService` 或原始连接。`get_or_create()` 首次创建会话时会按 `{workspace_root}/{channel}/{native_id}` 派生并 `mkdir` 出 workspace 目录，写入 `workspace_dir` 字段供后续该会话所有 ToolPlugin 复用。
+
+### 9.1 Model Catalog 与后台定时同步
+
+`model_catalog` 表存的是 OpenRouter `/api/v1/models` 返回的模型目录快照，目的是**为将来"运行时切换模型"这个尚未实现的功能做数据准备**——当前没有任何代码读它来做切换决策，唯一的消费者是 7.1 节提到的 `global.model_context_length`。
+
+- **抓取**：`conic/openrouter/catalog.py::fetch_openrouter_models(api_key, ...)` 直接 `GET https://openrouter.ai/api/v1/models`（带 `Authorization: Bearer <api_key>`），把每个模型的原始 JSON 映射成 `services/models.py::ModelCatalogEntry` 需要的扁平 dict（`_parse_model()`）：`context_length`/`supported_parameters` 缺失时安全降级为 `0`/`[]`；`supports_tools` 由 `"tools" in supported_parameters` 派生；`pricing.prompt`/`pricing.completion`（原始是字符串，如 `"0.00000004"`）转成 `float` 存进 `pricing_prompt`/`pricing_completion`；`architecture.input_modalities`/`output_modalities` 原样存成 JSON 数组。`session_factory` 参数（默认 `aiohttp.ClientSession`）是唯一的注入点，测试用假 session 伪造响应，不发真实请求。
+- **写入**：`StorageService.save_model_catalog(entries)` 每次都**整表替换**（先 `DELETE FROM model_catalog` 再逐条插入），不是按 id upsert——因为目录是从 OpenRouter 权威抓来的快照，模型下架后旧行不该继续留在本地目录里。
+- **后台循环**：`run_periodic_sync(storage, api_key, interval_seconds=DEFAULT_SYNC_INTERVAL_SECONDS=3600, ...)` 是一个 `while True` 循环：**启动后立即同步一次**（不等第一个 interval），成功后 `await sleep(interval_seconds)`，如此往复；单次同步失败（网络错误、OpenRouter 挂了等）只 `logger.warning` 记日志、不抛出，循环继续等下一个 interval 重试——这个文件因此加进了 `pyproject.toml` 的 `[tool.ruff.lint.per-file-ignores]`（`BLE001`，跟 `react_loop.py`/discord 网关同一条理由：顶层循环边界必须兜住任意异常，否则一次抖动就会让整个后台任务连同后续所有同步一起死掉）。
+- **接入进程生命周期**：`entry.py::main()` 用 `asyncio.create_task(run_periodic_sync(storage, config.openrouter_api_key))` 把这个循环挂成后台 task，跟 `gateway.start()`（阻塞主循环）并行跑；`finally` 块里 `cancel()` 后 `await`（用 `contextlib.suppress(asyncio.CancelledError)` 包住），保证进程退出时这个任务被干净收尾，不留"Task was destroyed but it is pending"之类的警告。
+- **独立脚本**：`scripts/sync_model_catalog.py` 是同一套抓取/写入逻辑的一次性手动入口（`uv run python scripts/sync_model_catalog.py`），读 `.env` 里的配置，跑一次就退出，不进后台循环——用于手动补数据或调试，跟 `run_periodic_sync` 内部调的是同一个 `fetch_openrouter_models`/`save_model_catalog`，没有重复实现。
 
 ## 10. 配置项
 
@@ -466,14 +492,18 @@ SQL 语句集中在 `src/conic/services/queries.py` 中，每句包装为返回 
 conic/                     # 项目根（main.py 与 pyproject.toml 同级，不在 src 下）
   main.py                # 入口：设置 PROJECT_ROOT 环境变量，调用 main()
   pyproject.toml         # console_script: conic = "conic.entry:main"
+  scripts/
+    sync_model_catalog.py # 手动一次性入口：拉取 + 保存 model_catalog，不进后台循环（见 9.1）
   prompts/
     identity.md           # 系统提示词 identity section
     execution.md          # 系统提示词 execution section
   src/conic/
-    entry.py              # build_app() + main()
+    entry.py              # build_app() + main()，main() 里挂了 run_periodic_sync 后台 task（见 9.1）
     config.py             # pydantic-settings Config, 自动加载 .env
     discord/
       gateway.py          # DiscordGateway (Core Service)
+    openrouter/
+      catalog.py          # fetch_openrouter_models / run_periodic_sync（见 9.1）
     core/
       bus.py              # MessageBus
       manager.py          # PluginManager, PluginSet
@@ -515,12 +545,13 @@ conic/                     # 项目根（main.py 与 pyproject.toml 同级，不
     services/
       storage.py          # StorageService + SessionHandle (DuckDB)
       queries.py          # SQL 语句函数
-      models.py           # Session/Message pydantic 模型
+      models.py           # Session/Message/ModelCatalogEntry pydantic 模型
     utils/
       net.py              # http_post_json / validate_web_url / ProviderResponseError（HTTP 调用辅助）
   tests/                  # 结构与 src/conic 镜像，另含 test_config.py、test_main.py
     core/
     discord/
+    openrouter/
     plugins/{models,channels,context,loops,policy,tools}/
     plugins/test_registry.py
     services/

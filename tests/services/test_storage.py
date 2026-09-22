@@ -1,5 +1,6 @@
 from datetime import UTC
 
+from conic.services.models import ModelCatalogEntry
 from conic.services.storage import StorageService
 
 
@@ -137,3 +138,83 @@ def test_persists_across_reconnect(tmp_path):
     history = reopened.handle_for(reloaded_row).load_history()
     assert history == [{"role": "user", "content": "hi"}]
     reopened.shutdown()
+
+
+def test_save_and_list_model_catalog_round_trip(tmp_path):
+    storage = make_storage(tmp_path)
+    storage.save_model_catalog([
+        ModelCatalogEntry(
+            id="deepseek/deepseek-v4-flash-0731",
+            name="DeepSeek: DeepSeek V4 Flash 0731",
+            description="A sparse mixture-of-experts model.",
+            context_length=128000,
+            supports_tools=True,
+            pricing_prompt=0.00000004,
+            pricing_completion=0.00000064,
+            input_modalities=["text"],
+            output_modalities=["text"],
+            supported_parameters=["tools", "reasoning"],
+        ),
+        ModelCatalogEntry(id="openai/gpt-audio", context_length=32000, supports_tools=False),
+    ])
+
+    entries = storage.list_model_catalog()
+
+    assert [e.id for e in entries] == ["deepseek/deepseek-v4-flash-0731", "openai/gpt-audio"]
+    assert entries[0].name == "DeepSeek: DeepSeek V4 Flash 0731"
+    assert entries[0].description == "A sparse mixture-of-experts model."
+    assert entries[0].context_length == 128000
+    assert entries[0].supports_tools is True
+    assert entries[0].pricing_prompt == 0.00000004
+    assert entries[0].pricing_completion == 0.00000064
+    assert entries[0].input_modalities == ["text"]
+    assert entries[0].output_modalities == ["text"]
+    assert entries[0].supported_parameters == ["tools", "reasoning"]
+    assert entries[1].supports_tools is False
+    assert entries[1].input_modalities == []
+    storage.shutdown()
+
+
+def test_save_model_catalog_replaces_previous_entries(tmp_path):
+    storage = make_storage(tmp_path)
+    storage.save_model_catalog([ModelCatalogEntry(id="old/model", context_length=1000)])
+    storage.save_model_catalog([ModelCatalogEntry(id="new/model", context_length=2000)])
+
+    entries = storage.list_model_catalog()
+
+    assert [e.id for e in entries] == ["new/model"]
+    storage.shutdown()
+
+
+def test_model_catalog_persists_across_reconnect(tmp_path):
+    storage = make_storage(tmp_path)
+    storage.save_model_catalog([ModelCatalogEntry(id="deepseek/deepseek-v4-flash-0731", context_length=128000)])
+    storage.shutdown()
+
+    reopened = StorageService(
+        db_path=str(tmp_path / "conic.duckdb"),
+        workspace_root=str(tmp_path / "workspace"),
+        default_model="test-model",
+    )
+    reopened.startup()
+    entries = reopened.list_model_catalog()
+    assert [e.id for e in entries] == ["deepseek/deepseek-v4-flash-0731"]
+    reopened.shutdown()
+
+
+def test_get_model_context_length_returns_the_matching_entrys_value(tmp_path):
+    storage = make_storage(tmp_path)
+    storage.save_model_catalog([
+        ModelCatalogEntry(id="deepseek/deepseek-v4-flash-0731", context_length=1310720),
+        ModelCatalogEntry(id="openai/gpt-audio", context_length=32000),
+    ])
+
+    assert storage.get_model_context_length("deepseek/deepseek-v4-flash-0731") == 1310720
+    assert storage.get_model_context_length("openai/gpt-audio") == 32000
+    storage.shutdown()
+
+
+def test_get_model_context_length_defaults_to_65535_when_model_not_in_catalog(tmp_path):
+    storage = make_storage(tmp_path)
+    assert storage.get_model_context_length("some/unknown-model") == 65535
+    storage.shutdown()

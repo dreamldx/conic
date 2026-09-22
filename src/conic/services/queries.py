@@ -1,6 +1,6 @@
 import json
 
-from conic.services.models import Message, Session
+from conic.services.models import Message, ModelCatalogEntry, Session
 
 
 def create_sessions_table_sql() -> tuple[str, list]:
@@ -83,3 +83,67 @@ def list_active_sessions_sql(channel: str) -> tuple[str, list]:
 
 def set_session_variables_sql(session_key: str, variables: dict) -> tuple[str, list]:
     return "UPDATE sessions SET variables = ? WHERE session_key = ?", [json.dumps(variables), session_key]
+
+
+def create_model_catalog_table_sql() -> tuple[str, list]:
+    return ("""\
+CREATE TABLE IF NOT EXISTS model_catalog (
+    id VARCHAR PRIMARY KEY,
+    name VARCHAR,
+    description VARCHAR,
+    context_length INTEGER,
+    supports_tools BOOLEAN,
+    pricing_prompt DOUBLE,
+    pricing_completion DOUBLE,
+    input_modalities VARCHAR DEFAULT '[]',
+    output_modalities VARCHAR DEFAULT '[]',
+    supported_parameters VARCHAR DEFAULT '[]',
+    fetched_at VARCHAR
+)""", [])
+
+
+def add_model_catalog_extra_columns_sql() -> list[tuple[str, list]]:
+    return [
+        ("ALTER TABLE model_catalog ADD COLUMN IF NOT EXISTS name VARCHAR DEFAULT ''", []),
+        ("ALTER TABLE model_catalog ADD COLUMN IF NOT EXISTS description VARCHAR DEFAULT ''", []),
+        ("ALTER TABLE model_catalog ADD COLUMN IF NOT EXISTS pricing_prompt DOUBLE DEFAULT 0", []),
+        ("ALTER TABLE model_catalog ADD COLUMN IF NOT EXISTS pricing_completion DOUBLE DEFAULT 0", []),
+        ("ALTER TABLE model_catalog ADD COLUMN IF NOT EXISTS input_modalities VARCHAR DEFAULT '[]'", []),
+        ("ALTER TABLE model_catalog ADD COLUMN IF NOT EXISTS output_modalities VARCHAR DEFAULT '[]'", []),
+        ("ALTER TABLE model_catalog ADD COLUMN IF NOT EXISTS supported_parameters VARCHAR DEFAULT '[]'", []),
+    ]
+
+
+def clear_model_catalog_sql() -> tuple[str, list]:
+    return ("DELETE FROM model_catalog", [])
+
+
+def insert_model_catalog_entry_sql(entry: ModelCatalogEntry) -> tuple[str, list]:
+    sql = (
+        "INSERT INTO model_catalog "
+        "(id, name, description, context_length, supports_tools, pricing_prompt, pricing_completion, "
+        "input_modalities, output_modalities, supported_parameters, fetched_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    )
+    return (
+        sql,
+        [
+            entry.id, entry.name, entry.description, entry.context_length, entry.supports_tools,
+            entry.pricing_prompt, entry.pricing_completion, json.dumps(entry.input_modalities),
+            json.dumps(entry.output_modalities), json.dumps(entry.supported_parameters),
+            entry.fetched_at.isoformat(),
+        ],
+    )
+
+
+def list_model_catalog_sql() -> tuple[str, list]:
+    sql = (
+        "SELECT id, name, description, context_length, supports_tools, pricing_prompt, pricing_completion, "
+        "input_modalities, output_modalities, supported_parameters, fetched_at "
+        "FROM model_catalog ORDER BY id"
+    )
+    return sql, []
+
+
+def get_model_context_length_sql(model_id: str) -> tuple[str, list]:
+    return "SELECT context_length FROM model_catalog WHERE id = ?", [model_id]

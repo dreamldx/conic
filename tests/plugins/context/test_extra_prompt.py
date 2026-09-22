@@ -34,16 +34,17 @@ async def test_inserts_new_user_message_before_this_turns_steering_messages():
     them, so it reads as context established ahead of the turn's actual
     input rather than a trailing note glued onto it."""
     plugin, _bus = make_plugin()
+    input_messages = [
+        {"role": "system", "content": "static system prompt"},
+        {"role": "assistant", "content": "previous turn's answer"},
+        {"role": "user", "content": "this turn's new input"},
+    ]
     ctx = BeforeModelCall(
-        messages=[
-            {"role": "system", "content": "static system prompt"},
-            {"role": "assistant", "content": "previous turn's answer"},
-            {"role": "user", "content": "this turn's new input"},
-        ],
+        messages=input_messages,
         tools=[],
         variables={
-            "global": {},
-            "session": {"tokens_used": 42, "turn_count": 3},
+            "global": {"model_context_length": 1310720},
+            "session": {"tokens_used": 42, "turn_count": 3, "context_usage": 777},
             "turn": {"now": "2026-09-16T00:00:00+00:00", "step_count": 0, "steering_count": 1},
         },
     )
@@ -57,6 +58,8 @@ async def test_inserts_new_user_message_before_this_turns_steering_messages():
     assert "2026-09-16T00:00:00+00:00" in new["content"]
     assert "42" in new["content"]
     assert "3" in new["content"]
+    assert "1310720" in new["content"]
+    assert "777" in new["content"]
     assert result.messages[3] == ctx.messages[2]
 
 

@@ -64,6 +64,12 @@ class OpenRouterModelPlugin:
         if session is None:
             return
         session["tokens_used"] = session.get("tokens_used", 0) + usage.total_tokens
+        # TODO: this tracks the session's all-time peak prompt size and never
+        # comes back down. Once TokenBudgetPlugin's summarization actually
+        # shrinks the history, decide whether context_usage should keep
+        # meaning "historical peak" (current behavior) or get an explicit
+        # reset/adjustment hook so it also reflects post-compression reality.
+        session["context_usage"] = max(session.get("context_usage", 0), usage.prompt_tokens)
 
     async def _complete_blocking(self, msg: ModelRequest) -> ModelResponse:
         logger.debug(
