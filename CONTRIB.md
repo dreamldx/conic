@@ -95,9 +95,10 @@ src/conic/
     policy/       # permission, step limit
     meta.py       # bus topic name constants
     registry.py   # plugin wiring
+  openrouter/     # OpenRouter model catalog sync (fetch + periodic refresh)
   services/       # DuckDB storage, SQL queries, data models
   config.py       # configuration via pydantic-settings
-  entry.py        # application entry point
+  entry.py        # application entry point (async build_app)
 tests/
   core/
   types/

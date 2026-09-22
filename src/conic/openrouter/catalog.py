@@ -40,6 +40,26 @@ def _parse_model(m: dict) -> dict:
     }
 
 
+async def sync_catalog_once(
+    storage,
+    api_key: str,
+    session_factory=aiohttp.ClientSession,
+) -> bool:
+    """Perform a single sync of the model catalog from OpenRouter.
+
+    Returns True on success, False if the fetch or save failed.
+    This is the primitive used by run_periodic_sync and by startup paths
+    that need the catalog populated before querying model metadata."""
+    try:
+        raw_models = await fetch_openrouter_models(api_key, session_factory=session_factory)
+        storage.save_model_catalog([ModelCatalogEntry(**m) for m in raw_models])
+        logger.info("synced {} models from openrouter", len(raw_models))
+        return True
+    except Exception as exc:
+        logger.warning("failed to sync openrouter model catalog: {}", exc)
+        return False
+
+
 async def run_periodic_sync(
     storage,
     api_key: str,
@@ -52,10 +72,5 @@ async def run_periodic_sync(
     A failed sync is logged and skipped rather than killing the loop, so one
     bad request doesn't stop future retries."""
     while True:
-        try:
-            raw_models = await fetch_openrouter_models(api_key, session_factory=session_factory)
-            storage.save_model_catalog([ModelCatalogEntry(**m) for m in raw_models])
-            logger.info("synced {} models from openrouter", len(raw_models))
-        except Exception as exc:
-            logger.warning("failed to sync openrouter model catalog: {}", exc)
+        await sync_catalog_once(storage, api_key, session_factory=session_factory)
         await sleep(interval_seconds)

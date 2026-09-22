@@ -1,4 +1,10 @@
+import asyncio
+
 from conic.entry import build_app
+
+
+async def _noop_sync_once(storage, api_key, session_factory=None):
+    return False
 
 
 def test_build_app_wires_storage_and_gateway_without_connecting(tmp_path):
@@ -9,7 +15,11 @@ def test_build_app_wires_storage_and_gateway_without_connecting(tmp_path):
         "DUCKDB_PATH": str(tmp_path / "conic.duckdb"),
         "WORKSPACE_ROOT": str(tmp_path / "workspace"),
     }
-    storage, gateway = build_app(env)
+
+    async def _build():
+        return await build_app(env, sync_once=_noop_sync_once)
+
+    storage, gateway = asyncio.run(_build())
     try:
         assert gateway.name == "discord"
         row = storage.get_or_create(channel="discord", native_id="smoke-test")

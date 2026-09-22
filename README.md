@@ -56,3 +56,19 @@ invite/OAuth permissions include creating and managing public threads and
 sending messages in threads — see Task 22 in
 `docs/superpowers/plans/2026-09-13-conic-agentic-engine.md` for the full
 manual verification checklist.
+
+## Model catalog
+
+On every startup (and then hourly via a background task), the catalog of
+available OpenRouter models is fetched from the
+[OpenRouter models API](https://openrouter.ai/docs/api-reference/list-available-models)
+and stored in DuckDB. The model running the bot
+(`OPENROUTER_MODEL`) is looked up in that catalog to resolve its advertised
+`context_length`, which is exposed to sessions as the
+`model_context_length` global (used by the context/truncation pipeline).
+
+Because the catalog is fetched before the bot connects, this value is
+correct from the first session — it does not rely on a pre-seeded database.
+If the catalog fetch fails at startup (e.g. no network), the lookup falls
+back to a default of 65535 tokens, so the bot still starts; the hourly sync
+keeps retrying in the background.
