@@ -408,11 +408,14 @@ CREATE TABLE messages (
     session_key VARCHAR, seq INTEGER,  -- 每会话独立递增（MAX(seq)+1），不用自增列
     role VARCHAR, content VARCHAR,     -- content 是整条消息序列化后的 JSON（含 tool_calls/tool_call_id 等原始字段，不是纯文本）
     created_at VARCHAR,
+    turn_id INTEGER DEFAULT 0,         -- 该消息产生于第几轮 Turn，独立列，不进 content 这份 JSON
     PRIMARY KEY (session_key, seq)
 )
 ```
 
-SQL 语句集中在 `src/conic/services/queries.py` 中，每句包装为返回 `(sql, params)` 的函数。数据模型使用 pydantic `Session`/`Message` 类型（`src/conic/services/models.py`）。`startup()` 会执行 `ALTER TABLE sessions ADD COLUMN IF NOT EXISTS variables VARCHAR DEFAULT '{}'`，兼容旧库。
+SQL 语句集中在 `src/conic/services/queries.py` 中，每句包装为返回 `(sql, params)` 的函数。数据模型使用 pydantic `Session`/`Message` 类型（`src/conic/services/models.py`）。`startup()` 会执行 `ALTER TABLE sessions ADD COLUMN IF NOT EXISTS variables VARCHAR DEFAULT '{}'` 和 `ALTER TABLE messages ADD COLUMN IF NOT EXISTS turn_id INTEGER DEFAULT 0`，兼容旧库。
+
+**`turn_id` 只为将来"按 Turn 分组裁剪/压缩"做准备，当前没有任何压缩逻辑读它**：`SessionHandle.append_message(message, turn_id)` 把 `turn_id` 存进独立的表列，而不是塞进 `content` 这份 JSON——`ReactLoopPlugin._run_turn()` 在方法开头 `turn_count` 自增后立即取值（`turn_id = self._session_variables["turn_count"]`），本 Turn 内所有 `append_message`/`_inject` 调用（steering 注入、assistant 消息、模型 `raw_message`、tool 结果）都带上这同一个 `turn_id`，因此同一轮里 `assistant(tool_calls) → tool(reply)` 这种必须成对出现的消息永远同属一个 turn_id，不会被裁剪逻辑从中间切开。`load_history_sql` 只 `SELECT content`，不选 `turn_id` 这一列，所以发给模型的 `messages` 列表里永远不会出现这个字段——不需要在 `OpenRouterModelPlugin` 或别处额外过滤。**迁移前的历史消息全部回填成 `turn_id = 0`**（DuckDB `ALTER TABLE ... ADD COLUMN ... DEFAULT` 对已有行的行为）：无法从 role 序列可靠反推原始轮次边界，所以不做回填脚本，这批老消息在未来的按 turn 分组逻辑里会被当作同属一组处理，等价于回退到当前的整体粒度。
 
 `StorageService`（进程级单例，持有 DuckDB 连接）与 `SessionHandle`（`storage.handle_for(row)` 返回，仅包装 `session_key` + 连接引用）职责分离：前者管理会话行的创建/恢复/状态流转（`get_or_create`/`active_sessions`/`set_status`），后者是 `ReactLoopPlugin` 直接持有、每次读写历史消息时使用的窄接口（`append_message`/`load_history`/`save_variables`），Loop 不直接接触 `StorageService` 或原始连接。`get_or_create()` 首次创建会话时会按 `{workspace_root}/{channel}/{native_id}` 派生并 `mkdir` 出 workspace 目录，写入 `workspace_dir` 字段供后续该会话所有 ToolPlugin 复用。
 

@@ -14,7 +14,7 @@ class SessionHandle:
         self._conn = conn
         self._session_key = session_key
 
-    def append_message(self, message: dict) -> None:
+    def append_message(self, message: dict, turn_id: int) -> None:
         seq = self._next_seq()
         msg = Message(
             session_key=self._session_key,
@@ -22,6 +22,7 @@ class SessionHandle:
             role=message.get("role", ""),
             content=json.dumps(message),
             created_at=datetime.now(UTC),
+            turn_id=turn_id,
         )
         sql, params = queries.insert_message_sql(msg)
         self._conn.execute(sql, params)
@@ -59,6 +60,7 @@ class StorageService:
         self._conn.execute(*queries.create_sessions_table_sql())
         self._conn.execute(*queries.create_messages_table_sql())
         self._conn.execute(*queries.add_sessions_variables_column_sql())
+        self._conn.execute(*queries.add_messages_turn_id_column_sql())
 
     def shutdown(self) -> None:
         if self._conn is not None:

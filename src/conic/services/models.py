@@ -20,3 +20,4 @@ class Message(BaseModel):
     role: str = ""
     content: str = ""
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    turn_id: int = 0

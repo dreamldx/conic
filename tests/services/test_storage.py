@@ -79,13 +79,23 @@ def test_append_and_load_history_round_trip(tmp_path):
     storage = make_storage(tmp_path)
     row = storage.get_or_create(channel="discord", native_id="123")
     handle = storage.handle_for(row)
-    handle.append_message({"role": "user", "content": "hi"})
-    handle.append_message({"role": "assistant", "content": "hello"})
+    handle.append_message({"role": "user", "content": "hi"}, turn_id=1)
+    handle.append_message({"role": "assistant", "content": "hello"}, turn_id=1)
     history = handle.load_history()
     assert history == [
         {"role": "user", "content": "hi"},
         {"role": "assistant", "content": "hello"},
     ]
+    storage.shutdown()
+
+
+def test_load_history_does_not_leak_turn_id_into_message_content(tmp_path):
+    storage = make_storage(tmp_path)
+    row = storage.get_or_create(channel="discord", native_id="123")
+    handle = storage.handle_for(row)
+    handle.append_message({"role": "user", "content": "hi"}, turn_id=7)
+    history = handle.load_history()
+    assert "turn_id" not in history[0]
     storage.shutdown()
 
 
@@ -114,7 +124,7 @@ def test_active_sessions_filters_by_channel_and_status(tmp_path):
 def test_persists_across_reconnect(tmp_path):
     storage = make_storage(tmp_path)
     row = storage.get_or_create(channel="discord", native_id="123")
-    storage.handle_for(row).append_message({"role": "user", "content": "hi"})
+    storage.handle_for(row).append_message({"role": "user", "content": "hi"}, turn_id=1)
     storage.shutdown()
 
     reopened = StorageService(

@@ -34,10 +34,12 @@ from conic.types.steering import (
 class FakeStorageHandle:
     def __init__(self):
         self.messages: list[dict] = []
+        self.turn_ids: list[int] = []
         self.saved_variables: list[dict] = []
 
-    def append_message(self, message: dict) -> None:
+    def append_message(self, message: dict, turn_id: int) -> None:
         self.messages.append(message)
+        self.turn_ids.append(turn_id)
 
     def load_history(self) -> list[dict]:
         return list(self.messages)
@@ -612,6 +614,39 @@ async def test_turn_count_increments_across_multiple_turns_in_the_same_session()
     assert seen_turn_counts == [1, 2, 3]
     assert loop._session_variables["turn_count"] == 3
     assert handle.saved_variables[-1]["turn_count"] == 3
+
+
+async def test_all_messages_in_a_turn_share_the_same_turn_id_matching_turn_count():
+    handle = FakeStorageHandle()
+    tool_call = ToolCallSpec(id="call_1", name="bash", args={"command": "ls"})
+    responses = [
+        ModelResponse(text=None, tool_calls=[tool_call], raw_message={"role": "assistant", "tool_calls": [1]}),
+        ModelResponse(text="done", tool_calls=[], raw_message={"role": "assistant"}),
+    ]
+    _bus, loop = make_loop(handle, responses)
+
+    await loop._run_turn([SteeringUserMessage("run ls")], [])
+
+    assert handle.turn_ids
+    assert set(handle.turn_ids) == {1}
+
+
+async def test_turn_id_increments_across_multiple_turns_in_the_same_session():
+    handle = FakeStorageHandle()
+    responses = [
+        ModelResponse(text="hi", tool_calls=[], raw_message={}),
+        ModelResponse(text="hi again", tool_calls=[], raw_message={}),
+    ]
+    _bus, loop = make_loop(handle, responses)
+
+    await loop._run_turn([SteeringUserMessage("hello")], [])
+    first_turn_ids = set(handle.turn_ids)
+
+    await loop._run_turn([SteeringUserMessage("hello again")], [])
+    second_turn_ids = set(handle.turn_ids) - first_turn_ids
+
+    assert first_turn_ids == {1}
+    assert second_turn_ids == {2}
 
 
 async def test_turn_count_seeded_from_persisted_value():

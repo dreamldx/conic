@@ -58,10 +58,10 @@ class ReactLoopPlugin:
         args = ", ".join(f"{k}={v!r}" for k, v in call.args.items() if v != "" and v != [])
         return f"🔧 {call.name}({args})"
 
-    def _inject(self, items: list[SteeringItem]) -> None:
+    def _inject(self, items: list[SteeringItem], turn_id: int) -> None:
         for item in items:
             for entry in item.to_history_entries():
-                self._storage.append_message(entry)
+                self._storage.append_message(entry, turn_id)
 
     async def run_loop(self) -> None:
         bus = self._bus
@@ -89,12 +89,13 @@ class ReactLoopPlugin:
     async def _run_turn(self, high: list[SteeringItem], low: list[SteeringItem]) -> None:
         bus = self._bus
         self._session_variables["turn_count"] += 1
+        turn_id = self._session_variables["turn_count"]
         variables: dict = {
             "global": self._global_variables,
             "session": self._session_variables,
             "turn": {},
         }
-        self._inject([*high, *low])
+        self._inject([*high, *low], turn_id)
 
         await bus.chain(meta.TurnStartEvent, TurnStart(variables=variables))
         step_index = 0
@@ -130,7 +131,7 @@ class ReactLoopPlugin:
                         meta.AssistantMessageEvent,
                         AssistantMessage(text=response.text or "", variables=variables),
                     )
-                    self._storage.append_message({"role": "assistant", "content": out.text})
+                    self._storage.append_message({"role": "assistant", "content": out.text}, turn_id)
 
                     # checkpoint: drain high once the answer is already in
                     # history, so a stop that lands right as the model
@@ -140,13 +141,13 @@ class ReactLoopPlugin:
                         raise AbortTurn("user requested stop", reason=AbortReason.USER_ABORT)
 
                     if drained_high:
-                        self._inject(drained_high)
+                        self._inject(drained_high, turn_id)
                         await bus.chain(meta.StepEndEvent, StepEnd(step_index=this_step, variables=variables))
                         continue
                     await bus.chain(meta.StepEndEvent, StepEnd(step_index=this_step, variables=variables))
                     break
 
-                self._storage.append_message(response.raw_message)
+                self._storage.append_message(response.raw_message, turn_id)
                 for call in response.tool_calls:
                     original_id = call.id
                     try:
@@ -176,7 +177,7 @@ class ReactLoopPlugin:
                         logger.warning("tool call failed name={} error={}", call.name, exc)
                         content = f"Error: {exc}"
                     self._storage.append_message(
-                        {"role": "tool", "tool_call_id": original_id, "content": content}
+                        {"role": "tool", "tool_call_id": original_id, "content": content}, turn_id
                     )
 
                 # checkpoint: drain high once every tool_call in this step has
@@ -186,7 +187,7 @@ class ReactLoopPlugin:
                 tool_high = await bus.drain("steering.high")
                 if any(item.is_turn_abort() for item in tool_high):
                     raise AbortTurn("user requested stop", reason=AbortReason.USER_ABORT)
-                self._inject(tool_high)
+                self._inject(tool_high, turn_id)
 
                 await bus.chain(meta.StepEndEvent, StepEnd(step_index=this_step, variables=variables))
         except AbortTurn as exc:
@@ -209,4 +210,4 @@ class ReactLoopPlugin:
             self._storage.save_variables(self._session_variables)
 
         await bus.chain(meta.TurnEndEvent, TurnEnd(variables=variables))
-        self._inject(await bus.drain("steering.low"))
+        self._inject(await bus.drain("steering.low"), turn_id)
