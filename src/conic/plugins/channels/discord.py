@@ -20,8 +20,11 @@ from conic.types.messages import (
 
 OUTPUT_REQUIREMENTS = (
     "Your reply is posted to a Discord thread. Formatting constraints:\n"
-    "- Discord does not render markdown tables (they show as raw pipe-separated "
-    "text) -- use short lists or aligned code blocks instead.\n"
+    "- Never use markdown table syntax (lines with `|` and `|---|---|` "
+    "separators) -- Discord shows it as raw pipe-separated text, not a table. "
+    "If the content is tabular, put it inside a ``` code block and align the "
+    "columns with spaces so it renders as a fixed-width table; otherwise use "
+    "short bullet lists.\n"
     "- Discord only renders headings up to ### -- avoid deeper heading levels.\n"
     "- Your reply streams into the thread live, token by token, editing a "
     "single message as you generate it -- you don't need to chunk it or "
