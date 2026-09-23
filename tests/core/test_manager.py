@@ -90,6 +90,7 @@ class FakeChannelPlugin:
 
 
 def make_manager(tmp_path):
+    from conic.core.bus import infer_payload_type
     from conic.plugins.loops.react_loop import ReactLoopPlugin
 
     storage = StorageService(
@@ -99,15 +100,42 @@ def make_manager(tmp_path):
     )
     storage.startup()
     shared_client = object()
+
+    tool_classes = (FakeToolPlugin,)
+    backend = lambda session_key: FakeBackend(shared_client)
+    context_plugins = (FakeContextPlugin,)
+    policy_plugins = (FakePolicyPlugin,)
+    summarizer = FakeSummarizer
+
+    def loop_factory(handle, schemas, payload_map, ws, session_vars):
+        return ReactLoopPlugin(handle, schemas, payload_map, ws, persisted_session_variables=session_vars)
+
+    def instantiate_session(bus, workspace_dir, session_key, handle, persisted_session_variables):
+        tool_schemas = [cls.schema for cls in tool_classes]
+        tool_payload_map = {cls.llm_name: infer_payload_type(cls.execute) for cls in tool_classes}
+
+        for tool_cls in tool_classes:
+            tool_cls(workspace_dir=workspace_dir).register(bus)
+
+        backend(session_key).register(bus)
+        for ctx_factory in context_plugins:
+            ctx_factory(workspace_dir, tool_schemas).register(bus)
+        for policy_factory in policy_plugins:
+            policy_factory().register(bus)
+        summarizer().register(bus)
+
+        loop_plugin = loop_factory(handle, tool_schemas, tool_payload_map, workspace_dir, persisted_session_variables)
+        loop_plugin.register(bus)
+        return loop_plugin
+
     plugin_set = PluginSet(
-        tool_classes=(FakeToolPlugin,),
-        backend=lambda session_key: FakeBackend(shared_client),
-        context_plugins=(FakeContextPlugin,),
-        policy_plugins=(FakePolicyPlugin,),
-        summarizer=FakeSummarizer,
-        loop_factory=lambda handle, schemas, payload_map, ws, session_vars: ReactLoopPlugin(
-            handle, schemas, payload_map, ws, persisted_session_variables=session_vars
-        ),
+        tool_classes=tool_classes,
+        backend=backend,
+        context_plugins=context_plugins,
+        policy_plugins=policy_plugins,
+        summarizer=summarizer,
+        loop_factory=loop_factory,
+        instantiate_session=instantiate_session,
     )
     return storage, PluginManager(storage, plugin_set)
 

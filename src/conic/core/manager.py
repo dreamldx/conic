@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 from loguru import logger
 
-from conic.core.bus import MessageBus, infer_payload_type
+from conic.core.bus import MessageBus
 from conic.core.session_gateway import SessionGatewayPlugin
 from conic.plugins import meta
 from conic.types.messages import SessionEnd, SessionStart
@@ -19,6 +19,7 @@ class PluginSet:
     policy_plugins: tuple[Callable[[], object], ...]
     summarizer: Callable[[], object]
     loop_factory: Callable[[object, list[dict], dict[str, type], str, dict], object]
+    instantiate_session: Callable[[MessageBus, str, str, object, dict], object]
 
 
 class PluginManager:
@@ -37,27 +38,11 @@ class PluginManager:
         row = self._storage.get_or_create(channel=channel, native_id=native_id)
         bus = MessageBus()
         scope = SessionScope(bus=bus, row=row)
-
-        tool_schemas = [cls.schema for cls in self._plugin_set.tool_classes]
-        tool_payload_map = {
-            cls.llm_name: infer_payload_type(cls.execute) for cls in self._plugin_set.tool_classes
-        }
-
-        for tool_cls in self._plugin_set.tool_classes:
-            tool_cls(workspace_dir=row.workspace_dir).register(bus)
-
-        self._plugin_set.backend(row.session_key).register(bus)
-        for ctx_plugin_factory in self._plugin_set.context_plugins:
-            ctx_plugin_factory(row.workspace_dir, tool_schemas).register(bus)
-        for policy_factory in self._plugin_set.policy_plugins:
-            policy_factory().register(bus)
-        self._plugin_set.summarizer().register(bus)
-
         handle = self._storage.handle_for(row)
-        loop_plugin = self._plugin_set.loop_factory(
-            handle, tool_schemas, tool_payload_map, row.workspace_dir, row.variables
+
+        loop_plugin = self._plugin_set.instantiate_session(
+            bus, row.workspace_dir, row.session_key, handle, row.variables
         )
-        loop_plugin.register(bus)
 
         channel_plugin_factory().register(bus)
 

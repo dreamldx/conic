@@ -32,16 +32,13 @@ Optional (defaults shown):
 | `OPENROUTER_PROVIDER_BLACKLIST` | unset | Comma-separated OpenRouter provider slugs (e.g. `novita,together`) to exclude via `provider.ignore`. OpenRouter still routes freely among every other provider. |
 | `WORKSPACE_ROOT` | `./workspace` | Root directory under which each session's workspace is created. |
 | `DUCKDB_PATH` | `./data/conic.duckdb` | Path to the DuckDB persistence file. |
-| `MAX_STEPS_PER_TURN` | `25` | Max Steps (model calls) allowed within a single Turn before it's aborted. |
-| `CONTEXT_TOKEN_BUDGET` | `50000` | Token threshold that triggers history summarization. |
-| `TRUNCATE_KEEP_LAST_N` | `40` | Number of most recent messages the truncator keeps. |
-| `BASH_TIMEOUT` | `60` | Seconds before a running `bash` command is killed and reported as an error. |
-| `TAVILY_API_KEY` | unset | Tavily API key. If unset, `web_search` is not registered. |
-| `FIRECRAWL_API_KEY` | unset | Firecrawl API key. If unset, `web_fetch` is not registered. |
-| `WEB_SEARCH_TIMEOUT` | `30` | Seconds before a `web_search` request times out. |
-| `WEB_FETCH_TIMEOUT` | `60` | Seconds before a `web_fetch` request times out. |
-| `WEB_FETCH_MAX_CHARS` | `15000` | Character budget for inlined fetch results; larger pages are head+tail truncated and the full text spills to workspace. |
-| `WEB_FETCH_SUMMARY_MODEL` | unset | OpenRouter model id for two-stage fetch (optional). When set, `web_fetch` exposes a `prompt` parameter that sends the page to this model for targeted answers. |
+| `PLUGINS_CONFIG_PATH` | `{PROJECT_ROOT}/plugins.yaml` | Path to the declarative plugin config file -- see "Plugin configuration" below. |
+| `TAVILY_API_KEY` | unset | Tavily API key. Required only if `web_search` is declared in `plugins.yaml`. |
+| `FIRECRAWL_API_KEY` | unset | Firecrawl API key. Required only if `web_fetch` is declared in `plugins.yaml`. |
+
+Per-tool timeouts, token budgets, step limits, and which tools/context
+stages/policies exist at all are no longer environment variables -- they're
+declared in `plugins.yaml` (see below).
 
 ## Running it
 
@@ -72,3 +69,17 @@ correct from the first session — it does not rely on a pre-seeded database.
 If the catalog fetch fails at startup (e.g. no network), the lookup falls
 back to a default of 65535 tokens, so the bot still starts; the hourly sync
 keeps retrying in the background.
+
+## Plugin configuration
+
+Which tools, context-pipeline stages, and policy checks are wired into every
+session is declared in `plugins.yaml` (path configurable via
+`PLUGINS_CONFIG_PATH`, defaults to `{PROJECT_ROOT}/plugins.yaml`). Secrets
+(API keys, tokens) stay in `.env`; `plugins.yaml` only declares plugin
+names, order, and non-sensitive parameters (timeouts, token budgets, step
+limits). An unknown plugin name, or a tool declared without its required
+API key configured in `.env` (e.g. `web_search` without `TAVILY_API_KEY`),
+fails at startup with a clear error rather than silently skipping the
+plugin. See the repo's `plugins.yaml` for the default configuration and
+`docs/superpowers/specs/2026-09-22-yaml-plugin-config-design.md` for the
+full schema and design.

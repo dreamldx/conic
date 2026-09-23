@@ -14,10 +14,6 @@ def test_load_config_applies_defaults():
     assert config.workspace_root.endswith("workspace")
     assert config.duckdb_path.endswith("conic.duckdb")
     assert config.log_level == "INFO"
-    assert config.max_steps_per_turn == 25
-    assert config.context_token_budget == 50000
-    assert config.truncate_keep_last_n == 40
-    assert config.bash_timeout == 60.0
 
 
 def test_load_config_reads_overrides():
@@ -27,16 +23,26 @@ def test_load_config_reads_overrides():
         "OPENROUTER_API_KEY": "or-key",
         "OPENROUTER_MODEL": "openai/gpt-4o",
         "OPENROUTER_PROVIDER_BLACKLIST": "novita,together",
-        "MAX_STEPS_PER_TURN": "10",
-        "BASH_TIMEOUT": "15",
         "PROJECT_NAME": "MyAgent",
     }
     config = load_config(env)
     assert config.openrouter_model == "openai/gpt-4o"
     assert config.openrouter_provider_blacklist == "novita,together"
-    assert config.max_steps_per_turn == 10
-    assert config.bash_timeout == 15.0
     assert config.project_name == "MyAgent"
+
+
+def test_load_config_resolves_default_plugins_config_path():
+    config = load_config({"PROJECT_ROOT": "/tmp/conic", "DISCORD_BOT_TOKEN": "d", "OPENROUTER_API_KEY": "k"})
+    assert config.plugins_config_path.endswith("plugins.yaml")
+    assert "conic" in config.plugins_config_path
+
+
+def test_load_config_reads_plugins_config_path_override():
+    config = load_config({
+        "PROJECT_ROOT": "/tmp/conic", "DISCORD_BOT_TOKEN": "d", "OPENROUTER_API_KEY": "k",
+        "PLUGINS_CONFIG_PATH": "/custom/plugins.yaml",
+    })
+    assert config.plugins_config_path == "/custom/plugins.yaml"
 
 
 def test_load_config_raises_when_project_root_missing(monkeypatch):
@@ -61,38 +67,18 @@ def test_load_config_raises_when_openrouter_key_missing(monkeypatch):
         load_config({"PROJECT_ROOT": "/tmp/conic", "DISCORD_BOT_TOKEN": "d-token"})
 
 
-def test_load_config_raises_on_invalid_field_type():
-    with pytest.raises(ConfigError):
-        load_config({
-            "PROJECT_ROOT": "/tmp/conic",
-            "DISCORD_BOT_TOKEN": "d",
-            "OPENROUTER_API_KEY": "k",
-            "MAX_STEPS_PER_TURN": "not_a_number",
-        })
-
-
-def test_web_tool_settings_default_to_disabled():
+def test_web_tool_api_keys_default_to_disabled():
     config = load_config(env={
         "PROJECT_ROOT": "/tmp", "DISCORD_BOT_TOKEN": "d", "OPENROUTER_API_KEY": "k",
     })
     assert config.tavily_api_key == ""
     assert config.firecrawl_api_key == ""
-    assert config.web_fetch_summary_model == ""
-    assert config.web_search_timeout == 30.0
-    assert config.web_fetch_timeout == 60.0
-    assert config.web_fetch_max_chars == 15000
 
 
-def test_web_tool_settings_parse_from_env():
+def test_web_tool_api_keys_parse_from_env():
     config = load_config(env={
         "PROJECT_ROOT": "/tmp", "DISCORD_BOT_TOKEN": "d", "OPENROUTER_API_KEY": "k",
         "TAVILY_API_KEY": "tv", "FIRECRAWL_API_KEY": "fc",
-        "WEB_SEARCH_TIMEOUT": "10", "WEB_FETCH_TIMEOUT": "20",
-        "WEB_FETCH_MAX_CHARS": "5000", "WEB_FETCH_SUMMARY_MODEL": "google/gemini-flash",
     })
     assert config.tavily_api_key == "tv"
     assert config.firecrawl_api_key == "fc"
-    assert config.web_search_timeout == 10.0
-    assert config.web_fetch_timeout == 20.0
-    assert config.web_fetch_max_chars == 5000
-    assert config.web_fetch_summary_model == "google/gemini-flash"

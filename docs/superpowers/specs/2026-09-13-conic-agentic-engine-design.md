@@ -19,7 +19,7 @@ while True:
 
 - **LLM 后端**：OpenRouter（OpenAI 兼容协议）
 - **交互渠道**：Discord bot
-- **工具集**：v1 档位——`bash` / `read_file` / `write_file` / `edit_file` / `web_search`（Tavily）/ `web_fetch`（Firecrawl）。web_search 和 web_fetch 通过 HTTP API 直接调用 provider，API key 各自独立配置，任一 key 未配置时对应工具不注册。详见 `docs/superpowers/specs/2026-09-18-web-tools-design.md`。
+- **工具集**：v1 档位——`bash` / `read_file` / `write_file` / `edit_file` / `web_search`（Tavily）/ `web_fetch`（Firecrawl）。web_search 和 web_fetch 通过 HTTP API 直接调用 provider，API key 各自独立配置；是否启用由 `plugins.yaml` 显式声明，声明了但对应 key 未配置时启动失败报错，而不是静默跳过。详见 `docs/superpowers/specs/2026-09-18-web-tools-design.md` 和 `docs/superpowers/specs/2026-09-22-yaml-plugin-config-design.md`。
 - **架构要求**：AI 后端、渠道、工具三者都做成插件；agent loop 本身也是插件；插件之间只通过消息机制通信，不做直接函数调用（持久化存储、渠道网关连接等进程级 Core Service 除外，见第 3 节）
 
 使用场景：小型可信团队内部使用，工具具备真实的本地执行能力（bash/文件读写），因此需要工作区沙箱边界，但不需要面向不可信公网用户的重度隔离。
@@ -27,7 +27,7 @@ while True:
 ## 2. 核心术语
 
 - **Turn（轮）**：从 loop 消费一批 steering 输入（通常是一条用户消息）到产生一次 `AssistantMessage`（或 `Error`）为止的完整交换。用户发消息、收到最终回复，中间无论循环多少次都算同一轮。
-- **Step（步）**：Turn 内部 `while` 循环体的一次迭代——一次 `model_request`/`model_response`，加上该次响应里的所有工具调用。一个 Turn 由 1 个或多个 Step 组成，直到某个 Step 的模型响应不再包含工具调用为止。Step 数量不确定，由模型行为决定，因此需要 `MAX_STEPS_PER_TURN` 兜底。
+- **Step（步）**：Turn 内部 `while` 循环体的一次迭代——一次 `model_request`/`model_response`，加上该次响应里的所有工具调用。一个 Turn 由 1 个或多个 Step 组成，直到某个 Step 的模型响应不再包含工具调用为止。Step 数量不确定，由模型行为决定，因此需要 `step_limit` 策略插件（`max_steps` 参数，`plugins.yaml` 声明）兜底。
 
 ## 3. 实体分类：Core Service 与 Plugin
 
@@ -374,12 +374,12 @@ Turn 进行中新到的输入**不会打断正在跑的模型调用**，而是�
 
 六个工具的 `register()` 现在都额外 hook `BuildSystemPromptEvent`，各自贡献一段 prompt section（见第 7 节表格），把代码层已经强制的越权拒绝也讲给模型听——目的是让模型一开始就不去尝试越权路径，而不是等工具报错才知道。三个文件工具（read/write/edit）的措辞可以是陈述句（"paths outside it are rejected"），因为 `resolve_within_workspace` 真的会拒绝；`BashToolPlugin` 的措辞是请求句（"stay inside it, don't cd out"），因为 bash 只是把 `cwd` 设到 `workspace_dir`，并没有在代码层阻止 `cd ..`/绝对路径逃逸——这段 prompt 是目前唯一的"软约束"，不是真正的沙箱，见 `../../Improvement-with-pi.md`"安全与隔离"一节。web_search 和 web_fetch 的 section 不涉及工作区约束，而是给模型提供参数使用指引（topic/country/domains 等）和 fetch 节制警告（"只取一两条最相关的 URL"）。
 
-- `BashToolPlugin`：`asyncio.create_subprocess_shell` 在 `workspace_dir` 下执行，超时（`BASH_TIMEOUT`，默认 60s）由 `asyncio.wait_for` 包裹 `proc.communicate()`；超时后 `proc.kill()` + `proc.wait()` 回收进程，返回 `ToolCallResult(error="command timed out after {timeout}s")`。超时值通过 `registry.py` 里定义的 `ConfiguredBashToolPlugin`（`BashToolPlugin` 的一个薄子类，`__init__` 只接 `workspace_dir` 以匹配 `PluginManager` 对所有 `tool_classes` 统一的 `tool_cls(workspace_dir=...)` 实例化方式，内部把 `config.bash_timeout` 转发给父类）从 `Config` 注入——`tool_classes` 里的类要同时支持"当类用"（`cls.schema`/`cls.llm_name`/`cls.execute` 静态访问）和"当工厂用"（绑定运行时配置），子类化是能同时满足两者的最小改法。stdout/stderr 合并后按字节截断（默认 20000 字节，超出附加 `...[truncated]`），非零退出码作为 `error` 返回。
+- `BashToolPlugin`：`asyncio.create_subprocess_shell` 在 `workspace_dir` 下执行，超时（`plugins.yaml` 里 `bash` 条目的 `timeout` 参数，仓库默认配置里是 60s）由 `asyncio.wait_for` 包裹 `proc.communicate()`；超时后 `proc.kill()` + `proc.wait()` 回收进程，返回 `ToolCallResult(error="command timed out after {timeout}s")`。超时值通过 `registry.py::_build_bash_tool()`（一个 builder 函数，读取 `PluginSpec.params["timeout"]`，动态生成一个绑定了该超时值的 `BashToolPlugin` 子类）注入——`tool_classes` 里的类要同时支持"当类用"（`cls.schema`/`cls.llm_name`/`cls.execute` 静态访问）和"当工厂用"（绑定运行时配置），子类化是能同时满足两者的最小改法。stdout/stderr 合并后按字节截断（默认 20000 字节，超出附加 `...[truncated]`），非零退出码作为 `error` 返回。
 - `ReadFileToolPlugin`：`offset`/`limit`（默认 0 / 2000 行）按行切片，超出部分返回时附加总行数提示
 - `WriteFileToolPlugin`：创建/覆盖文件，返回结果里报告新旧行数和 created/overwritten 状态
 - `EditFileToolPlugin`：要求 `old_text` 在文件中**精确出现一次**，否则报错（未找到 / 不唯一），成功后只替换第一处匹配
-- `WebSearchToolPlugin`：调用 Tavily Search API（`POST https://api.tavily.com/search`），`search_depth` 固定 `advanced`（2 credits/次），支持 `max_results`（1-10，默认 5）、`time_range`（day/week/month/year）、`topic`（general/news/finance，默认 general）、`country`（仅 topic=general 时生效）、`exact_match`、`include_domains`、`include_answer`（basic/advanced）。搜索结果以边界标记包裹（`<<<EXTERNAL_UNTRUSTED_CONTENT ...>>>`），返回时已剥离 LLM 特殊 token。仅在 `TAVILY_API_KEY` 配置后注册。
-- `WebFetchToolPlugin`：调用 Firecrawl Scrape API（`POST https://api.firecrawl.dev/v2/scrape`），`onlyMainContent`/`onlyCleanContent`/`skipTlsVerification` 均为 `true`，`proxy: auto`，`maxAge: 48h`，`timeout: 30s`。超过 `WEB_FETCH_MAX_CHARS`（默认 15000）时 head+tail 截断（75%/25%），完整 markdown 写入 workspace `web/<sha256>.md`。仅在 `FIRECRAWL_API_KEY` 配置后注册。详细设计见 `docs/superpowers/specs/2026-09-18-web-tools-design.md`。
+- `WebSearchToolPlugin`：调用 Tavily Search API（`POST https://api.tavily.com/search`），`search_depth` 固定 `advanced`（2 credits/次），支持 `max_results`（1-10，默认 5）、`time_range`（day/week/month/year）、`topic`（general/news/finance，默认 general）、`country`（仅 topic=general 时生效）、`exact_match`、`include_domains`、`include_answer`（basic/advanced）。搜索结果以边界标记包裹（`<<<EXTERNAL_UNTRUSTED_CONTENT ...>>>`），返回时已剥离 LLM 特殊 token。仅当 `plugins.yaml` 声明了 `web_search` 时才注册；声明了但 `TAVILY_API_KEY` 未配置则启动时报错（`PluginConfigError`），而不是静默跳过。
+- `WebFetchToolPlugin`：调用 Firecrawl Scrape API（`POST https://api.firecrawl.dev/v2/scrape`），`onlyMainContent`/`onlyCleanContent`/`skipTlsVerification` 均为 `true`，`proxy: auto`，`maxAge: 48h`，`timeout: 30s`。超过 `max_chars`（`plugins.yaml` 里 `web_fetch` 条目的参数，仓库默认配置里是 15000）时 head+tail 截断（75%/25%），完整 markdown 写入 workspace `web/<sha256>.md`。仅当 `plugins.yaml` 声明了 `web_fetch` 时才注册；声明了但 `FIRECRAWL_API_KEY` 未配置则启动时报错。详细设计见 `docs/superpowers/specs/2026-09-18-web-tools-design.md`。
 
 ### 8.4 DiscordGateway（Core Service，实现 `Gateway` Protocol）
 进程级 discord.py 连接持有者，维护 `{thread_id: SessionScope}` 路由表。在 `conic/discord/gateway.py`。
@@ -412,7 +412,7 @@ Turn 进行中新到的输入**不会打断正在跑的模型调用**，而是�
 
 ### 8.6 PolicyPlugin
 - `PermissionPolicyPlugin`：v1 全部放行
-- `StepLimitPlugin`：超过 `MAX_STEPS_PER_TURN` 时 `raise AbortTurn`
+- `StepLimitPlugin`：超过 `plugins.yaml` 里 `step_limit` 条目的 `max_steps` 参数（仓库默认配置里是 25）时 `raise AbortTurn`
 
 ### 8.7 Context 插件链
 - `SystemPromptPlugin`：chain `BuildSystemPromptEvent` 收集 sections 并组装系统消息；仅当 `ctx.messages[0]` 还不是 `system` 角色时才前置。每 session 第一次收集并渲染后缓存静态 system 文本，后续 Step 复用缓存。
@@ -492,18 +492,13 @@ SQL 语句集中在 `src/conic/services/queries.py` 中，每句包装为返回 
 | `WORKSPACE_ROOT` | `{PROJECT_ROOT}/workspace` | 工作区根目录 |
 | `DUCKDB_PATH` | `{PROJECT_ROOT}/data/conic.duckdb` | 持久化文件路径 |
 | `LOG_LEVEL` | `INFO` | loguru 日志级别 |
-| `MAX_STEPS_PER_TURN` | `25` | 单轮最大 Step 数 |
-| `CONTEXT_TOKEN_BUDGET` | `50000` | 触发摘要压缩的 token 阈值 |
-| `TRUNCATE_KEEP_LAST_N` | `40` | Truncator 保留的最近消息数 |
-| `BASH_TIMEOUT` | `60` | `bash` 工具单次命令执行超时（秒），超时后 kill 进程并返回 error |
-| `TAVILY_API_KEY` | 无 | Tavily API key。未设置时 `web_search` 不注册 |
-| `FIRECRAWL_API_KEY` | 无 | Firecrawl API key。未设置时 `web_fetch` 不注册 |
-| `WEB_SEARCH_TIMEOUT` | `30` | `web_search` 请求超时（秒） |
-| `WEB_FETCH_TIMEOUT` | `60` | `web_fetch` 请求超时（秒） |
-| `WEB_FETCH_MAX_CHARS` | `15000` | fetch 内联返回的字符预算，超长时 head+tail 截断落盘 |
-| `WEB_FETCH_SUMMARY_MODEL` | 无 | 两段式 fetch 的小模型 id（OpenRouter），设置后 `web_fetch` 暴露 `prompt` 参数 |
+| `PLUGINS_CONFIG_PATH` | `{PROJECT_ROOT}/plugins.yaml` | 声明式插件配置文件路径，见第 15 节 |
+| `TAVILY_API_KEY` | 无 | Tavily API key。`plugins.yaml` 声明了 `web_search` 但这个 key 未设置时启动报错 |
+| `FIRECRAWL_API_KEY` | 无 | Firecrawl API key。`plugins.yaml` 声明了 `web_fetch` 但这个 key 未设置时启动报错 |
 
 `WORKSPACE_ROOT` 和 `DUCKDB_PATH` 默认为 PROJECT_ROOT 下的绝对路径，也可通过环境变量覆盖为自定义路径。
+
+单轮最大 Step 数、摘要压缩的 token 阈值、Truncator 保留消息数、各工具超时/字符预算等——原先的 8 个环境变量（`MAX_STEPS_PER_TURN`/`CONTEXT_TOKEN_BUDGET`/`TRUNCATE_KEEP_LAST_N`/`BASH_TIMEOUT`/`WEB_SEARCH_TIMEOUT`/`WEB_FETCH_TIMEOUT`/`WEB_FETCH_MAX_CHARS`/`WEB_FETCH_SUMMARY_MODEL`）已从 `Config` 中移除，改为 `plugins.yaml` 里对应插件条目的参数，见第 15 节。
 
 ## 11. 目录结构
 
@@ -591,13 +586,21 @@ conic/                     # 项目根（main.py 与 pyproject.toml 同级，不
 
 ## 14. v1 范围界定
 
-**包含**：4 个本地核心工具（bash/read_file/write_file/edit_file）和按 API key 条件注册的 web_search/web_fetch、OpenRouter 单一 backend、Discord 单一 channel、DuckDB 持久化、完整的 ContextBuilder 链（含 Summarizer/TokenBudget/ExtraPrompt）、composable system prompt、StepLimit 安全阀、typing indicator、loguru 日志。
+**包含**：4 个本地核心工具（bash/read_file/write_file/edit_file）和按 `plugins.yaml` 声明注册的 web_search/web_fetch（声明了但对应 API key 未配置则启动报错）、OpenRouter 单一 backend、Discord 单一 channel、DuckDB 持久化、完整的 ContextBuilder 链（含 Summarizer/TokenBudget/ExtraPrompt）、composable system prompt、StepLimit 安全阀、typing indicator、loguru 日志、YAML 驱动的插件配置（见第 15 节）。
 
 **不包含（架构已预留空间）**：
 - 多 channel 同时运行
 - 子代理/Task 工具、Skill 工具
 - 动态插件发现
 - `model_response`/`tool_result` 的默认审核/脱敏钩子
+
+## 15. YAML 驱动的插件配置（已实现，详见独立 spec）
+
+`registry.py::build_plugin_set()` 不再是纯 Python 硬编码装配，而是从 `plugins.yaml`（路径由 `Config.plugins_config_path` 决定，默认 `{PROJECT_ROOT}/plugins.yaml`）声明式地构造 `PluginSet`。完整设计（schema、名字 → 构造逻辑的 builder 映射表机制、错误处理策略、跟 `.env`/`Config` 的分工、`PluginSet.instantiate_session` 闭包顺带完成的 `core/manager.py` 瘦身）和实现细节见：
+- `docs/superpowers/specs/2026-09-22-yaml-plugin-config-design.md`（设计）
+- `docs/superpowers/plans/2026-09-22-yaml-plugin-config.md`（实现计划，9 个 task）
+
+这里只留一句指路，不重复维护两份内容。
 
 ## 附录 A：StorageService 不是 Plugin 的完整论证
 

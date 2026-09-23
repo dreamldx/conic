@@ -18,18 +18,11 @@ class Config(BaseSettings):
     openrouter_provider_blacklist: str = Field(default="", alias="OPENROUTER_PROVIDER_BLACKLIST")
     workspace_root: str = Field(default="", alias="WORKSPACE_ROOT")
     duckdb_path: str = Field(default="", alias="DUCKDB_PATH")
+    plugins_config_path: str = Field(default="", alias="PLUGINS_CONFIG_PATH")
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
-    max_steps_per_turn: int = Field(default=25, ge=1, alias="MAX_STEPS_PER_TURN")
-    context_token_budget: int = Field(default=50000, ge=1, alias="CONTEXT_TOKEN_BUDGET")
-    truncate_keep_last_n: int = Field(default=40, ge=1, alias="TRUNCATE_KEEP_LAST_N")
-    bash_timeout: float = Field(default=60.0, ge=1, alias="BASH_TIMEOUT")
     project_name: str = Field(default="Conic", alias="PROJECT_NAME")
     tavily_api_key: str = Field(default="", alias="TAVILY_API_KEY")
     firecrawl_api_key: str = Field(default="", alias="FIRECRAWL_API_KEY")
-    web_search_timeout: float = Field(default=30.0, ge=1, alias="WEB_SEARCH_TIMEOUT")
-    web_fetch_timeout: float = Field(default=60.0, ge=1, alias="WEB_FETCH_TIMEOUT")
-    web_fetch_max_chars: int = Field(default=15000, ge=2000, alias="WEB_FETCH_MAX_CHARS")
-    web_fetch_summary_model: str = Field(default="", alias="WEB_FETCH_SUMMARY_MODEL")
 
     @model_validator(mode="after")
     def _resolve_paths(self):
@@ -38,6 +31,8 @@ class Config(BaseSettings):
             object.__setattr__(self, "workspace_root", str(root / "workspace"))
         if not self.duckdb_path:
             object.__setattr__(self, "duckdb_path", str(root / "data" / "conic.duckdb"))
+        if not self.plugins_config_path:
+            object.__setattr__(self, "plugins_config_path", str(root / "plugins.yaml"))
         return self
 
 

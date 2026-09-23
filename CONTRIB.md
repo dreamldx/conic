@@ -94,7 +94,8 @@ src/conic/
     loops/        # ReAct execution loop
     policy/       # permission, step limit
     meta.py       # bus topic name constants
-    registry.py   # plugin wiring
+    registry.py   # plugin wiring, YAML-driven (see plugins.yaml at repo root)
+    plugin_config.py  # plugins.yaml schema (pydantic) and loader
   openrouter/     # OpenRouter model catalog sync (fetch + periodic refresh)
   services/       # DuckDB storage, SQL queries, data models
   config.py       # configuration via pydantic-settings
@@ -105,4 +106,5 @@ tests/
   discord/
   plugins/
   services/
+plugins.yaml      # declarative plugin configuration (see README)
 ```
