@@ -37,6 +37,7 @@ main:
     assert main.policy[1].params == {"max_steps": 7}
     assert main.summarizer == "default"
     assert main.backend == "openrouter"
+    assert main.loop == "react"
 
 
 def test_defaults_when_sections_omitted(tmp_path):
@@ -51,6 +52,7 @@ def test_defaults_when_sections_omitted(tmp_path):
     assert main.policy == []
     assert main.summarizer == "default"
     assert main.backend == "openrouter"
+    assert main.loop == "react"
 
 
 def test_multiple_named_groups_parse_independently(tmp_path):
@@ -126,9 +128,14 @@ def test_repo_default_plugins_yaml_parses_successfully():
             "bash", "read_file", "write_file", "edit_file", "list_skills", "load_skill",
             "web_search", "web_fetch",
         ]
-        context_names = [spec.name for spec in group.context]
-        assert context_names == ["turn_variables", "system_prompt", "truncator", "token_budget", "extra_prompt"]
         policy_names = [spec.name for spec in group.policy]
         assert policy_names == ["permission", "step_limit"]
         assert group.summarizer == "default"
         assert group.backend == "openrouter"
+        assert group.loop == "react"
+
+    main_context_names = [spec.name for spec in cfg["main"].context]
+    assert main_context_names == ["turn_variables", "system_prompt", "truncator", "token_budget", "extra_prompt"]
+
+    agent_context_names = [spec.name for spec in cfg["agent"].context]
+    assert agent_context_names == ["turn_variables", "system_prompt", "extra_prompt"]

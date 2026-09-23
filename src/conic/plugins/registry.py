@@ -99,9 +99,10 @@ def _build_one_plugin_set(
     policy_plugins = _build_policy_plugins(set_cfg.policy, config)
     summarizer = _build_summarizer(set_cfg.summarizer)
     backend = _build_backend(set_cfg.backend, config, ctx, provider_blacklist)
+    loop_cls = _build_loop(set_cfg.loop)
 
     def loop_factory(handle, schemas, payload_map, ws, persisted_session_variables):
-        return ReactLoopPlugin(
+        return loop_cls(
             handle, schemas, payload_map,
             workspace_dir=ws,
             global_variables=resolved_global_variables,
@@ -351,3 +352,15 @@ def _build_backend(
     if builder is None:
         raise PluginConfigError(f"unknown backend: {name}")
     return builder(config, ctx, provider_blacklist)
+
+
+LOOP_BUILDERS: dict[str, Callable[[], type]] = {
+    "react": lambda: ReactLoopPlugin,
+}
+
+
+def _build_loop(name: str) -> type:
+    builder = LOOP_BUILDERS.get(name)
+    if builder is None:
+        raise PluginConfigError(f"unknown loop: {name}")
+    return builder()

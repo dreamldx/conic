@@ -13,12 +13,13 @@
 
 ## 2. 范围
 
-**included**：`tool_classes`、`context_plugins`（含 `system_prompt`/`extra_prompt` 内部的 section 插件列表）、`policy_plugins`、`summarizer`、`backend` 的选择 —— 即 `PluginSet` 六个字段全部由 YAML 驱动构造。
+**included**：`tool_classes`、`context_plugins`（含 `system_prompt`/`extra_prompt` 内部的 section 插件列表）、`policy_plugins`、`summarizer`、`backend` 的选择。（`loop_factory` 当时不在这个列表里，是后来第 13 节才补进去的——这一节保留原始范围描述，不追溯改写。）
 
 **not included**（明确排除，理由见括号）：
 - 插件自注册/装饰器扫描式的动态发现（v1 范围本来就不做，见主设计文档第 14 节；固定的 name→builder 映射表足够覆盖 6~8 个工具）
 - 运行时热重载 YAML（改配置需要重启进程，跟现在改 `.env` 需要重启是一致的）
-- `loop_factory`（`ReactLoopPlugin` 本身）可替换 —— 目前只有一种 Loop 实现，不做成可配置项，字段不放进 YAML schema
+
+> `loop_factory`（`ReactLoopPlugin` 本身）最初也在这份"not included"名单里，理由是"目前只有一种 Loop 实现，不值得做成配置项"。后来还是改成可配置了——见第 13 节。这里保留这段历史是为了说明当初的判断依据，不代表现状。
 
 ## 3. YAML Schema
 
@@ -190,3 +191,16 @@ async def start_session(self, channel, native_id, channel_plugin_factory, reason
 - **`agent` 组目前没有任何调用方主动传 `plugin_set_name="agent"`**——`DiscordGateway` 的两处 `start_session()` 调用都还是默认值。`PluginManager` 已经具备"按名字选组"的能力，但"什么时候、由谁传 `plugin_set_name="agent"`"（比如一个可被 `main` 会话里的工具调用的子 agent）是后续独立的设计决定，不在这次改动范围内。
 
 **未受影响**：`PluginSet` 本身的六个字段、`PluginSet.instantiate_session` 闭包、所有 builder 映射表（`TOOL_BUILDERS` 等）——这些都还是"构造一组 `PluginSet`"这一层的逻辑，只是现在被 `_build_one_plugin_set()` 按组名重复调用，而不是在 `build_plugin_set()` 里跑一次。
+
+## 13. `loop` 可替换（后续扩展，已实现）
+
+第 2 节把 `loop_factory` 列进"not included"，理由是"目前只有一种 Loop 实现，不值得配置"。这条判断后来被推翻了：`loop` 现在跟 `summarizer`/`backend` 一样，是单组 schema 里的一个标量字符串字段，走同一套"名字查 builder 表"机制。
+
+**变化点**：
+
+- `plugin_config.py::PluginSetConfig` 新增字段 `loop: str = "react"`（默认值 `"react"`，省略时行为不变）。取名 `"react"` 而不是 `"default"`——不像 `summarizer`/`backend` 那样"目前只有一种实现所以随便叫 default"，`loop` 的取值本来就是"用哪种循环范式"（ReAct、以后可能的其他范式），名字应该直接说明是什么，不是占位符。
+- `registry.py` 新增 `LOOP_BUILDERS: dict[str, Callable[[], type]]`，目前只有一个条目：`{"react": lambda: ReactLoopPlugin}`；新增 `_build_loop(name: str) -> type`，查不到名字时 `PluginConfigError(f"unknown loop: {name}")`——跟 `_build_summarizer`/`_build_backend` 是完全同构的写法。
+- `_build_one_plugin_set()` 里 `loop_factory` 闭包原来硬编码 `ReactLoopPlugin(...)`，现在改成 `loop_cls = _build_loop(set_cfg.loop)` 先查出类，再 `loop_cls(...)` 构造——`loop_factory` 闭包本身的签名、`instantiate_session()` 调用它的方式都没变，`PluginSet.loop_factory` 字段的类型签名也没变，改动只在"构造哪个类"这一步。
+- `config/plugins.yaml` 里 `main`/`agent` 两组都显式写了 `loop: react`（省略也一样，写出来只是跟 `summarizer: default`/`backend: openrouter` 保持同样的显式风格）。
+
+**为什么现在又值得做了**：跟"多命名插件集合"（第 12 节）合在一起看，`loop` 变得有意义了——如果以后 `agent` 这组要跑一个不同于 ReAct 范式的循环（比如更简单的单轮问答，不需要工具调用循环），"每组可以选自己的 loop 实现"就是必要的，而不再是"唯一实现，配置了也没用"。`LOOP_BUILDERS` 目前仍然只有一个条目，跟 `SUMMARIZER_BUILDERS`/`BACKEND_BUILDERS` 当初的情况一样——见第 11 节"未决问题"里同样的说明：为保持机制一致性，即使只有一个选项也过 builder 表，不开特例。

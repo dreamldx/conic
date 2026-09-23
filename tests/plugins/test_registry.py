@@ -15,6 +15,7 @@ from conic.plugins.context.system_prompt import SystemPromptPlugin
 from conic.plugins.context.token_budget import TokenBudgetPlugin
 from conic.plugins.context.truncator import TruncatorPlugin
 from conic.plugins.context.variables import TurnVariableUpdaterPlugin
+from conic.plugins.loops.react_loop import ReactLoopPlugin
 from conic.plugins.models.openrouter import OpenRouterModelPlugin
 from conic.plugins.plugin_config import PluginConfigError, PluginSpec
 from conic.plugins.policy.permission import PermissionPolicyPlugin
@@ -23,6 +24,7 @@ from conic.plugins.registry import (
     BuildContext,
     _build_backend,
     _build_context_plugins,
+    _build_loop,
     _build_policy_plugins,
     _build_sections,
     _build_summarizer,
@@ -63,6 +65,7 @@ main:
     - step_limit: {max_steps: 7}
   summarizer: default
   backend: openrouter
+  loop: react
 """
 
 
@@ -99,8 +102,6 @@ def test_build_plugin_set_context_and_policy_factories_produce_fresh_instances(t
 
 
 def test_loop_factory_produces_a_react_loop_plugin(tmp_path):
-    from conic.plugins.loops.react_loop import ReactLoopPlugin
-
     plugin_set = build_plugin_set(make_config(tmp_path))["main"]
     loop = plugin_set.loop_factory(object(), [], {}, "/tmp/ws", {})
     assert isinstance(loop, ReactLoopPlugin)
@@ -364,6 +365,15 @@ def test_build_backend_unknown_name_raises(tmp_path):
         _build_backend("not_real", config, ctx, [])
 
 
+def test_build_loop_react_produces_react_loop_plugin():
+    assert _build_loop("react") is ReactLoopPlugin
+
+
+def test_build_loop_unknown_name_raises():
+    with pytest.raises(PluginConfigError, match="unknown loop"):
+        _build_loop("not_real")
+
+
 def test_build_plugin_set_end_to_end_matches_yaml(tmp_path):
     config = make_config(tmp_path)
     plugin_set = build_plugin_set(config)["main"]
@@ -397,9 +407,13 @@ def test_build_plugin_set_web_search_without_key_raises(tmp_path):
         build_plugin_set(make_config(tmp_path, yaml_text="main:\n  tools: [web_search]\n"))
 
 
+def test_build_plugin_set_unknown_loop_in_yaml_raises(tmp_path):
+    with pytest.raises(PluginConfigError, match="unknown loop"):
+        build_plugin_set(make_config(tmp_path, yaml_text="main:\n  loop: not_a_real_loop\n"))
+
+
 def test_build_plugin_set_instantiate_session_registers_every_plugin_and_returns_loop(tmp_path):
     from conic.core.bus import MessageBus
-    from conic.plugins.loops.react_loop import ReactLoopPlugin
 
     class FakeHandle:
         def load_history(self):

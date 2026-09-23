@@ -31,6 +31,7 @@ class PluginSetConfig(BaseModel):
     policy: list[PluginSpec] = []
     summarizer: str = "default"
     backend: str = "openrouter"
+    loop: str = "react"
 
     @field_validator("tools", "context", "policy", mode="before")
     @classmethod

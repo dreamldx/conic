@@ -77,8 +77,8 @@ session is declared in `config/plugins.yaml` (path configurable via
 `PLUGINS_CONFIG_PATH`, defaults to `{PROJECT_ROOT}/config/plugins.yaml`).
 The file is a dict of named plugin sets -- each top-level key (e.g. `main`,
 `agent`) maps to its own independent `tools`/`context`/`policy`/
-`summarizer`/`backend` configuration. `build_plugin_set()` builds every
-named set in the file and `PluginManager` holds the whole dict;
+`summarizer`/`backend`/`loop` configuration. `build_plugin_set()` builds
+every named set in the file and `PluginManager` holds the whole dict;
 `PluginManager.start_session()` takes an optional `plugin_set_name`
 (defaults to `"main"`) to pick which one a given session runs. The
 Discord gateway always starts sessions with the default, so it always

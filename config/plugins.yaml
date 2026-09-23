@@ -20,10 +20,11 @@ main:
 
   policy:
     - permission
-    - step_limit: {max_steps: 25}
+    - step_limit: {max_steps: 100}
 
   summarizer: default
   backend: openrouter
+  loop: react
 
 agent:
   tools:
@@ -40,14 +41,12 @@ agent:
     - turn_variables
     - system_prompt:
         sections: [identity, tooling, skills, workspace, runtime, execution]
-    - truncator: {keep_last_n: 40}
-    - token_budget: {budget_tokens: 50000}
     - extra_prompt:
         sections: [dynamic_state]
 
   policy:
     - permission
-    - step_limit: {max_steps: 25}
+    - step_limit: {max_steps: 200}
 
-  summarizer: default
   backend: openrouter
+  loop: react
