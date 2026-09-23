@@ -90,7 +90,7 @@ def test_plugins_config_can_be_built_directly_from_a_dict():
 
 def test_repo_default_plugins_yaml_parses_successfully():
     repo_root = Path(__file__).resolve().parents[2]
-    cfg = load_plugins_config(repo_root / "plugins.yaml")
+    cfg = load_plugins_config(repo_root / "config" / "plugins.yaml")
 
     tool_names = [spec.name for spec in cfg.tools]
     assert tool_names == [

@@ -33,7 +33,7 @@ def test_load_config_reads_overrides():
 
 def test_load_config_resolves_default_plugins_config_path():
     config = load_config({"PROJECT_ROOT": "/tmp/conic", "DISCORD_BOT_TOKEN": "d", "OPENROUTER_API_KEY": "k"})
-    assert config.plugins_config_path.endswith("plugins.yaml")
+    assert config.plugins_config_path.endswith(("config/plugins.yaml", "config\\plugins.yaml"))
     assert "conic" in config.plugins_config_path
 
 

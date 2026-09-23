@@ -32,7 +32,7 @@ class Config(BaseSettings):
         if not self.duckdb_path:
             object.__setattr__(self, "duckdb_path", str(root / "data" / "conic.duckdb"))
         if not self.plugins_config_path:
-            object.__setattr__(self, "plugins_config_path", str(root / "plugins.yaml"))
+            object.__setattr__(self, "plugins_config_path", str(root / "config" / "plugins.yaml"))
         return self
 
 

@@ -492,7 +492,7 @@ SQL 语句集中在 `src/conic/services/queries.py` 中，每句包装为返回 
 | `WORKSPACE_ROOT` | `{PROJECT_ROOT}/workspace` | 工作区根目录 |
 | `DUCKDB_PATH` | `{PROJECT_ROOT}/data/conic.duckdb` | 持久化文件路径 |
 | `LOG_LEVEL` | `INFO` | loguru 日志级别 |
-| `PLUGINS_CONFIG_PATH` | `{PROJECT_ROOT}/plugins.yaml` | 声明式插件配置文件路径，见第 15 节 |
+| `PLUGINS_CONFIG_PATH` | `{PROJECT_ROOT}/config/plugins.yaml` | 声明式插件配置文件路径，见第 15 节 |
 | `TAVILY_API_KEY` | 无 | Tavily API key。`plugins.yaml` 声明了 `web_search` 但这个 key 未设置时启动报错 |
 | `FIRECRAWL_API_KEY` | 无 | Firecrawl API key。`plugins.yaml` 声明了 `web_fetch` 但这个 key 未设置时启动报错 |
 
@@ -596,7 +596,7 @@ conic/                     # 项目根（main.py 与 pyproject.toml 同级，不
 
 ## 15. YAML 驱动的插件配置（已实现，详见独立 spec）
 
-`registry.py::build_plugin_set()` 不再是纯 Python 硬编码装配，而是从 `plugins.yaml`（路径由 `Config.plugins_config_path` 决定，默认 `{PROJECT_ROOT}/plugins.yaml`）声明式地构造 `PluginSet`。完整设计（schema、名字 → 构造逻辑的 builder 映射表机制、错误处理策略、跟 `.env`/`Config` 的分工、`PluginSet.instantiate_session` 闭包顺带完成的 `core/manager.py` 瘦身）和实现细节见：
+`registry.py::build_plugin_set()` 不再是纯 Python 硬编码装配，而是从 `plugins.yaml`（路径由 `Config.plugins_config_path` 决定，默认 `{PROJECT_ROOT}/config/plugins.yaml`）声明式地构造 `PluginSet`。完整设计（schema、名字 → 构造逻辑的 builder 映射表机制、错误处理策略、跟 `.env`/`Config` 的分工、`PluginSet.instantiate_session` 闭包顺带完成的 `core/manager.py` 瘦身）和实现细节见：
 - `docs/superpowers/specs/2026-09-22-yaml-plugin-config-design.md`（设计）
 - `docs/superpowers/plans/2026-09-22-yaml-plugin-config.md`（实现计划，9 个 task）
 

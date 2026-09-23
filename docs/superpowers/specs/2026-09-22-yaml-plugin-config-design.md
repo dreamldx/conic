@@ -101,9 +101,9 @@ def load_plugins_config(path: str | Path) -> PluginsConfig: ...
 ```python
 plugins_config_path: str = Field(default="", alias="PLUGINS_CONFIG_PATH")
 ```
-`_resolve_paths` model_validator 里跟 `workspace_root`/`duckdb_path` 同样处理：未设置时默认为 `{project_root}/plugins.yaml`。
+`_resolve_paths` model_validator 里跟 `workspace_root`/`duckdb_path` 同样处理：未设置时默认为 `{project_root}/config/plugins.yaml`。
 
-仓库根目录新增 `plugins.yaml`，内容是**当前硬编码 wiring 的忠实转录**（第 3 节的示例就是这份文件的内容，各插件参数取当前 `Config` 里对应字段的默认值）——保证迁移后开箱行为不变，不需要每个部署方额外准备 YAML 才能启动。
+仓库 `config/` 目录下新增 `plugins.yaml`，内容是**当前硬编码 wiring 的忠实转录**（第 3 节的示例就是这份文件的内容，各插件参数取当前 `Config` 里对应字段的默认值）——保证迁移后开箱行为不变，不需要每个部署方额外准备 YAML 才能启动。（这份文件最初落在仓库根目录，后来统一迁到 `config/plugins.yaml`，与 `PLUGINS_CONFIG_PATH` 的默认值一起改动。）
 
 ## 7. 错误处理策略（相对现状的行为变化）
 

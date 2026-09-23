@@ -32,7 +32,7 @@ Optional (defaults shown):
 | `OPENROUTER_PROVIDER_BLACKLIST` | unset | Comma-separated OpenRouter provider slugs (e.g. `novita,together`) to exclude via `provider.ignore`. OpenRouter still routes freely among every other provider. |
 | `WORKSPACE_ROOT` | `./workspace` | Root directory under which each session's workspace is created. |
 | `DUCKDB_PATH` | `./data/conic.duckdb` | Path to the DuckDB persistence file. |
-| `PLUGINS_CONFIG_PATH` | `{PROJECT_ROOT}/plugins.yaml` | Path to the declarative plugin config file -- see "Plugin configuration" below. |
+| `PLUGINS_CONFIG_PATH` | `{PROJECT_ROOT}/config/plugins.yaml` | Path to the declarative plugin config file -- see "Plugin configuration" below. |
 | `TAVILY_API_KEY` | unset | Tavily API key. Required only if `web_search` is declared in `plugins.yaml`. |
 | `FIRECRAWL_API_KEY` | unset | Firecrawl API key. Required only if `web_fetch` is declared in `plugins.yaml`. |
 
@@ -73,13 +73,14 @@ keeps retrying in the background.
 ## Plugin configuration
 
 Which tools, context-pipeline stages, and policy checks are wired into every
-session is declared in `plugins.yaml` (path configurable via
-`PLUGINS_CONFIG_PATH`, defaults to `{PROJECT_ROOT}/plugins.yaml`). Secrets
-(API keys, tokens) stay in `.env`; `plugins.yaml` only declares plugin
-names, order, and non-sensitive parameters (timeouts, token budgets, step
-limits). An unknown plugin name, or a tool declared without its required
-API key configured in `.env` (e.g. `web_search` without `TAVILY_API_KEY`),
-fails at startup with a clear error rather than silently skipping the
-plugin. See the repo's `plugins.yaml` for the default configuration and
+session is declared in `config/plugins.yaml` (path configurable via
+`PLUGINS_CONFIG_PATH`, defaults to `{PROJECT_ROOT}/config/plugins.yaml`).
+Secrets (API keys, tokens) stay in `.env`; `plugins.yaml` only declares
+plugin names, order, and non-sensitive parameters (timeouts, token
+budgets, step limits). An unknown plugin name, or a tool declared without
+its required API key configured in `.env` (e.g. `web_search` without
+`TAVILY_API_KEY`), fails at startup with a clear error rather than
+silently skipping the plugin. See the repo's `config/plugins.yaml` for
+the default configuration and
 `docs/superpowers/specs/2026-09-22-yaml-plugin-config-design.md` for the
 full schema and design.
