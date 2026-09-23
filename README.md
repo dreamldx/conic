@@ -75,6 +75,18 @@ keeps retrying in the background.
 Which tools, context-pipeline stages, and policy checks are wired into every
 session is declared in `config/plugins.yaml` (path configurable via
 `PLUGINS_CONFIG_PATH`, defaults to `{PROJECT_ROOT}/config/plugins.yaml`).
+The file is a dict of named plugin sets -- each top-level key (e.g. `main`,
+`agent`) maps to its own independent `tools`/`context`/`policy`/
+`summarizer`/`backend` configuration. `build_plugin_set()` builds every
+named set in the file and `PluginManager` holds the whole dict;
+`PluginManager.start_session()` takes an optional `plugin_set_name`
+(defaults to `"main"`) to pick which one a given session runs. The
+Discord gateway always starts sessions with the default, so it always
+runs `main` (startup fails with a clear error if the file has no `main`
+entry). Nothing currently starts a session with a different name --
+the `agent` set exists so a caller can opt into it later (e.g. a
+sub-agent with a different tool/model configuration).
+
 Secrets (API keys, tokens) stay in `.env`; `plugins.yaml` only declares
 plugin names, order, and non-sensitive parameters (timeouts, token
 budgets, step limits). An unknown plugin name, or a tool declared without

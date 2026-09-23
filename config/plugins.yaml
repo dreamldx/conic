@@ -1,25 +1,53 @@
-tools:
-  - bash: {timeout: 60}
-  - read_file
-  - write_file
-  - edit_file
-  - list_skills
-  - load_skill
-  - web_search: {timeout: 30}
-  - web_fetch: {timeout: 60, max_chars: 15000, summary_model: ""}
+main:
+  tools:
+    - bash: {timeout: 60}
+    - read_file
+    - write_file
+    - edit_file
+    - list_skills
+    - load_skill
+    - web_search: {timeout: 30}
+    - web_fetch: {timeout: 60, max_chars: 15000, summary_model: ""}
 
-context:
-  - turn_variables
-  - system_prompt:
-      sections: [identity, tooling, skills, workspace, runtime, execution]
-  - truncator: {keep_last_n: 40}
-  - token_budget: {budget_tokens: 50000}
-  - extra_prompt:
-      sections: [dynamic_state]
+  context:
+    - turn_variables
+    - system_prompt:
+        sections: [identity, tooling, skills, workspace, runtime, execution]
+    - truncator: {keep_last_n: 40}
+    - token_budget: {budget_tokens: 50000}
+    - extra_prompt:
+        sections: [dynamic_state]
 
-policy:
-  - permission
-  - step_limit: {max_steps: 25}
+  policy:
+    - permission
+    - step_limit: {max_steps: 25}
 
-summarizer: default
-backend: openrouter
+  summarizer: default
+  backend: openrouter
+
+agent:
+  tools:
+    - bash: {timeout: 60}
+    - read_file
+    - write_file
+    - edit_file
+    - list_skills
+    - load_skill
+    - web_search: {timeout: 30}
+    - web_fetch: {timeout: 60, max_chars: 15000, summary_model: ""}
+
+  context:
+    - turn_variables
+    - system_prompt:
+        sections: [identity, tooling, skills, workspace, runtime, execution]
+    - truncator: {keep_last_n: 40}
+    - token_budget: {budget_tokens: 50000}
+    - extra_prompt:
+        sections: [dynamic_state]
+
+  policy:
+    - permission
+    - step_limit: {max_steps: 25}
+
+  summarizer: default
+  backend: openrouter

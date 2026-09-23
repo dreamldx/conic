@@ -8,6 +8,7 @@ from conic.config import load_config
 from conic.core.manager import PluginManager
 from conic.discord.gateway import DiscordGateway
 from conic.openrouter.catalog import run_periodic_sync, sync_catalog_once
+from conic.plugins.plugin_config import PluginConfigError
 from conic.plugins.registry import build_plugin_set
 from conic.services.storage import StorageService
 
@@ -28,9 +29,10 @@ async def build_app(
     # the wrong value gets baked into the session's global variables.
     await sync_once(storage, config.openrouter_api_key)
     model_context_length = storage.get_model_context_length(config.openrouter_model)
-    plugin_manager = PluginManager(
-        storage, build_plugin_set(config, global_variables={"model_context_length": model_context_length})
-    )
+    plugin_sets = build_plugin_set(config, global_variables={"model_context_length": model_context_length})
+    if "main" not in plugin_sets:
+        raise PluginConfigError(f"plugins config at {config.plugins_config_path} must define a 'main' plugin set")
+    plugin_manager = PluginManager(storage, plugin_sets)
     gateway = DiscordGateway(config, plugin_manager, storage)
     return storage, gateway
 

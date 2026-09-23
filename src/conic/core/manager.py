@@ -23,9 +23,9 @@ class PluginSet:
 
 
 class PluginManager:
-    def __init__(self, storage, plugin_set: PluginSet):
+    def __init__(self, storage, plugin_sets: dict[str, PluginSet]):
         self._storage = storage
-        self._plugin_set = plugin_set
+        self._plugin_sets = plugin_sets
 
     async def start_session(
         self,
@@ -33,14 +33,18 @@ class PluginManager:
         native_id: str,
         channel_plugin_factory: Callable[[], object],
         reason: str = "new",
+        plugin_set_name: str = "main",
     ) -> SessionScope:
-        logger.debug("starting session channel={} native_id={}", channel, native_id)
+        logger.debug(
+            "starting session channel={} native_id={} plugin_set={}", channel, native_id, plugin_set_name
+        )
         row = self._storage.get_or_create(channel=channel, native_id=native_id)
         bus = MessageBus()
         scope = SessionScope(bus=bus, row=row)
         handle = self._storage.handle_for(row)
 
-        loop_plugin = self._plugin_set.instantiate_session(
+        plugin_set = self._plugin_sets[plugin_set_name]
+        loop_plugin = plugin_set.instantiate_session(
             bus, row.workspace_dir, row.session_key, handle, row.variables
         )
 

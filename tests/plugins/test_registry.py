@@ -44,24 +44,25 @@ def make_build_context(config):
 
 
 DEFAULT_PLUGINS_YAML = """
-tools:
-  - bash: {timeout: 42}
-  - read_file
-  - write_file
-  - edit_file
-  - list_skills
-  - load_skill
-context:
-  - turn_variables
-  - system_prompt: {sections: [identity, tooling, skills, workspace, runtime, execution]}
-  - truncator: {keep_last_n: 9}
-  - token_budget: {budget_tokens: 123}
-  - extra_prompt: {sections: [dynamic_state]}
-policy:
-  - permission
-  - step_limit: {max_steps: 7}
-summarizer: default
-backend: openrouter
+main:
+  tools:
+    - bash: {timeout: 42}
+    - read_file
+    - write_file
+    - edit_file
+    - list_skills
+    - load_skill
+  context:
+    - turn_variables
+    - system_prompt: {sections: [identity, tooling, skills, workspace, runtime, execution]}
+    - truncator: {keep_last_n: 9}
+    - token_budget: {budget_tokens: 123}
+    - extra_prompt: {sections: [dynamic_state]}
+  policy:
+    - permission
+    - step_limit: {max_steps: 7}
+  summarizer: default
+  backend: openrouter
 """
 
 
@@ -81,7 +82,7 @@ def make_config(tmp_path, yaml_text=DEFAULT_PLUGINS_YAML, **extra):
 
 
 def test_build_plugin_set_backend_factory_produces_fresh_instances_sharing_one_client(tmp_path):
-    plugin_set = build_plugin_set(make_config(tmp_path))
+    plugin_set = build_plugin_set(make_config(tmp_path))["main"]
     backend1 = plugin_set.backend("discord:1")
     backend2 = plugin_set.backend("discord:2")
     assert backend1 is not backend2
@@ -89,7 +90,7 @@ def test_build_plugin_set_backend_factory_produces_fresh_instances_sharing_one_c
 
 
 def test_build_plugin_set_context_and_policy_factories_produce_fresh_instances(tmp_path):
-    plugin_set = build_plugin_set(make_config(tmp_path))
+    plugin_set = build_plugin_set(make_config(tmp_path))["main"]
     for factory in plugin_set.context_plugins:
         assert factory("/tmp/ws", []) is not factory("/tmp/ws", [])
     for factory in plugin_set.policy_plugins:
@@ -100,13 +101,13 @@ def test_build_plugin_set_context_and_policy_factories_produce_fresh_instances(t
 def test_loop_factory_produces_a_react_loop_plugin(tmp_path):
     from conic.plugins.loops.react_loop import ReactLoopPlugin
 
-    plugin_set = build_plugin_set(make_config(tmp_path))
+    plugin_set = build_plugin_set(make_config(tmp_path))["main"]
     loop = plugin_set.loop_factory(object(), [], {}, "/tmp/ws", {})
     assert isinstance(loop, ReactLoopPlugin)
 
 
 def test_loop_factory_wires_session_and_global_variables(tmp_path):
-    plugin_set = build_plugin_set(make_config(tmp_path))
+    plugin_set = build_plugin_set(make_config(tmp_path))["main"]
     loop = plugin_set.loop_factory(object(), [], {}, "/tmp/ws", {})
     assert loop._session_variables == {"workspace_dir": "/tmp/ws", "tokens_used": 0, "turn_count": 0}
     assert loop._global_variables["model"] == "test-model"
@@ -115,22 +116,30 @@ def test_loop_factory_wires_session_and_global_variables(tmp_path):
 
 
 def test_loop_factory_seeds_session_variables_from_persisted_values(tmp_path):
-    plugin_set = build_plugin_set(make_config(tmp_path))
+    plugin_set = build_plugin_set(make_config(tmp_path))["main"]
     loop = plugin_set.loop_factory(object(), [], {}, "/tmp/ws", {"tokens_used": 999})
     assert loop._session_variables == {"workspace_dir": "/tmp/ws", "tokens_used": 999, "turn_count": 0}
 
 
 def test_build_plugin_set_merges_caller_supplied_global_variables(tmp_path):
-    plugin_set = build_plugin_set(make_config(tmp_path), global_variables={"deployment": "staging"})
+    plugin_set = build_plugin_set(make_config(tmp_path), global_variables={"deployment": "staging"})["main"]
     loop = plugin_set.loop_factory(object(), [], {}, "/tmp/ws", {})
     assert loop._global_variables["deployment"] == "staging"
     assert loop._global_variables["model"] == "test-model"
 
 
 def test_build_plugin_set_wires_the_detected_shell_into_global_variables(tmp_path):
-    plugin_set = build_plugin_set(make_config(tmp_path))
+    plugin_set = build_plugin_set(make_config(tmp_path))["main"]
     loop = plugin_set.loop_factory(object(), [], {}, "/tmp/ws", {})
     assert loop._global_variables["shell"] == _detect_shell()
+
+
+def test_build_plugin_set_builds_every_named_group_in_the_yaml(tmp_path):
+    yaml_text = "main:\n  tools: [read_file]\nagent:\n  tools: [bash]\n"
+    plugin_sets = build_plugin_set(make_config(tmp_path, yaml_text=yaml_text))
+    assert set(plugin_sets.keys()) == {"main", "agent"}
+    assert plugin_sets["main"].tool_classes[0] is ReadFileToolPlugin
+    assert issubclass(plugin_sets["agent"].tool_classes[0], BashToolPlugin)
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Path parses ComSpec backslashes only on Windows")
@@ -357,7 +366,7 @@ def test_build_backend_unknown_name_raises(tmp_path):
 
 def test_build_plugin_set_end_to_end_matches_yaml(tmp_path):
     config = make_config(tmp_path)
-    plugin_set = build_plugin_set(config)
+    plugin_set = build_plugin_set(config)["main"]
 
     assert len(plugin_set.tool_classes) == 6
     bash_tool = plugin_set.tool_classes[0](workspace_dir="/tmp/ws")
@@ -380,12 +389,12 @@ def test_build_plugin_set_end_to_end_matches_yaml(tmp_path):
 
 def test_build_plugin_set_unknown_tool_in_yaml_raises(tmp_path):
     with pytest.raises(PluginConfigError, match="unknown tool"):
-        build_plugin_set(make_config(tmp_path, yaml_text="tools: [not_a_real_tool]\n"))
+        build_plugin_set(make_config(tmp_path, yaml_text="main:\n  tools: [not_a_real_tool]\n"))
 
 
 def test_build_plugin_set_web_search_without_key_raises(tmp_path):
     with pytest.raises(PluginConfigError, match="TAVILY_API_KEY"):
-        build_plugin_set(make_config(tmp_path, yaml_text="tools: [web_search]\n"))
+        build_plugin_set(make_config(tmp_path, yaml_text="main:\n  tools: [web_search]\n"))
 
 
 def test_build_plugin_set_instantiate_session_registers_every_plugin_and_returns_loop(tmp_path):
@@ -397,7 +406,7 @@ def test_build_plugin_set_instantiate_session_registers_every_plugin_and_returns
             return []
 
     config = make_config(tmp_path)
-    plugin_set = build_plugin_set(config)
+    plugin_set = build_plugin_set(config)["main"]
     bus = MessageBus()
 
     loop_plugin = plugin_set.instantiate_session(bus, "/tmp/ws", "discord:1", FakeHandle(), {})

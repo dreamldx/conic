@@ -2,7 +2,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import BaseModel, ValidationError, field_validator
+from pydantic import BaseModel, TypeAdapter, ValidationError, field_validator
 
 
 class PluginConfigError(Exception):
@@ -25,7 +25,7 @@ def _normalize_entry(entry: Any) -> PluginSpec:
     raise PluginConfigError(f"invalid plugin entry: {entry!r}")
 
 
-class PluginsConfig(BaseModel):
+class PluginSetConfig(BaseModel):
     tools: list[PluginSpec] = []
     context: list[PluginSpec] = []
     policy: list[PluginSpec] = []
@@ -40,6 +40,11 @@ class PluginsConfig(BaseModel):
         return [_normalize_entry(entry) for entry in value]
 
 
+PluginsConfig = dict[str, PluginSetConfig]
+
+_PLUGINS_CONFIG_ADAPTER: TypeAdapter[PluginsConfig] = TypeAdapter(PluginsConfig)
+
+
 def load_plugins_config(path: str | Path) -> PluginsConfig:
     try:
         text = Path(path).read_text(encoding="utf-8")
@@ -52,6 +57,6 @@ def load_plugins_config(path: str | Path) -> PluginsConfig:
         raise PluginConfigError(f"invalid YAML in {path}: {exc}") from exc
 
     try:
-        return PluginsConfig.model_validate(raw)
+        return _PLUGINS_CONFIG_ADAPTER.validate_python(raw)
     except (ValidationError, PluginConfigError) as exc:
         raise PluginConfigError(f"invalid plugins config in {path}: {exc}") from exc

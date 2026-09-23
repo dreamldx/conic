@@ -9,7 +9,7 @@ async def _noop_sync_once(storage, api_key, session_factory=None):
 
 def test_build_app_wires_storage_and_gateway_without_connecting(tmp_path):
     (tmp_path / "config").mkdir()
-    (tmp_path / "config" / "plugins.yaml").write_text("{}\n", encoding="utf-8")
+    (tmp_path / "config" / "plugins.yaml").write_text("main: {}\n", encoding="utf-8")
     env = {
         "PROJECT_ROOT": str(tmp_path),
         "DISCORD_BOT_TOKEN": "d-token",

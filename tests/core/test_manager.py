@@ -40,6 +40,11 @@ class FakeToolPlugin:
         return ToolCallResult(output=f"ran {call.command} in {self.workspace_dir}")
 
 
+class OtherFakeToolPlugin(FakeToolPlugin):
+    async def execute(self, call: FakeCall) -> ToolCallResult:
+        return ToolCallResult(output=f"[other set] ran {call.command} in {self.workspace_dir}")
+
+
 class FakeBackend:
     def __init__(self, shared_client):
         self.shared_client = shared_client
@@ -89,19 +94,11 @@ class FakeChannelPlugin:
         self.received.append(msg.text)
 
 
-def make_manager(tmp_path):
+def make_plugin_set(tool_cls, shared_client):
     from conic.core.bus import infer_payload_type
     from conic.plugins.loops.react_loop import ReactLoopPlugin
 
-    storage = StorageService(
-        db_path=str(tmp_path / "conic.duckdb"),
-        workspace_root=str(tmp_path / "workspace"),
-        default_model="test-model",
-    )
-    storage.startup()
-    shared_client = object()
-
-    tool_classes = (FakeToolPlugin,)
+    tool_classes = (tool_cls,)
     backend = lambda session_key: FakeBackend(shared_client)
     context_plugins = (FakeContextPlugin,)
     policy_plugins = (FakePolicyPlugin,)
@@ -114,8 +111,8 @@ def make_manager(tmp_path):
         tool_schemas = [cls.schema for cls in tool_classes]
         tool_payload_map = {cls.llm_name: infer_payload_type(cls.execute) for cls in tool_classes}
 
-        for tool_cls in tool_classes:
-            tool_cls(workspace_dir=workspace_dir).register(bus)
+        for cls in tool_classes:
+            cls(workspace_dir=workspace_dir).register(bus)
 
         backend(session_key).register(bus)
         for ctx_factory in context_plugins:
@@ -128,7 +125,7 @@ def make_manager(tmp_path):
         loop_plugin.register(bus)
         return loop_plugin
 
-    plugin_set = PluginSet(
+    return PluginSet(
         tool_classes=tool_classes,
         backend=backend,
         context_plugins=context_plugins,
@@ -137,7 +134,22 @@ def make_manager(tmp_path):
         loop_factory=loop_factory,
         instantiate_session=instantiate_session,
     )
-    return storage, PluginManager(storage, plugin_set)
+
+
+def make_manager(tmp_path):
+    storage = StorageService(
+        db_path=str(tmp_path / "conic.duckdb"),
+        workspace_root=str(tmp_path / "workspace"),
+        default_model="test-model",
+    )
+    storage.startup()
+    shared_client = object()
+
+    plugin_sets = {
+        "main": make_plugin_set(FakeToolPlugin, shared_client),
+        "other": make_plugin_set(OtherFakeToolPlugin, shared_client),
+    }
+    return storage, PluginManager(storage, plugin_sets)
 
 
 async def wait_until(predicate, timeout=1.0, interval=0.01):
@@ -172,6 +184,35 @@ async def test_start_session_assembles_a_working_bus(tmp_path):
 
     assert channel_plugin.received == ["ack"]
     assert Path(scope.row.workspace_dir) == tmp_path / "workspace" / "discord" / "1"
+
+    await stop_and_join(scope)
+    storage.shutdown()
+
+
+async def test_start_session_defaults_to_the_main_plugin_set(tmp_path):
+    storage, manager = make_manager(tmp_path)
+
+    scope = await manager.start_session(
+        channel="discord", native_id="1", channel_plugin_factory=lambda: FakeChannelPlugin()
+    )
+
+    result = await scope.bus.request("tool_call", FakeCall(command="ls"))
+    assert result.output.startswith("ran ls in")
+
+    await stop_and_join(scope)
+    storage.shutdown()
+
+
+async def test_start_session_uses_the_named_plugin_set(tmp_path):
+    storage, manager = make_manager(tmp_path)
+
+    scope = await manager.start_session(
+        channel="discord", native_id="1", channel_plugin_factory=lambda: FakeChannelPlugin(),
+        plugin_set_name="other",
+    )
+
+    result = await scope.bus.request("tool_call", FakeCall(command="ls"))
+    assert result.output.startswith("[other set] ran ls in")
 
     await stop_and_join(scope)
     storage.shutdown()

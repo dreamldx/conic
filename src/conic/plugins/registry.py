@@ -26,6 +26,7 @@ from conic.plugins.loops.react_loop import ReactLoopPlugin
 from conic.plugins.models.openrouter import OpenRouterModelPlugin
 from conic.plugins.plugin_config import (
     PluginConfigError,
+    PluginSetConfig,
     PluginSpec,
     load_plugins_config,
 )
@@ -64,7 +65,7 @@ def _detect_shell() -> str:
     return "/bin/sh"
 
 
-def build_plugin_set(config: Config, global_variables: dict | None = None) -> PluginSet:
+def build_plugin_set(config: Config, global_variables: dict | None = None) -> dict[str, PluginSet]:
     prompts = _load_prompts(Path(config.project_root) / "prompts")
     shared_client = AsyncOpenAI(base_url="https://openrouter.ai/api/v1", api_key=config.openrouter_api_key)
     ctx = BuildContext(shared_client=shared_client, prompts=prompts)
@@ -80,11 +81,24 @@ def build_plugin_set(config: Config, global_variables: dict | None = None) -> Pl
 
     plugins_cfg = load_plugins_config(config.plugins_config_path)
 
-    tool_classes = _build_tool_classes(plugins_cfg.tools, config, ctx)
-    context_plugins = _build_context_plugins(plugins_cfg.context, config, ctx)
-    policy_plugins = _build_policy_plugins(plugins_cfg.policy, config)
-    summarizer = _build_summarizer(plugins_cfg.summarizer)
-    backend = _build_backend(plugins_cfg.backend, config, ctx, provider_blacklist)
+    return {
+        name: _build_one_plugin_set(set_cfg, config, ctx, resolved_global_variables, provider_blacklist)
+        for name, set_cfg in plugins_cfg.items()
+    }
+
+
+def _build_one_plugin_set(
+    set_cfg: PluginSetConfig,
+    config: Config,
+    ctx: "BuildContext",
+    resolved_global_variables: dict,
+    provider_blacklist: list[str],
+) -> PluginSet:
+    tool_classes = _build_tool_classes(set_cfg.tools, config, ctx)
+    context_plugins = _build_context_plugins(set_cfg.context, config, ctx)
+    policy_plugins = _build_policy_plugins(set_cfg.policy, config)
+    summarizer = _build_summarizer(set_cfg.summarizer)
+    backend = _build_backend(set_cfg.backend, config, ctx, provider_blacklist)
 
     def loop_factory(handle, schemas, payload_map, ws, persisted_session_variables):
         return ReactLoopPlugin(

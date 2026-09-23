@@ -22,32 +22,35 @@
 
 ## 3. YAML Schema
 
+> 这一节展示的是**单组**的字段（`tools`/`context`/`policy`/`summarizer`/`backend`）。文件顶层实际上是这样一组的 dict，键是组名（如 `main`、`agent`）——见第 12 节。下面的字段说明对每一组都成立。
+
 ```yaml
-tools:
-  - bash: {timeout: 60}
-  - read_file
-  - write_file
-  - edit_file
-  - list_skills
-  - load_skill
-  - web_search: {timeout: 30}
-  - web_fetch: {timeout: 60, max_chars: 15000, summary_model: ""}
+main:
+  tools:
+    - bash: {timeout: 60}
+    - read_file
+    - write_file
+    - edit_file
+    - list_skills
+    - load_skill
+    - web_search: {timeout: 30}
+    - web_fetch: {timeout: 60, max_chars: 15000, summary_model: ""}
 
-context:
-  - turn_variables
-  - system_prompt:
-      sections: [identity, tooling, skills, workspace, runtime, execution]
-  - truncator: {keep_last_n: 40}
-  - token_budget: {budget_tokens: 50000}
-  - extra_prompt:
-      sections: [dynamic_state]
+  context:
+    - turn_variables
+    - system_prompt:
+        sections: [identity, tooling, skills, workspace, runtime, execution]
+    - truncator: {keep_last_n: 40}
+    - token_budget: {budget_tokens: 50000}
+    - extra_prompt:
+        sections: [dynamic_state]
 
-policy:
-  - permission
-  - step_limit: {max_steps: 25}
+  policy:
+    - permission
+    - step_limit: {max_steps: 25}
 
-summarizer: default
-backend: openrouter
+  summarizer: default
+  backend: openrouter
 ```
 
 **列表项的两种写法**：裸字符串（`read_file`，无参数）或单键映射（`bash: {timeout: 60}`，键是插件名、值是参数字典）。`context`/`policy` 同一套写法。`summarizer`/`backend` 是标量字符串（目前各自只有一个可选值：`default`/`openrouter`，为将来可能的多选项留了口子，不是当前就要支持多选）。
@@ -70,7 +73,7 @@ class PluginSpec(BaseModel):
     name: str
     params: dict[str, Any] = {}
 
-class PluginsConfig(BaseModel):
+class PluginSetConfig(BaseModel):
     tools: list[PluginSpec] = []
     context: list[PluginSpec] = []
     policy: list[PluginSpec] = []
@@ -79,6 +82,9 @@ class PluginsConfig(BaseModel):
 
 class PluginConfigError(Exception):
     pass
+
+# 文件顶层是组名 -> 单组 schema 的 dict，见第 12 节
+PluginsConfig = dict[str, PluginSetConfig]
 
 def load_plugins_config(path: str | Path) -> PluginsConfig: ...
 ```
@@ -169,3 +175,18 @@ async def start_session(self, channel, native_id, channel_plugin_factory, reason
 ## 11. 未决问题（实现时需要拍板，非阻塞）
 
 - `SUMMARIZER_BUILDERS`/`BACKEND_BUILDERS` 目前各自只有一个选项，映射表机制在只有一个选项时略显多余，但为保持四类插件（tools/context/policy/summarizer+backend）走同一套"名字查表"机制的一致性，仍然这么做，而不是给这两个开特例。
+
+## 12. 多命名插件集合（后续扩展，已实现）
+
+第 1-11 节描述的是这份设计最初实现时的样子：文件顶层直接就是一组 `tools`/`context`/`policy`/`summarizer`/`backend`。后续扩展把顶层改成了**组名 -> 单组 schema 的 dict**，为将来接入多个独立配置的插件集合（比如主 Discord 会话之外的一个子 agent，用不同的工具/模型配置）留出空间。
+
+**变化点**：
+
+- `plugin_config.py`：原来的顶层 model `PluginsConfig` 改名为 `PluginSetConfig`（单组 schema，字段不变）；`PluginsConfig` 现在是类型别名 `dict[str, PluginSetConfig]`。`load_plugins_config()` 用 `TypeAdapter(PluginsConfig)` 校验整个文件，返回 `dict[str, PluginSetConfig]`。空文件（或内容为 `{}`）解析成空 dict，不是错误。
+- `registry.py::build_plugin_set(config, global_variables=None) -> dict[str, PluginSet]`：原来单组的构造逻辑抽成内部函数 `_build_one_plugin_set(set_cfg, config, ctx, resolved_global_variables, provider_blacklist) -> PluginSet`；`build_plugin_set()` 对 YAML 里每个组名都调一次这个函数，返回 `{组名: PluginSet}`。`shared_client`（`AsyncOpenAI`）、`resolved_global_variables`、`provider_blacklist` 在所有组之间共享一份，不是每组各建一份——这些是进程级/会话级共享的资源和全局变量，不是某一组插件独有的配置。
+- `config/plugins.yaml` 顶层现在是两个组：`main`（Discord 会话实际使用的配置）和 `agent`（内容目前跟 `main` 完全一样，占位）。
+- `entry.py::build_app()`：`build_plugin_set()` 返回的整个 `dict[str, PluginSet]` 原样传给 `PluginManager`（不再在 `entry.py` 里挑出 `"main"`）；文件里没有 `main` 组时仍然 `PluginConfigError`，启动失败并给出清晰报错——这个检查留在 `build_app()` 里，因为 `PluginManager.start_session()` 不传 `plugin_set_name` 时默认取 `"main"`（见下），缺了它会导致*每次*会话启动才报错，而不是进程启动时就报错。
+- `core/manager.py::PluginManager`：构造函数从 `__init__(self, storage, plugin_set: PluginSet)` 改成 `__init__(self, storage, plugin_sets: dict[str, PluginSet])`，持有整个 dict。`start_session()` 新增关键字参数 `plugin_set_name: str = "main"`，内部用它从 `self._plugin_sets[plugin_set_name]` 取出这次会话要用的 `PluginSet` 再 `instantiate_session(...)`。调用方目前只有 `DiscordGateway`，从不传这个参数（用默认值 `"main"`），行为跟改动前完全一致；`plugin_set_name` 不存在时是普通 `KeyError`（调用方传错名字是编程错误，不是用户可配置的 YAML 校验场景，不需要专门的错误类型包一层）。
+- **`agent` 组目前没有任何调用方主动传 `plugin_set_name="agent"`**——`DiscordGateway` 的两处 `start_session()` 调用都还是默认值。`PluginManager` 已经具备"按名字选组"的能力，但"什么时候、由谁传 `plugin_set_name="agent"`"（比如一个可被 `main` 会话里的工具调用的子 agent）是后续独立的设计决定，不在这次改动范围内。
+
+**未受影响**：`PluginSet` 本身的六个字段、`PluginSet.instantiate_session` 闭包、所有 builder 映射表（`TOOL_BUILDERS` 等）——这些都还是"构造一组 `PluginSet`"这一层的逻辑，只是现在被 `_build_one_plugin_set()` 按组名重复调用，而不是在 `build_plugin_set()` 里跑一次。
