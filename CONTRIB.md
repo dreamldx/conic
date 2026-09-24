@@ -79,6 +79,11 @@ Use `loguru` — `logger.info()`, `logger.debug()`, `logger.warning()`, `logger.
 - Run: `uv run pytest` or `.venv/Scripts/python.exe -m pytest`
 - Coverage: `uv run pytest --cov=src/conic --cov-report=term-missing`
 
+### Skills
+
+- Never install skills into the project directory (no `npx skills add` without `-g`); it creates `.agents/` and `.claude/skills` in the repo
+- Install skills globally: `npx skills add <source> -g -y`, which puts them in `~/.agents/skills`
+
 ## Project Structure
 
 ```

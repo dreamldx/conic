@@ -45,6 +45,33 @@ def test_session_skill_overrides_project_skill_with_same_name(tmp_path):
     assert entries[0].description == "Session version"
 
 
+def test_discovers_npx_skills_add_directories(tmp_path):
+    project_root = tmp_path / "proj"
+    workspace_dir = tmp_path / "ws"
+    write_skill(project_root / ".agents" / "skills", "pdf", "Handle PDFs")
+    write_skill(workspace_dir / ".agents" / "skills", "xlsx", "Handle sheets")
+    write_skill(project_root / ".agents" / "skills", "deploy", "Agents version")
+    write_skill(project_root / "skills", "deploy", "Skills version")
+
+    by_name = {e.name: e for e in discover_skills(str(workspace_dir), str(project_root))}
+
+    assert by_name["pdf"].scope == "project"
+    assert by_name["xlsx"].scope == "session"
+    assert by_name["deploy"].description == "Skills version"
+
+
+def test_discovers_global_skills_with_lowest_priority(tmp_path, fake_home):
+    project_root = tmp_path / "proj"
+    write_skill(fake_home / ".agents" / "skills", "notion-cli", "Global notion")
+    write_skill(fake_home / ".agents" / "skills", "deploy", "Global deploy")
+    write_skill(project_root / "skills", "deploy", "Project deploy")
+
+    by_name = {e.name: e for e in discover_skills(str(tmp_path / "ws"), str(project_root))}
+
+    assert by_name["notion-cli"].scope == "global"
+    assert by_name["deploy"].scope == "project"
+
+
 def test_missing_directories_return_empty_list(tmp_path):
     entries = discover_skills(str(tmp_path / "ws"), str(tmp_path / "proj"))
     assert entries == []

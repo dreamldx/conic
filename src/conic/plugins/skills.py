@@ -68,9 +68,15 @@ def _scan_root(root: Path, scope: str) -> dict[str, SkillEntry]:
 
 
 def discover_skills(workspace_dir: str, project_root: str) -> list[SkillEntry]:
-    project_entries = _scan_root(Path(project_root) / "skills", "project")
-    session_entries = _scan_root(Path(workspace_dir) / "skills", "session")
-    merged = {**project_entries, **session_entries}
+    project_base = Path(project_root)
+    session_base = Path(workspace_dir)
+    merged = {
+        **_scan_root(Path.home() / ".agents" / "skills", "global"),
+        **_scan_root(project_base / ".agents" / "skills", "project"),
+        **_scan_root(project_base / "skills", "project"),
+        **_scan_root(session_base / ".agents" / "skills", "session"),
+        **_scan_root(session_base / "skills", "session"),
+    }
     return sorted(merged.values(), key=lambda e: e.name)
 
 
