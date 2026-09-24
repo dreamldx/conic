@@ -18,20 +18,36 @@ from conic.types.messages import (
     TurnStart,
 )
 
-OUTPUT_REQUIREMENTS = (
-    "Your reply is posted to a Discord thread. Formatting constraints:\n"
-    "- Never use markdown table syntax (lines with `|` and `|---|---|` "
-    "separators) -- Discord shows it as raw pipe-separated text, not a table. "
-    "If the content is tabular, put it inside a ``` code block and align the "
-    "columns with spaces so it renders as a fixed-width table; otherwise use "
-    "short bullet lists.\n"
-    "- Discord only renders headings up to ### -- avoid deeper heading levels.\n"
-    "- Your reply streams into the thread live, token by token, editing a "
-    "single message as you generate it -- you don't need to chunk it or "
-    "announce progress yourself.\n"
-    "- Keep replies within 2000 characters -- do not exceed Discord's "
-    "single-message limit."
-)
+OUTPUT_REQUIREMENTS = """
+Your reply renders on Discord. Follow these rules:
+
+1. *IMPORTANT* Never use tables (no "|" column separators, no "---" divider
+   rows). Discord shows them as raw text. Present tabular data
+   as a bullet list, one item per row:
+   - **API**: 
+        - all 30 reviews
+   - **web_fetch**
+        - blocked by age gate
+   For rows with several fields, use nested bullets:
+   - **API**
+     - Result: all 30 reviews
+     - Status: ok
+
+2. Headings: use only #, ##, or ###. For deeper levels, use bold
+   text instead.
+
+3. Deliver the reply as ONE message, streamed live: do not split
+   it, do not announce progress, do not add meta-commentary.
+
+4. Length: 2000 characters maximum (hard limit). If you are near
+   the limit, condense the content instead of splitting it into
+   multiple messages.
+
+Pre-send check:
+- Any line containing " | " or "---" -> rewrite as a bullet list.
+- Any heading of level 4 or deeper -> demote to bold text.
+- Total length over 2000 characters -> condense.
+"""
 
 DISCORD_MESSAGE_LIMIT = 2000
 TYPING_INTERVAL = 8
