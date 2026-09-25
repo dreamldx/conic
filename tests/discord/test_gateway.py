@@ -3,7 +3,12 @@ from datetime import UTC
 from types import SimpleNamespace
 from loguru import logger
 
-from conic.discord.gateway import DiscordGateway, strip_bot_mention, thread_title
+from conic.discord.gateway import (
+    EMPTY_MENTION_ERROR,
+    DiscordGateway,
+    strip_bot_mention,
+    thread_title,
+)
 from conic.plugins import meta
 from conic.services.storage import StorageService
 from conic.types.steering import SteeringItem
@@ -367,23 +372,31 @@ async def test_handle_mention_creates_thread_starts_session_and_enqueues_text():
     async def fake_create_thread():
         return SimpleNamespace(id=444)
 
-    await gateway.handle_mention(create_thread=fake_create_thread, text="what is 2+2?")
+    async def fake_reply(error: str):
+        raise AssertionError("no error reply expected")
+
+    await gateway.handle_mention(create_thread=fake_create_thread, text="what is 2+2?", reply=fake_reply)
 
     assert [(c, n, r) for c, n, r in manager.started] == [("discord", "444", "new")]
     assert await asyncio.wait_for(gateway._sessions[444].queue.get(), timeout=1.0) == "what is 2+2?"
 
 
-async def test_handle_mention_with_empty_text_creates_nothing():
+async def test_handle_mention_with_empty_text_replies_with_error_and_creates_nothing():
     manager = FakePluginManagerRecorder()
     gateway = DiscordGateway(make_config(), plugin_manager=manager, storage=None)
     created = []
+    replies = []
 
     async def fake_create_thread():
         created.append(1)
         return SimpleNamespace(id=444)
 
-    await gateway.handle_mention(create_thread=fake_create_thread, text="")
+    async def fake_reply(error: str):
+        replies.append(error)
 
+    await gateway.handle_mention(create_thread=fake_create_thread, text="", reply=fake_reply)
+
+    assert replies == [EMPTY_MENTION_ERROR]
     assert created == []
     assert manager.started == []
 

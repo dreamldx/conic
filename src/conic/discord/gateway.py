@@ -11,6 +11,7 @@ from conic.types.steering import SteeringStopCommand
 
 THREAD_TITLE_LIMIT = 90
 DEFAULT_THREAD_TITLE = "agent-session"
+EMPTY_MENTION_ERROR = "Please include a message after mentioning me so I know what to work on."
 
 
 def strip_bot_mention(content: str, bot_id: int) -> str:
@@ -85,7 +86,10 @@ class DiscordGateway:
             async def create_thread():
                 return await message.create_thread(name=thread_title(text))
 
-            await self.handle_mention(create_thread=create_thread, text=text)
+            async def reply(error: str) -> None:
+                await message.channel.send(error)
+
+            await self.handle_mention(create_thread=create_thread, text=text, reply=reply)
 
     async def start(self) -> None:
         await self._client.start(self._token)
@@ -156,8 +160,14 @@ class DiscordGateway:
         await self._start_thread_session(thread)
         await respond(f"Started session in thread {thread.id}")
 
-    async def handle_mention(self, create_thread: Callable[[], Awaitable[object]], text: str) -> None:
+    async def handle_mention(
+        self,
+        create_thread: Callable[[], Awaitable[object]],
+        text: str,
+        reply: Callable[[str], Awaitable[None]],
+    ) -> None:
         if not text:
+            await reply(EMPTY_MENTION_ERROR)
             return
         thread = await create_thread()
         scope = await self._start_thread_session(thread)
