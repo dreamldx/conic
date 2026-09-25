@@ -1,5 +1,6 @@
 import re
 from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime, timedelta
 
 import discord
 from discord import app_commands
@@ -11,6 +12,7 @@ from conic.types.steering import SteeringStopCommand
 
 THREAD_TITLE_LIMIT = 90
 DEFAULT_THREAD_TITLE = "agent-session"
+STALE_SESSION_MAX_IDLE = timedelta(days=30)
 EMPTY_MENTION_ERROR = "Please include a message after mentioning me so I know what to work on."
 
 
@@ -173,6 +175,43 @@ class DiscordGateway:
         thread = await create_thread()
         scope = await self._start_thread_session(thread)
         await scope.queue.put(text)
+
+    async def close_stale_sessions(
+        self, cutoff: datetime, fetch_thread: Callable[[str], Awaitable[object]]
+    ) -> int:
+        closed = 0
+        for row in self._storage.stale_active_sessions(channel="discord", cutoff=cutoff):
+            try:
+                await self._close_stale_session(row, fetch_thread)
+                closed += 1
+            except Exception:
+                logger.exception("failed to close stale session {}", row.session_key)
+        return closed
+
+    async def _close_stale_session(self, row, fetch_thread: Callable[[str], Awaitable[object]]) -> None:
+        thread_id = int(row.native_id)
+
+        async def archive() -> None:
+            thread = await fetch_thread(row.native_id)
+            await thread.edit(archived=True, locked=True)
+
+        logger.info("closing stale session {}", row.session_key)
+        try:
+            if thread_id in self._sessions:
+                await self.handle_stop_command(thread_id, archive)
+            else:
+                await archive()
+        except Exception:
+            logger.warning("failed to archive thread for stale session {}", row.session_key)
+        self._storage.handle_for(row).set_status("ended")
+
+    async def sweep_stale_sessions(self, max_idle: timedelta = STALE_SESSION_MAX_IDLE) -> int:
+        await self._client.wait_until_ready()
+
+        async def fetch_thread(native_id: str):
+            return await self._client.fetch_channel(int(native_id))
+
+        return await self.close_stale_sessions(datetime.now(UTC) - max_idle, fetch_thread)
 
     async def handle_stop_command(self, thread_id: int, archive: Callable[[], Awaitable[None]]) -> None:
         scope = self._sessions.get(thread_id)

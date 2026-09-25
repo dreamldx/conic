@@ -522,3 +522,88 @@ async def test_on_message_empty_mention_in_channel_sends_error_to_channel(bot_ga
     channel.send.assert_awaited_once_with(EMPTY_MENTION_ERROR)
     message.create_thread.assert_not_called()
     assert manager.started == []
+
+
+def age_session(storage, session_key, days):
+    from datetime import datetime, timedelta
+
+    old = (datetime.now(UTC) - timedelta(days=days)).isoformat()
+    storage._conn.execute("UPDATE sessions SET created_at = ? WHERE session_key = ?", [old, session_key])
+
+
+def cutoff_30_days():
+    from datetime import datetime, timedelta
+
+    return datetime.now(UTC) - timedelta(days=30)
+
+
+async def test_close_stale_sessions_archives_thread_ends_session_and_clears_routing(tmp_path):
+    storage = make_storage(tmp_path)
+    storage.get_or_create(channel="discord", native_id="111")
+    age_session(storage, "discord:111", days=40)
+    manager = FakePluginManagerRecorder()
+    gateway = DiscordGateway(make_config(), plugin_manager=manager, storage=storage)
+    gateway._sessions[111] = await manager.start_session("discord", "111", lambda: object())
+    thread = SimpleNamespace(edit=AsyncMock())
+
+    async def fake_fetch_thread(native_id: str):
+        return thread
+
+    closed = await gateway.close_stale_sessions(cutoff_30_days(), fake_fetch_thread)
+
+    assert closed == 1
+    assert 111 not in gateway._sessions
+    thread.edit.assert_awaited_once_with(archived=True, locked=True)
+    assert storage.active_sessions(channel="discord") == []
+    storage.shutdown()
+
+
+async def test_close_stale_sessions_leaves_recent_sessions_alone(tmp_path):
+    storage = make_storage(tmp_path)
+    storage.get_or_create(channel="discord", native_id="111")
+    manager = FakePluginManagerRecorder()
+    gateway = DiscordGateway(make_config(), plugin_manager=manager, storage=storage)
+    gateway._sessions[111] = await manager.start_session("discord", "111", lambda: object())
+
+    async def fake_fetch_thread(native_id: str):
+        raise AssertionError("must not fetch")
+
+    closed = await gateway.close_stale_sessions(cutoff_30_days(), fake_fetch_thread)
+
+    assert closed == 0
+    assert 111 in gateway._sessions
+    assert len(storage.active_sessions(channel="discord")) == 1
+    storage.shutdown()
+
+
+async def test_close_stale_sessions_still_ends_session_when_thread_is_gone(tmp_path):
+    storage = make_storage(tmp_path)
+    storage.get_or_create(channel="discord", native_id="111")
+    age_session(storage, "discord:111", days=40)
+    gateway = DiscordGateway(make_config(), plugin_manager=FakePluginManagerRecorder(), storage=storage)
+
+    async def missing_thread(native_id: str):
+        raise RuntimeError("thread deleted")
+
+    closed = await gateway.close_stale_sessions(cutoff_30_days(), missing_thread)
+
+    assert closed == 1
+    assert storage.active_sessions(channel="discord") == []
+    storage.shutdown()
+
+
+async def test_close_stale_sessions_uses_last_message_time_not_creation_time(tmp_path):
+    storage = make_storage(tmp_path)
+    row = storage.get_or_create(channel="discord", native_id="111")
+    age_session(storage, "discord:111", days=40)
+    storage.handle_for(row).append_message({"role": "user", "content": "hi"}, turn_id=1)
+    gateway = DiscordGateway(make_config(), plugin_manager=FakePluginManagerRecorder(), storage=storage)
+
+    async def fake_fetch_thread(native_id: str):
+        raise AssertionError("must not fetch")
+
+    closed = await gateway.close_stale_sessions(cutoff_30_days(), fake_fetch_thread)
+
+    assert closed == 0
+    assert len(storage.active_sessions(channel="discord")) == 1
+    storage.shutdown()
