@@ -1,4 +1,5 @@
 import json
+from datetime import datetime
 
 from conic.services.models import Message, ModelCatalogEntry, Session
 
@@ -78,6 +79,18 @@ def list_active_sessions_sql(channel: str) -> tuple[str, list]:
     return (
         "SELECT session_key, channel, native_id, workspace_dir, model, status, created_at, variables FROM sessions WHERE channel = ? AND status = 'active'",
         [channel],
+    )
+
+
+def list_stale_active_sessions_sql(channel: str, cutoff: datetime) -> tuple[str, list]:
+    return (
+        """SELECT s.session_key, s.channel, s.native_id, s.workspace_dir, s.model, s.status, s.created_at, s.variables
+FROM sessions s
+LEFT JOIN messages m ON m.session_key = s.session_key
+WHERE s.channel = ? AND s.status = 'active'
+GROUP BY s.session_key, s.channel, s.native_id, s.workspace_dir, s.model, s.status, s.created_at, s.variables
+HAVING COALESCE(MAX(m.created_at), s.created_at) < ?""",
+        [channel, cutoff.isoformat()],
     )
 
 

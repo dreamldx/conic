@@ -106,6 +106,11 @@ class StorageService:
         rows = self._conn.execute(sql, params).fetchall()
         return [self._session_from_row(r) for r in rows]
 
+    def stale_active_sessions(self, channel: str, cutoff: datetime) -> list[Session]:
+        sql, params = queries.list_stale_active_sessions_sql(channel, cutoff)
+        rows = self._conn.execute(sql, params).fetchall()
+        return [self._session_from_row(r) for r in rows]
+
     def save_model_catalog(self, entries: list[ModelCatalogEntry]) -> None:
         self._conn.execute(*queries.clear_model_catalog_sql())
         for entry in entries:
