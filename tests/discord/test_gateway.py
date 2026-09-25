@@ -1,6 +1,10 @@
 import asyncio
 from datetime import UTC
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
+
+import discord
+import pytest
 from loguru import logger
 
 from conic.discord.gateway import (
@@ -411,3 +415,110 @@ def test_thread_title_uses_first_line_truncated_with_fallback():
     assert len(thread_title("x" * 500)) == 90
     assert thread_title("   ") == "agent-session"
 
+
+BOT_ID = 42
+
+
+@pytest.fixture
+def bot_gateway(monkeypatch):
+    monkeypatch.setattr(discord.Client, "user", SimpleNamespace(id=BOT_ID), raising=False)
+    manager = FakePluginManagerRecorder()
+    return DiscordGateway(make_config(), plugin_manager=manager, storage=None), manager
+
+
+def make_thread(thread_id=222):
+    thread = MagicMock(spec=discord.Thread)
+    thread.id = thread_id
+    return thread
+
+
+GUILD = object()
+
+
+def make_message(channel, content, mentions_bot=True, bot_author=False, guild=GUILD):
+    return SimpleNamespace(
+        author=SimpleNamespace(bot=bot_author),
+        channel=channel,
+        content=content,
+        guild=guild,
+        mentions=[SimpleNamespace(id=BOT_ID)] if mentions_bot else [],
+        create_thread=AsyncMock(return_value=make_thread(444)),
+    )
+
+
+def make_channel():
+    return SimpleNamespace(id=111, send=AsyncMock())
+
+
+async def test_on_message_in_thread_strips_the_bot_mention_before_enqueueing(bot_gateway):
+    gateway, manager = bot_gateway
+    scope = await manager.start_session("discord", "222", lambda: object())
+    gateway._sessions[222] = scope
+
+    await gateway._client.on_message(make_message(make_thread(222), f"<@{BOT_ID}> what is 2+2?"))
+
+    assert await asyncio.wait_for(scope.queue.get(), timeout=1.0) == "what is 2+2?"
+
+
+async def test_on_message_in_thread_with_only_a_mention_enqueues_nothing(bot_gateway):
+    gateway, manager = bot_gateway
+    scope = await manager.start_session("discord", "222", lambda: object())
+    gateway._sessions[222] = scope
+
+    await gateway._client.on_message(make_message(make_thread(222), f"<@{BOT_ID}>"))
+
+    assert scope.queue.empty()
+
+
+async def test_on_message_ignores_bot_authors(bot_gateway):
+    gateway, manager = bot_gateway
+    channel = make_channel()
+    message = make_message(channel, f"<@{BOT_ID}> hi", bot_author=True)
+
+    await gateway._client.on_message(message)
+
+    message.create_thread.assert_not_called()
+    assert manager.started == []
+
+
+async def test_on_message_mention_in_channel_creates_thread_and_enqueues_text(bot_gateway):
+    gateway, manager = bot_gateway
+    message = make_message(make_channel(), f"<@{BOT_ID}> summarize this")
+
+    await gateway._client.on_message(message)
+
+    message.create_thread.assert_awaited_once_with(name="summarize this")
+    assert [(c, n) for c, n, _ in manager.started] == [("discord", "444")]
+    assert await asyncio.wait_for(gateway._sessions[444].queue.get(), timeout=1.0) == "summarize this"
+
+
+async def test_on_message_in_channel_without_mention_is_ignored(bot_gateway):
+    gateway, manager = bot_gateway
+    message = make_message(make_channel(), "just chatting", mentions_bot=False)
+
+    await gateway._client.on_message(message)
+
+    message.create_thread.assert_not_called()
+    assert manager.started == []
+
+
+async def test_on_message_mention_in_direct_message_is_ignored(bot_gateway):
+    gateway, manager = bot_gateway
+    message = make_message(make_channel(), f"<@{BOT_ID}> hi", guild=None)
+
+    await gateway._client.on_message(message)
+
+    message.create_thread.assert_not_called()
+    assert manager.started == []
+
+
+async def test_on_message_empty_mention_in_channel_sends_error_to_channel(bot_gateway):
+    gateway, manager = bot_gateway
+    channel = make_channel()
+    message = make_message(channel, f"<@{BOT_ID}>")
+
+    await gateway._client.on_message(message)
+
+    channel.send.assert_awaited_once_with(EMPTY_MENTION_ERROR)
+    message.create_thread.assert_not_called()
+    assert manager.started == []

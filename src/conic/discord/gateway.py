@@ -75,13 +75,14 @@ class DiscordGateway:
         async def on_message(message: discord.Message) -> None:
             if message.author.bot:
                 return
-            if isinstance(message.channel, discord.Thread):
-                await self.handle_message(thread_id=message.channel.id, text=message.content)
-                return
             bot_user = self._client.user
+            text = strip_bot_mention(message.content, bot_user.id) if bot_user else message.content
+            if isinstance(message.channel, discord.Thread):
+                if text:
+                    await self.handle_message(thread_id=message.channel.id, text=text)
+                return
             if bot_user is None or message.guild is None or bot_user not in message.mentions:
                 return
-            text = strip_bot_mention(message.content, bot_user.id)
 
             async def create_thread():
                 return await message.create_thread(name=thread_title(text))
