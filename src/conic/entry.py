@@ -6,6 +6,7 @@ from loguru import logger
 
 from conic.config import load_config
 from conic.core.manager import PluginManager
+from conic.discord.cleanup import run_periodic_cleanup
 from conic.discord.gateway import DiscordGateway
 from conic.openrouter.catalog import run_periodic_sync, sync_catalog_once
 from conic.plugins.plugin_config import PluginConfigError
@@ -41,11 +42,13 @@ async def main() -> None:
     storage, gateway = await build_app()
     config = load_config()
     catalog_sync_task = asyncio.create_task(run_periodic_sync(storage, config.openrouter_api_key))
+    cleanup_task = asyncio.create_task(run_periodic_cleanup(gateway.sweep_stale_sessions))
     try:
         await gateway.start()
     finally:
         logger.info("shutting down storage")
-        catalog_sync_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await catalog_sync_task
+        for task in (catalog_sync_task, cleanup_task):
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
         storage.shutdown()
