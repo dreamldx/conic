@@ -1,3 +1,4 @@
+import re
 from collections.abc import Awaitable, Callable
 
 import discord
@@ -7,6 +8,18 @@ from loguru import logger
 from conic.config import Config
 from conic.plugins.channels.discord import DiscordThreadPlugin
 from conic.types.steering import SteeringStopCommand
+
+THREAD_TITLE_LIMIT = 90
+DEFAULT_THREAD_TITLE = "agent-session"
+
+
+def strip_bot_mention(content: str, bot_id: int) -> str:
+    return re.sub(rf"<@!?{bot_id}>", "", content).strip()
+
+
+def thread_title(text: str) -> str:
+    first_line = text.strip().splitlines()[0] if text.strip() else ""
+    return first_line[:THREAD_TITLE_LIMIT] or DEFAULT_THREAD_TITLE
 
 
 class DiscordGateway:
@@ -61,7 +74,18 @@ class DiscordGateway:
         async def on_message(message: discord.Message) -> None:
             if message.author.bot:
                 return
-            await self.handle_message(thread_id=message.channel.id, text=message.content)
+            if isinstance(message.channel, discord.Thread):
+                await self.handle_message(thread_id=message.channel.id, text=message.content)
+                return
+            bot_user = self._client.user
+            if bot_user is None or message.guild is None or bot_user not in message.mentions:
+                return
+            text = strip_bot_mention(message.content, bot_user.id)
+
+            async def create_thread():
+                return await message.create_thread(name=thread_title(text))
+
+            await self.handle_mention(create_thread=create_thread, text=text)
 
     async def start(self) -> None:
         await self._client.start(self._token)
@@ -114,10 +138,7 @@ class DiscordGateway:
             return
         await scope.queue.put(text)
 
-    async def handle_start_command(
-        self, create_thread: Callable[[], Awaitable[object]], respond: Callable[[str], Awaitable[None]]
-    ) -> None:
-        thread = await create_thread()
+    async def _start_thread_session(self, thread):
         logger.info("starting new session in thread {}", thread.id)
         scope = await self._plugin_manager.start_session(
             channel="discord",
@@ -126,7 +147,21 @@ class DiscordGateway:
             reason="new",
         )
         self._sessions[thread.id] = scope
+        return scope
+
+    async def handle_start_command(
+        self, create_thread: Callable[[], Awaitable[object]], respond: Callable[[str], Awaitable[None]]
+    ) -> None:
+        thread = await create_thread()
+        await self._start_thread_session(thread)
         await respond(f"Started session in thread {thread.id}")
+
+    async def handle_mention(self, create_thread: Callable[[], Awaitable[object]], text: str) -> None:
+        if not text:
+            return
+        thread = await create_thread()
+        scope = await self._start_thread_session(thread)
+        await scope.queue.put(text)
 
     async def handle_stop_command(self, thread_id: int, archive: Callable[[], Awaitable[None]]) -> None:
         scope = self._sessions.get(thread_id)

@@ -1,10 +1,9 @@
 import asyncio
 from datetime import UTC
 from types import SimpleNamespace
-
 from loguru import logger
 
-from conic.discord.gateway import DiscordGateway
+from conic.discord.gateway import DiscordGateway, strip_bot_mention, thread_title
 from conic.plugins import meta
 from conic.services.storage import StorageService
 from conic.types.steering import SteeringItem
@@ -359,3 +358,43 @@ async def test_handle_stop_command_on_unknown_thread_is_a_noop():
         raise AssertionError("should not be called")
 
     await gateway.handle_stop_command(thread_id=555, archive=fake_archive)  # must not raise
+
+
+async def test_handle_mention_creates_thread_starts_session_and_enqueues_text():
+    manager = FakePluginManagerRecorder()
+    gateway = DiscordGateway(make_config(), plugin_manager=manager, storage=None)
+
+    async def fake_create_thread():
+        return SimpleNamespace(id=444)
+
+    await gateway.handle_mention(create_thread=fake_create_thread, text="what is 2+2?")
+
+    assert [(c, n, r) for c, n, r in manager.started] == [("discord", "444", "new")]
+    assert await asyncio.wait_for(gateway._sessions[444].queue.get(), timeout=1.0) == "what is 2+2?"
+
+
+async def test_handle_mention_with_empty_text_creates_nothing():
+    manager = FakePluginManagerRecorder()
+    gateway = DiscordGateway(make_config(), plugin_manager=manager, storage=None)
+    created = []
+
+    async def fake_create_thread():
+        created.append(1)
+        return SimpleNamespace(id=444)
+
+    await gateway.handle_mention(create_thread=fake_create_thread, text="")
+
+    assert created == []
+    assert manager.started == []
+
+
+def test_strip_bot_mention_removes_both_mention_forms():
+    assert strip_bot_mention("<@42> hello <@!42> world", 42) == "hello  world"
+    assert strip_bot_mention("<@43> hi", 42) == "<@43> hi"
+
+
+def test_thread_title_uses_first_line_truncated_with_fallback():
+    assert thread_title("first line\nsecond") == "first line"
+    assert len(thread_title("x" * 500)) == 90
+    assert thread_title("   ") == "agent-session"
+
