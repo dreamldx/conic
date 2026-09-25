@@ -219,6 +219,8 @@ async def test_contributes_web_search_section_with_turn_now_and_untrusted_rule()
     assert "`finance`" in WEB_SEARCH_SECTION
     assert "include_domains" in WEB_SEARCH_SECTION
     assert "include_answer" in WEB_SEARCH_SECTION
+    assert "different keywords" in WEB_SEARCH_SECTION
+    assert "different angles" in WEB_SEARCH_SECTION
 
 
 async def test_topic_options_are_general_news_finance():
