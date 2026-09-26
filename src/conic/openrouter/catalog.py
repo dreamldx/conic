@@ -22,12 +22,19 @@ async def fetch_openrouter_models(
     return [_parse_model(m) for m in body.get("data", [])]
 
 
+def vendor_of(slug: str) -> str:
+    return slug.lstrip("~").partition("/")[0]
+
+
 def _parse_model(m: dict) -> dict:
     pricing = m.get("pricing") or {}
     architecture = m.get("architecture") or {}
     supported_parameters = m.get("supported_parameters") or []
+    alias_target = m.get("alias_target") or {}
     return {
-        "id": m["id"],
+        "slug": m["id"],
+        "vendor": vendor_of(m["id"]),
+        "real_model": alias_target.get("slug") or m["id"],
         "name": m.get("name") or "",
         "description": m.get("description") or "",
         "context_length": m.get("context_length") or 0,

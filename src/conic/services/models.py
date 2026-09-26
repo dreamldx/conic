@@ -24,7 +24,9 @@ class Message(BaseModel):
 
 
 class ModelCatalogEntry(BaseModel):
-    id: str
+    slug: str
+    vendor: str = ""
+    real_model: str = ""
     name: str = ""
     description: str = ""
     context_length: int = 0

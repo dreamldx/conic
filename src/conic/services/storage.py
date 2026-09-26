@@ -63,6 +63,8 @@ class StorageService:
         self._conn.execute(*queries.create_messages_table_sql())
         self._conn.execute(*queries.add_sessions_variables_column_sql())
         self._conn.execute(*queries.add_messages_turn_id_column_sql())
+        if self._conn.execute(*queries.model_catalog_has_legacy_id_column_sql()).fetchone():
+            self._conn.execute(*queries.drop_model_catalog_sql())
         self._conn.execute(*queries.create_model_catalog_table_sql())
         for sql, params in queries.add_model_catalog_extra_columns_sql():
             self._conn.execute(sql, params)
@@ -122,18 +124,19 @@ class StorageService:
         rows = self._conn.execute(sql, params).fetchall()
         return [
             ModelCatalogEntry(
-                id=r[0], name=r[1], description=r[2], context_length=r[3], supports_tools=r[4],
-                pricing_prompt=r[5], pricing_completion=r[6],
-                input_modalities=json.loads(r[7]) if r[7] else [],
-                output_modalities=json.loads(r[8]) if r[8] else [],
-                supported_parameters=json.loads(r[9]) if r[9] else [],
-                fetched_at=_parse_stored_datetime(r[10]),
+                slug=r[0], vendor=r[1] or "", real_model=r[2] or "", name=r[3], description=r[4],
+                context_length=r[5], supports_tools=r[6],
+                pricing_prompt=r[7], pricing_completion=r[8],
+                input_modalities=json.loads(r[9]) if r[9] else [],
+                output_modalities=json.loads(r[10]) if r[10] else [],
+                supported_parameters=json.loads(r[11]) if r[11] else [],
+                fetched_at=_parse_stored_datetime(r[12]),
             )
             for r in rows
         ]
 
-    def get_model_context_length(self, model_id: str) -> int:
-        sql, params = queries.get_model_context_length_sql(model_id)
+    def get_model_context_length(self, slug: str) -> int:
+        sql, params = queries.get_model_context_length_sql(slug)
         row = self._conn.execute(sql, params).fetchone()
         if row is None or row[0] is None:
             return DEFAULT_MODEL_CONTEXT_LENGTH

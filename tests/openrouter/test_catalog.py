@@ -6,6 +6,7 @@ from conic.openrouter.catalog import (
     OPENROUTER_MODELS_URL,
     fetch_openrouter_models,
     run_periodic_sync,
+    vendor_of,
 )
 
 
@@ -57,7 +58,7 @@ async def test_maps_id_context_length_and_tool_support():
         ]
     }
     result = await fetch_openrouter_models("test-key", session_factory=session_factory(payload))
-    assert result[0]["id"] == "deepseek/deepseek-v4-flash-0731"
+    assert result[0]["slug"] == "deepseek/deepseek-v4-flash-0731"
     assert result[0]["context_length"] == 128000
     assert result[0]["supports_tools"] is True
     assert result[1]["supports_tools"] is False
@@ -79,7 +80,9 @@ async def test_maps_name_description_pricing_and_modalities():
     result = await fetch_openrouter_models("test-key", session_factory=session_factory(payload))
     assert result == [
         {
-            "id": "deepseek/deepseek-v4-flash-0731",
+            "slug": "deepseek/deepseek-v4-flash-0731",
+            "vendor": "deepseek",
+            "real_model": "deepseek/deepseek-v4-flash-0731",
             "name": "DeepSeek: DeepSeek V4 Flash 0731",
             "description": "A sparse mixture-of-experts model.",
             "context_length": 0,
@@ -98,7 +101,9 @@ async def test_missing_fields_default_safely():
     result = await fetch_openrouter_models("test-key", session_factory=session_factory(payload))
     assert result == [
         {
-            "id": "some/model",
+            "slug": "some/model",
+            "vendor": "some",
+            "real_model": "some/model",
             "name": "",
             "description": "",
             "context_length": 0,
@@ -159,7 +164,7 @@ async def test_run_periodic_sync_syncs_immediately_before_the_first_sleep():
         await run_periodic_sync(storage, "key", session_factory=session_factory(payload), sleep=fake_sleep)
 
     assert len(storage.saved) == 1
-    assert storage.saved[0][0].id == "a/b"
+    assert storage.saved[0][0].slug == "a/b"
     assert storage.saved[0][0].context_length == 1000
     assert calls == [3600]
 
@@ -191,3 +196,36 @@ async def test_run_periodic_sync_keeps_looping_after_a_failed_sync():
 
     assert storage.saved == []
     assert len(calls) == 2
+
+
+@pytest.mark.parametrize(
+    ("slug", "expected"),
+    [
+        ("deepseek/deepseek-v4-pro-0813", "deepseek"),
+        ("deepseek/deepseek-r1:free", "deepseek"),
+        ("~anthropic/claude-opus-latest", "anthropic"),
+        ("meta-llama/llama-3.1-70b-instruct", "meta-llama"),
+    ],
+)
+def test_vendor_of_extracts_the_vendor_prefix(slug, expected):
+    assert vendor_of(slug) == expected
+
+
+async def test_alias_model_points_to_its_real_model():
+    payload = {
+        "data": [
+            {
+                "id": "~deepseek/deepseek-pro-latest",
+                "alias_target": {"name": "DeepSeek: DeepSeek V4 Pro 0813", "slug": "deepseek/deepseek-v4-pro-0813"},
+            },
+            {"id": "deepseek/deepseek-v4-pro-0813"},
+        ]
+    }
+
+    result = await fetch_openrouter_models("test-key", session_factory=session_factory(payload))
+
+    by_slug = {r["slug"]: r for r in result}
+    alias = by_slug["~deepseek/deepseek-pro-latest"]
+    assert alias["vendor"] == "deepseek"
+    assert alias["real_model"] == "deepseek/deepseek-v4-pro-0813"
+    assert by_slug["deepseek/deepseek-v4-pro-0813"]["real_model"] == "deepseek/deepseek-v4-pro-0813"

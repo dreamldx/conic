@@ -144,7 +144,9 @@ def test_save_and_list_model_catalog_round_trip(tmp_path):
     storage = make_storage(tmp_path)
     storage.save_model_catalog([
         ModelCatalogEntry(
-            id="deepseek/deepseek-v4-flash-0731",
+            slug="deepseek/deepseek-v4-flash-0731",
+            vendor="deepseek",
+            real_model="deepseek/deepseek-v4-flash-0731",
             name="DeepSeek: DeepSeek V4 Flash 0731",
             description="A sparse mixture-of-experts model.",
             context_length=128000,
@@ -155,12 +157,14 @@ def test_save_and_list_model_catalog_round_trip(tmp_path):
             output_modalities=["text"],
             supported_parameters=["tools", "reasoning"],
         ),
-        ModelCatalogEntry(id="openai/gpt-audio", context_length=32000, supports_tools=False),
+        ModelCatalogEntry(slug="openai/gpt-audio", context_length=32000, supports_tools=False),
     ])
 
     entries = storage.list_model_catalog()
 
-    assert [e.id for e in entries] == ["deepseek/deepseek-v4-flash-0731", "openai/gpt-audio"]
+    assert [e.slug for e in entries] == ["deepseek/deepseek-v4-flash-0731", "openai/gpt-audio"]
+    assert entries[0].vendor == "deepseek"
+    assert entries[0].real_model == "deepseek/deepseek-v4-flash-0731"
     assert entries[0].name == "DeepSeek: DeepSeek V4 Flash 0731"
     assert entries[0].description == "A sparse mixture-of-experts model."
     assert entries[0].context_length == 128000
@@ -177,18 +181,18 @@ def test_save_and_list_model_catalog_round_trip(tmp_path):
 
 def test_save_model_catalog_replaces_previous_entries(tmp_path):
     storage = make_storage(tmp_path)
-    storage.save_model_catalog([ModelCatalogEntry(id="old/model", context_length=1000)])
-    storage.save_model_catalog([ModelCatalogEntry(id="new/model", context_length=2000)])
+    storage.save_model_catalog([ModelCatalogEntry(slug="old/model", context_length=1000)])
+    storage.save_model_catalog([ModelCatalogEntry(slug="new/model", context_length=2000)])
 
     entries = storage.list_model_catalog()
 
-    assert [e.id for e in entries] == ["new/model"]
+    assert [e.slug for e in entries] == ["new/model"]
     storage.shutdown()
 
 
 def test_model_catalog_persists_across_reconnect(tmp_path):
     storage = make_storage(tmp_path)
-    storage.save_model_catalog([ModelCatalogEntry(id="deepseek/deepseek-v4-flash-0731", context_length=128000)])
+    storage.save_model_catalog([ModelCatalogEntry(slug="deepseek/deepseek-v4-flash-0731", context_length=128000)])
     storage.shutdown()
 
     reopened = StorageService(
@@ -198,15 +202,15 @@ def test_model_catalog_persists_across_reconnect(tmp_path):
     )
     reopened.startup()
     entries = reopened.list_model_catalog()
-    assert [e.id for e in entries] == ["deepseek/deepseek-v4-flash-0731"]
+    assert [e.slug for e in entries] == ["deepseek/deepseek-v4-flash-0731"]
     reopened.shutdown()
 
 
 def test_get_model_context_length_returns_the_matching_entrys_value(tmp_path):
     storage = make_storage(tmp_path)
     storage.save_model_catalog([
-        ModelCatalogEntry(id="deepseek/deepseek-v4-flash-0731", context_length=1310720),
-        ModelCatalogEntry(id="openai/gpt-audio", context_length=32000),
+        ModelCatalogEntry(slug="deepseek/deepseek-v4-flash-0731", context_length=1310720),
+        ModelCatalogEntry(slug="openai/gpt-audio", context_length=32000),
     ])
 
     assert storage.get_model_context_length("deepseek/deepseek-v4-flash-0731") == 1310720
@@ -217,4 +221,20 @@ def test_get_model_context_length_returns_the_matching_entrys_value(tmp_path):
 def test_get_model_context_length_defaults_to_65535_when_model_not_in_catalog(tmp_path):
     storage = make_storage(tmp_path)
     assert storage.get_model_context_length("some/unknown-model") == 65535
+    storage.shutdown()
+
+
+def test_startup_drops_legacy_model_catalog_table_with_id_column(tmp_path):
+    import duckdb
+
+    db_path = tmp_path / "conic.duckdb"
+    conn = duckdb.connect(str(db_path))
+    conn.execute("CREATE TABLE model_catalog (id VARCHAR PRIMARY KEY, context_length INTEGER)")
+    conn.execute("INSERT INTO model_catalog VALUES ('old/model', 1000)")
+    conn.close()
+
+    storage = make_storage(tmp_path)
+    storage.save_model_catalog([ModelCatalogEntry(slug="new/model", vendor="new", real_model="new/model")])
+
+    assert [e.slug for e in storage.list_model_catalog()] == ["new/model"]
     storage.shutdown()

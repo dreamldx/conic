@@ -101,7 +101,9 @@ def set_session_variables_sql(session_key: str, variables: dict) -> tuple[str, l
 def create_model_catalog_table_sql() -> tuple[str, list]:
     return ("""\
 CREATE TABLE IF NOT EXISTS model_catalog (
-    id VARCHAR PRIMARY KEY,
+    slug VARCHAR PRIMARY KEY,
+    vendor VARCHAR,
+    real_model VARCHAR,
     name VARCHAR,
     description VARCHAR,
     context_length INTEGER,
@@ -113,6 +115,17 @@ CREATE TABLE IF NOT EXISTS model_catalog (
     supported_parameters VARCHAR DEFAULT '[]',
     fetched_at VARCHAR
 )""", [])
+
+
+def model_catalog_has_legacy_id_column_sql() -> tuple[str, list]:
+    return (
+        "SELECT 1 FROM information_schema.columns WHERE table_name = 'model_catalog' AND column_name = 'id'",
+        [],
+    )
+
+
+def drop_model_catalog_sql() -> tuple[str, list]:
+    return ("DROP TABLE model_catalog", [])
 
 
 def add_model_catalog_extra_columns_sql() -> list[tuple[str, list]]:
@@ -134,14 +147,14 @@ def clear_model_catalog_sql() -> tuple[str, list]:
 def insert_model_catalog_entry_sql(entry: ModelCatalogEntry) -> tuple[str, list]:
     sql = (
         "INSERT INTO model_catalog "
-        "(id, name, description, context_length, supports_tools, pricing_prompt, pricing_completion, "
+        "(slug, vendor, real_model, name, description, context_length, supports_tools, pricing_prompt, pricing_completion, "
         "input_modalities, output_modalities, supported_parameters, fetched_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     )
     return (
         sql,
         [
-            entry.id, entry.name, entry.description, entry.context_length, entry.supports_tools,
+            entry.slug, entry.vendor, entry.real_model, entry.name, entry.description, entry.context_length, entry.supports_tools,
             entry.pricing_prompt, entry.pricing_completion, json.dumps(entry.input_modalities),
             json.dumps(entry.output_modalities), json.dumps(entry.supported_parameters),
             entry.fetched_at.isoformat(),
@@ -151,12 +164,12 @@ def insert_model_catalog_entry_sql(entry: ModelCatalogEntry) -> tuple[str, list]
 
 def list_model_catalog_sql() -> tuple[str, list]:
     sql = (
-        "SELECT id, name, description, context_length, supports_tools, pricing_prompt, pricing_completion, "
+        "SELECT slug, vendor, real_model, name, description, context_length, supports_tools, pricing_prompt, pricing_completion, "
         "input_modalities, output_modalities, supported_parameters, fetched_at "
-        "FROM model_catalog ORDER BY id"
+        "FROM model_catalog ORDER BY slug"
     )
     return sql, []
 
 
-def get_model_context_length_sql(model_id: str) -> tuple[str, list]:
-    return "SELECT context_length FROM model_catalog WHERE id = ?", [model_id]
+def get_model_context_length_sql(slug: str) -> tuple[str, list]:
+    return "SELECT context_length FROM model_catalog WHERE slug = ?", [slug]
