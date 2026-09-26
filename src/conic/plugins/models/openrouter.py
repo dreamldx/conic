@@ -1,14 +1,18 @@
 import json
+from collections.abc import Callable
 
 from loguru import logger
 from openai import AsyncOpenAI
 
 from conic.plugins import meta
+from conic.services.models import ModelCatalogEntry
 from conic.types.messages import (
     BuildSystemPrompt,
     MessageDeltaUpdate,
     ModelRequest,
     ModelResponse,
+    SwitchModelRequest,
+    SwitchModelResult,
     ToolCallSpec,
 )
 
@@ -30,6 +34,7 @@ class OpenRouterModelPlugin:
         provider_blacklist: list[str] | None = None,
         session_id: str | None = None,
         app_name: str | None = None,
+        catalog_lookup: Callable[[str], list[ModelCatalogEntry]] | None = None,
     ):
         self.model = model
         self._client = client or AsyncOpenAI(base_url="https://openrouter.ai/api/v1", api_key=api_key)
@@ -37,11 +42,30 @@ class OpenRouterModelPlugin:
         self._provider_blacklist = provider_blacklist or []
         self._session_id = session_id
         self._app_name = app_name
+        self._catalog_lookup = catalog_lookup
 
     def register(self, bus) -> None:
         self._bus = bus
         bus.on_request(meta.ModelRequestEvent, self.complete)
+        bus.on_request(meta.SwitchModelRequestEvent, self.switch_model)
         bus.on_chain(meta.BuildSystemPromptEvent, self.contribute_model_catalog_info)
+
+    async def switch_model(self, msg: SwitchModelRequest) -> SwitchModelResult:
+        if self._catalog_lookup is None:
+            return SwitchModelResult(error="model catalog is not available")
+        matches = self._catalog_lookup(msg.model_id)
+        if not matches:
+            return SwitchModelResult(error=f"model not found: {msg.model_id}")
+        exact = [m for m in matches if m.slug.lower() == msg.model_id.strip().lower()]
+        candidates = exact or matches
+        if len(candidates) > 1:
+            names = ", ".join(m.slug for m in candidates)
+            return SwitchModelResult(error=f"ambiguous model: {msg.model_id} matches {names}")
+        entry = candidates[0]
+        real_model = entry.real_model or entry.slug
+        logger.info("switching model {} -> {}", self.model, real_model)
+        self.model = real_model
+        return SwitchModelResult(model=real_model)
 
     async def contribute_model_catalog_info(self, msg: BuildSystemPrompt) -> BuildSystemPrompt:
         msg.sections["openrouter_models"] = MODEL_CATALOG_SECTION

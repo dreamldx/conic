@@ -39,7 +39,11 @@ async def build_app(
     # the wrong value gets baked into the session's global variables.
     await sync_once(storage, config.openrouter_api_key, json_path=_catalog_json_path(config.project_root))
     model_context_length = storage.get_model_context_length(config.openrouter_model)
-    plugin_sets = build_plugin_set(config, global_variables={"model_context_length": model_context_length})
+    plugin_sets = build_plugin_set(
+        config,
+        global_variables={"model_context_length": model_context_length},
+        catalog_lookup=storage.find_model_catalog_entries,
+    )
     if "main" not in plugin_sets:
         raise PluginConfigError(f"plugins config at {config.plugins_config_path} must define a 'main' plugin set")
     plugin_manager = PluginManager(storage, plugin_sets)

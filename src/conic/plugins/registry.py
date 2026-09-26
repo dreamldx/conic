@@ -39,6 +39,7 @@ from conic.plugins.tools.skills import ListSkillsToolPlugin, LoadSkillToolPlugin
 from conic.plugins.tools.web_fetch import WebFetchToolPlugin, build_web_fetch_schema
 from conic.plugins.tools.web_search import WebSearchToolPlugin
 from conic.plugins.tools.write_file import WriteFileToolPlugin
+from conic.services.models import ModelCatalogEntry
 
 
 def _load_prompts(prompts_dir: Path) -> dict[str, str]:
@@ -65,10 +66,14 @@ def _detect_shell() -> str:
     return "/bin/sh"
 
 
-def build_plugin_set(config: Config, global_variables: dict | None = None) -> dict[str, PluginSet]:
+def build_plugin_set(
+    config: Config,
+    global_variables: dict | None = None,
+    catalog_lookup: Callable[[str], list[ModelCatalogEntry]] | None = None,
+) -> dict[str, PluginSet]:
     prompts = _load_prompts(Path(config.project_root) / "prompts")
     shared_client = AsyncOpenAI(base_url="https://openrouter.ai/api/v1", api_key=config.openrouter_api_key)
-    ctx = BuildContext(shared_client=shared_client, prompts=prompts)
+    ctx = BuildContext(shared_client=shared_client, prompts=prompts, catalog_lookup=catalog_lookup)
 
     resolved_global_variables = {
         "model": config.openrouter_model,
@@ -142,6 +147,7 @@ def _build_one_plugin_set(
 class BuildContext:
     shared_client: AsyncOpenAI
     prompts: dict[str, str]
+    catalog_lookup: Callable[[str], list[ModelCatalogEntry]] | None = None
 
 
 def _build_bash_tool(config: Config, params: dict, ctx: BuildContext) -> type:
@@ -336,6 +342,7 @@ def _build_openrouter_backend(config: Config, ctx: BuildContext, provider_blackl
         return OpenRouterModelPlugin(
             api_key=config.openrouter_api_key, model=config.openrouter_model, client=ctx.shared_client,
             provider_blacklist=provider_blacklist, session_id=session_key, app_name=config.project_name,
+            catalog_lookup=ctx.catalog_lookup,
         )
     return factory
 

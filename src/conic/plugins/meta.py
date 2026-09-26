@@ -78,3 +78,8 @@ MessageUpdateEvent = "message_update"
 # ModelRequest.stream_updates is True; carries only visible text, never
 # tool-call argument fragments
 MessageDeltaUpdateEvent = "message_delta_update"
+
+# dispatched as a request to OpenRouterModelPlugin to change the model used by
+# the session; the responder looks the model id up in the synced catalog and
+# answers with a SwitchModelResult (error set when the id is unknown)
+SwitchModelRequestEvent = "switch_model_request"

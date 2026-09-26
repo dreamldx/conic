@@ -60,6 +60,17 @@ class ModelRequest:
 
 
 @dataclass
+class SwitchModelRequest:
+    model_id: str
+
+
+@dataclass
+class SwitchModelResult:
+    model: str | None = None
+    error: str | None = None
+
+
+@dataclass
 class MessageUpdate:
     text: str
 

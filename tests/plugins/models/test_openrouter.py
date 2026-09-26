@@ -11,7 +11,14 @@ from conic.plugins.models.openrouter import (
     MODEL_CATALOG_SECTION,
     OpenRouterModelPlugin,
 )
-from conic.types.messages import BuildSystemPrompt, MessageDeltaUpdate, ModelRequest
+from conic.services.models import ModelCatalogEntry
+from conic.types.messages import (
+    BuildSystemPrompt,
+    MessageDeltaUpdate,
+    ModelRequest,
+    SwitchModelRequest,
+    SwitchModelResult,
+)
 
 
 class FakeCompletions:
@@ -443,3 +450,92 @@ async def test_system_prompt_points_to_the_model_catalog_file():
 
     assert result.sections["openrouter_models"] == MODEL_CATALOG_SECTION
     assert "data/openrouter_models.json" in MODEL_CATALOG_SECTION
+
+
+def make_switchable_plugin(known: dict[str, ModelCatalogEntry], **kwargs):
+    client = FakeClient(FakeCompletions(SimpleNamespace(choices=[], usage=None)))
+
+    def lookup(query: str) -> list[ModelCatalogEntry]:
+        return [e for k, e in known.items() if k == query]
+
+    return OpenRouterModelPlugin(api_key="k", model="old/model", client=client, catalog_lookup=lookup, **kwargs)
+
+
+async def test_switch_model_changes_the_model_used_for_requests():
+    plugin = make_switchable_plugin({"new/model": ModelCatalogEntry(slug="new/model", real_model="new/model")})
+    bus = MessageBus()
+    plugin.register(bus)
+
+    result = await bus.request(meta.SwitchModelRequestEvent, SwitchModelRequest(model_id="new/model"))
+
+    assert result == SwitchModelResult(model="new/model")
+    assert plugin.model == "new/model"
+
+
+async def test_switch_model_with_unknown_id_returns_an_error_and_keeps_the_model():
+    plugin = make_switchable_plugin({})
+    bus = MessageBus()
+    plugin.register(bus)
+
+    result = await bus.request(meta.SwitchModelRequestEvent, SwitchModelRequest(model_id="nope/missing"))
+
+    assert result.model is None
+    assert result.error == "model not found: nope/missing"
+    assert plugin.model == "old/model"
+
+
+async def test_switch_model_without_a_catalog_returns_an_error():
+    plugin = OpenRouterModelPlugin(api_key="k", model="old/model", client=object())
+    bus = MessageBus()
+    plugin.register(bus)
+
+    result = await bus.request(meta.SwitchModelRequestEvent, SwitchModelRequest(model_id="new/model"))
+
+    assert result.error == "model catalog is not available"
+    assert plugin.model == "old/model"
+
+
+async def test_switch_model_resolves_an_alias_to_its_real_model():
+    alias = ModelCatalogEntry(
+        slug="~deepseek/deepseek-flash-latest", vendor="deepseek", real_model="deepseek/deepseek-v4.1-flash"
+    )
+    plugin = make_switchable_plugin({alias.slug: alias})
+    bus = MessageBus()
+    plugin.register(bus)
+
+    result = await bus.request(
+        meta.SwitchModelRequestEvent, SwitchModelRequest(model_id="~deepseek/deepseek-flash-latest")
+    )
+
+    assert result == SwitchModelResult(model="deepseek/deepseek-v4.1-flash")
+    assert plugin.model == "deepseek/deepseek-v4.1-flash"
+
+
+async def test_switch_model_with_ambiguous_match_returns_an_error_listing_candidates():
+    a = ModelCatalogEntry(slug="a/shared", real_model="a/shared")
+    b = ModelCatalogEntry(slug="b/shared", real_model="b/shared")
+    plugin = OpenRouterModelPlugin(
+        api_key="k", model="old/model", client=object(), catalog_lookup=lambda q: [a, b]
+    )
+    bus = MessageBus()
+    plugin.register(bus)
+
+    result = await bus.request(meta.SwitchModelRequestEvent, SwitchModelRequest(model_id="shared"))
+
+    assert result.model is None
+    assert result.error == "ambiguous model: shared matches a/shared, b/shared"
+    assert plugin.model == "old/model"
+
+
+async def test_switch_model_prefers_the_exact_slug_among_several_matches():
+    exact = ModelCatalogEntry(slug="a/shared", real_model="a/shared")
+    other = ModelCatalogEntry(slug="b/shared", real_model="b/shared")
+    plugin = OpenRouterModelPlugin(
+        api_key="k", model="old/model", client=object(), catalog_lookup=lambda q: [exact, other]
+    )
+    bus = MessageBus()
+    plugin.register(bus)
+
+    result = await bus.request(meta.SwitchModelRequestEvent, SwitchModelRequest(model_id="A/Shared"))
+
+    assert result == SwitchModelResult(model="a/shared")
