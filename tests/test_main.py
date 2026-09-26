@@ -3,7 +3,7 @@ import asyncio
 from conic.entry import build_app
 
 
-async def _noop_sync_once(storage, api_key, session_factory=None):
+async def _noop_sync_once(storage, api_key, session_factory=None, json_path=None):
     return False
 
 

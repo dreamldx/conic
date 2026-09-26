@@ -1,6 +1,7 @@
 import asyncio
 import contextlib
 import sys
+from pathlib import Path
 
 from loguru import logger
 
@@ -8,10 +9,18 @@ from conic.config import load_config
 from conic.core.manager import PluginManager
 from conic.discord.cleanup import run_periodic_cleanup
 from conic.discord.gateway import DiscordGateway
-from conic.openrouter.catalog import run_periodic_sync, sync_catalog_once
+from conic.openrouter.catalog import (
+    MODEL_CATALOG_FILENAME,
+    run_periodic_sync,
+    sync_catalog_once,
+)
 from conic.plugins.plugin_config import PluginConfigError
 from conic.plugins.registry import build_plugin_set
 from conic.services.storage import StorageService
+
+
+def _catalog_json_path(project_root: str) -> Path:
+    return Path(project_root) / "data" / MODEL_CATALOG_FILENAME
 
 
 async def build_app(
@@ -28,7 +37,7 @@ async def build_app(
     # Populate the model catalog before reading model metadata, otherwise
     # get_model_context_length falls back to DEFAULT_MODEL_CONTEXT_LENGTH and
     # the wrong value gets baked into the session's global variables.
-    await sync_once(storage, config.openrouter_api_key)
+    await sync_once(storage, config.openrouter_api_key, json_path=_catalog_json_path(config.project_root))
     model_context_length = storage.get_model_context_length(config.openrouter_model)
     plugin_sets = build_plugin_set(config, global_variables={"model_context_length": model_context_length})
     if "main" not in plugin_sets:
@@ -41,7 +50,9 @@ async def build_app(
 async def main() -> None:
     storage, gateway = await build_app()
     config = load_config()
-    catalog_sync_task = asyncio.create_task(run_periodic_sync(storage, config.openrouter_api_key))
+    catalog_sync_task = asyncio.create_task(
+        run_periodic_sync(storage, config.openrouter_api_key, json_path=_catalog_json_path(config.project_root))
+    )
     cleanup_task = asyncio.create_task(run_periodic_cleanup(gateway.sweep_stale_sessions))
     try:
         await gateway.start()

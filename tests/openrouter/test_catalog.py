@@ -1,4 +1,5 @@
 import asyncio
+import json
 
 import pytest
 
@@ -6,6 +7,7 @@ from conic.openrouter.catalog import (
     OPENROUTER_MODELS_URL,
     fetch_openrouter_models,
     run_periodic_sync,
+    sync_catalog_once,
     vendor_of,
 )
 
@@ -229,3 +231,40 @@ async def test_alias_model_points_to_its_real_model():
     assert alias["vendor"] == "deepseek"
     assert alias["real_model"] == "deepseek/deepseek-v4-pro-0813"
     assert by_slug["deepseek/deepseek-v4-pro-0813"]["real_model"] == "deepseek/deepseek-v4-pro-0813"
+
+
+async def test_sync_writes_catalog_json_sorted_by_slug(tmp_path):
+    payload = {"data": [{"id": "openai/gpt-audio"}, {"id": "deepseek/deepseek-r1"}]}
+    json_path = tmp_path / "data" / "openrouter_models.json"
+
+    ok = await sync_catalog_once(FakeStorage(), "key", session_factory=session_factory(payload), json_path=json_path)
+
+    assert ok is True
+    written = json.loads(json_path.read_text(encoding="utf-8"))
+    assert [m["slug"] for m in written] == ["deepseek/deepseek-r1", "openai/gpt-audio"]
+    assert written[0]["vendor"] == "deepseek"
+    assert not json_path.with_name("openrouter_models.json.tmp").exists()
+
+
+async def test_sync_overwrites_stale_catalog_json(tmp_path):
+    json_path = tmp_path / "openrouter_models.json"
+    json_path.write_text("[]", encoding="utf-8")
+    payload = {"data": [{"id": "a/b"}]}
+
+    await sync_catalog_once(FakeStorage(), "key", session_factory=session_factory(payload), json_path=json_path)
+
+    assert [m["slug"] for m in json.loads(json_path.read_text(encoding="utf-8"))] == ["a/b"]
+
+
+async def test_sync_still_succeeds_when_json_cannot_be_written(tmp_path):
+    blocker = tmp_path / "blocker"
+    blocker.write_text("x", encoding="utf-8")
+    payload = {"data": [{"id": "a/b"}]}
+    storage = FakeStorage()
+
+    ok = await sync_catalog_once(
+        storage, "key", session_factory=session_factory(payload), json_path=blocker / "openrouter_models.json"
+    )
+
+    assert ok is True
+    assert len(storage.saved) == 1

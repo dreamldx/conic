@@ -1,4 +1,7 @@
 import asyncio
+import json
+import os
+from pathlib import Path
 
 import aiohttp
 from loguru import logger
@@ -7,6 +10,7 @@ from conic.services.models import ModelCatalogEntry
 
 OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
 DEFAULT_SYNC_INTERVAL_SECONDS = 3600
+MODEL_CATALOG_FILENAME = "openrouter_models.json"
 
 
 async def fetch_openrouter_models(
@@ -47,10 +51,19 @@ def _parse_model(m: dict) -> dict:
     }
 
 
+def write_catalog_json(raw_models: list[dict], path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(path.name + ".tmp")
+    payload = sorted(raw_models, key=lambda m: m["slug"])
+    tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp_path, path)
+
+
 async def sync_catalog_once(
     storage,
     api_key: str,
     session_factory=aiohttp.ClientSession,
+    json_path: Path | None = None,
 ) -> bool:
     """Perform a single sync of the model catalog from OpenRouter.
 
@@ -61,6 +74,11 @@ async def sync_catalog_once(
         raw_models = await fetch_openrouter_models(api_key, session_factory=session_factory)
         storage.save_model_catalog([ModelCatalogEntry(**m) for m in raw_models])
         logger.info("synced {} models from openrouter", len(raw_models))
+        if json_path is not None:
+            try:
+                write_catalog_json(raw_models, json_path)
+            except OSError as exc:
+                logger.warning("failed to write model catalog json to {}: {}", json_path, exc)
         return True
     except Exception as exc:
         logger.warning("failed to sync openrouter model catalog: {}", exc)
@@ -73,11 +91,12 @@ async def run_periodic_sync(
     interval_seconds: float = DEFAULT_SYNC_INTERVAL_SECONDS,
     session_factory=aiohttp.ClientSession,
     sleep=asyncio.sleep,
+    json_path: Path | None = None,
 ) -> None:
     """Sync the model catalog immediately, then again every interval_seconds
     -- runs forever until the enclosing task is cancelled (e.g. on shutdown).
     A failed sync is logged and skipped rather than killing the loop, so one
     bad request doesn't stop future retries."""
     while True:
-        await sync_catalog_once(storage, api_key, session_factory=session_factory)
+        await sync_catalog_once(storage, api_key, session_factory=session_factory, json_path=json_path)
         await sleep(interval_seconds)
