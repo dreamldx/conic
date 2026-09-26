@@ -122,18 +122,24 @@ class StorageService:
     def list_model_catalog(self) -> list[ModelCatalogEntry]:
         sql, params = queries.list_model_catalog_sql()
         rows = self._conn.execute(sql, params).fetchall()
-        return [
-            ModelCatalogEntry(
-                slug=r[0], vendor=r[1] or "", real_model=r[2] or "", name=r[3], description=r[4],
-                context_length=r[5], supports_tools=r[6],
-                pricing_prompt=r[7], pricing_completion=r[8],
-                input_modalities=json.loads(r[9]) if r[9] else [],
-                output_modalities=json.loads(r[10]) if r[10] else [],
-                supported_parameters=json.loads(r[11]) if r[11] else [],
-                fetched_at=_parse_stored_datetime(r[12]),
-            )
-            for r in rows
-        ]
+        return [self._catalog_entry_from_row(r) for r in rows]
+
+    def find_model_catalog_entries(self, query: str) -> list[ModelCatalogEntry]:
+        sql, params = queries.find_model_catalog_entries_sql(query)
+        rows = self._conn.execute(sql, params).fetchall()
+        return [self._catalog_entry_from_row(r) for r in rows]
+
+    @staticmethod
+    def _catalog_entry_from_row(r) -> ModelCatalogEntry:
+        return ModelCatalogEntry(
+            slug=r[0], vendor=r[1] or "", real_model=r[2] or "", name=r[3], description=r[4],
+            context_length=r[5], supports_tools=r[6],
+            pricing_prompt=r[7], pricing_completion=r[8],
+            input_modalities=json.loads(r[9]) if r[9] else [],
+            output_modalities=json.loads(r[10]) if r[10] else [],
+            supported_parameters=json.loads(r[11]) if r[11] else [],
+            fetched_at=_parse_stored_datetime(r[12]),
+        )
 
     def get_model_context_length(self, slug: str) -> int:
         sql, params = queries.get_model_context_length_sql(slug)

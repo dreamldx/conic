@@ -238,3 +238,29 @@ def test_startup_drops_legacy_model_catalog_table_with_id_column(tmp_path):
 
     assert [e.slug for e in storage.list_model_catalog()] == ["new/model"]
     storage.shutdown()
+
+
+def test_find_model_catalog_entries_matches_slug_or_model_name(tmp_path):
+    storage = make_storage(tmp_path)
+    storage.save_model_catalog([
+        ModelCatalogEntry(slug="deepseek/deepseek-v4-flash", vendor="deepseek"),
+        ModelCatalogEntry(slug="deepseek/deepseek-v4-flash-0731", vendor="deepseek"),
+        ModelCatalogEntry(slug="~deepseek/deepseek-v4-flash-latest", vendor="deepseek"),
+        ModelCatalogEntry(slug="~deepseek/deepseek-flash-latest", vendor="deepseek"),
+        ModelCatalogEntry(slug="deepseek/deepseek-r1", vendor="deepseek"),
+        ModelCatalogEntry(slug="deepseek/deepseek-r1:free", vendor="deepseek"),
+    ])
+
+    def slugs(query):
+        return [e.slug for e in storage.find_model_catalog_entries(query)]
+
+    assert slugs("deepseek-v4-flash") == ["deepseek/deepseek-v4-flash"]
+    assert slugs("deepseek/deepseek-v4-flash-0731") == ["deepseek/deepseek-v4-flash-0731"]
+    assert slugs("deepseek-v4-flash-0731") == ["deepseek/deepseek-v4-flash-0731"]
+    assert slugs("deepseek-v4-flash-latest") == ["~deepseek/deepseek-v4-flash-latest"]
+    assert slugs("~deepseek/deepseek-flash-latest") == ["~deepseek/deepseek-flash-latest"]
+    assert slugs("  DeepSeek-V4-Flash  ") == ["deepseek/deepseek-v4-flash"]
+    assert slugs("deepseek-r1") == ["deepseek/deepseek-r1"]
+    assert slugs("deepseek-r1:free") == ["deepseek/deepseek-r1:free"]
+    assert slugs("nope") == []
+    storage.shutdown()

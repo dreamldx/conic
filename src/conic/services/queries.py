@@ -171,5 +171,17 @@ def list_model_catalog_sql() -> tuple[str, list]:
     return sql, []
 
 
+def find_model_catalog_entries_sql(query: str) -> tuple[str, list]:
+    sql = (
+        "SELECT slug, vendor, real_model, name, description, context_length, supports_tools, "
+        "pricing_prompt, pricing_completion, input_modalities, output_modalities, "
+        "supported_parameters, fetched_at FROM model_catalog "
+        "WHERE lower(slug) = ? OR lower(regexp_replace(slug, '^~?[^/]*/', '')) = ? "
+        "ORDER BY slug"
+    )
+    needle = query.strip().lower()
+    return sql, [needle, needle]
+
+
 def get_model_context_length_sql(slug: str) -> tuple[str, list]:
     return "SELECT context_length FROM model_catalog WHERE slug = ?", [slug]
