@@ -83,6 +83,9 @@ Use `loguru` — `logger.info()`, `logger.debug()`, `logger.warning()`, `logger.
 
 - Never install skills into the project directory (no `npx skills add` without `-g`); it creates `.agents/` and `.claude/skills` in the repo
 - Install skills globally: `npx skills add <source> -g -y`, which puts them in `~/.agents/skills`
+- Skill `description` frontmatter: one or two sentences, 100-250 characters. It is the only thing the model sees before deciding to `load_skill`, and it is injected verbatim into every session's system prompt, so keep it short but specific
+- A description says what the skill does (start with a verb) and when to use it, with the trigger phrases users would actually say; put usage details, options and examples in the body
+- Quote the `description` value in YAML (`description: '...'`) when it contains `: `, otherwise the frontmatter fails to parse and the skill is skipped
 
 ## Project Structure
 
