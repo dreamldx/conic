@@ -6,8 +6,12 @@ from loguru import logger
 
 from conic.core.bus import MessageBus
 from conic.plugins import meta
-from conic.plugins.models.openrouter import APP_HTTP_REFERER, OpenRouterModelPlugin
-from conic.types.messages import MessageDeltaUpdate, ModelRequest
+from conic.plugins.models.openrouter import (
+    APP_HTTP_REFERER,
+    MODEL_CATALOG_SECTION,
+    OpenRouterModelPlugin,
+)
+from conic.types.messages import BuildSystemPrompt, MessageDeltaUpdate, ModelRequest
 
 
 class FakeCompletions:
@@ -429,3 +433,13 @@ async def test_streaming_deltas_only_reach_the_registering_bus_not_other_session
     await backend_a.complete(ModelRequest(messages=[], tools=[], stream_updates=True))
 
     assert received_on_b == []
+
+
+async def test_system_prompt_points_to_the_model_catalog_file():
+    bus = MessageBus()
+    OpenRouterModelPlugin(api_key="k", model="test-model", client=object()).register(bus)
+
+    result = await bus.chain(meta.BuildSystemPromptEvent, BuildSystemPrompt(sections={}))
+
+    assert result.sections["openrouter_models"] == MODEL_CATALOG_SECTION
+    assert "data/openrouter_models.json" in MODEL_CATALOG_SECTION

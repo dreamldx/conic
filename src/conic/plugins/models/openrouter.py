@@ -5,6 +5,7 @@ from openai import AsyncOpenAI
 
 from conic.plugins import meta
 from conic.types.messages import (
+    BuildSystemPrompt,
     MessageDeltaUpdate,
     ModelRequest,
     ModelResponse,
@@ -12,6 +13,12 @@ from conic.types.messages import (
 )
 
 APP_HTTP_REFERER = "https://github.com/dreamldx/conic"
+MODEL_CATALOG_PATH = "conic/data/openrouter_models.json"
+MODEL_CATALOG_SECTION = (
+    "OpenRouter model information (slug, vendor, real_model, name, description, "
+    "context length, pricing, modalities, supported parameters) is stored as JSON at "
+    f"{MODEL_CATALOG_PATH}."
+)
 
 
 class OpenRouterModelPlugin:
@@ -34,6 +41,11 @@ class OpenRouterModelPlugin:
     def register(self, bus) -> None:
         self._bus = bus
         bus.on_request(meta.ModelRequestEvent, self.complete)
+        bus.on_chain(meta.BuildSystemPromptEvent, self.contribute_model_catalog_info)
+
+    async def contribute_model_catalog_info(self, msg: BuildSystemPrompt) -> BuildSystemPrompt:
+        msg.sections["openrouter_models"] = MODEL_CATALOG_SECTION
+        return msg
 
     async def complete(self, msg: ModelRequest) -> ModelResponse:
         try:
