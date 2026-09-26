@@ -53,16 +53,21 @@ Deploy the current branch:
 
 ## 4. 发现目录与优先级
 
-两级目录,同名时会话级覆盖项目级:
+(2026-09 修订)扫描 **三个 scope、共六个目录**,后面的覆盖前面同名的(`discover_skills` 里按这个顺序合并成一个字典):
 
 | 优先级 | scope | 路径 | 用途 |
 |---|---|---|---|
-| 高 | `session` | `<workspace_dir>/skills/<name>/SKILL.md` | 会话私有;天然可被 `write_file`/`edit_file` 写入,为后续"自主创建"铺路,但本次不加任何鼓励模型去写的 prompt 文案 |
-| 低 | `project` | `<project_root>/skills/<name>/SKILL.md` | 人写、随仓库提交、所有会话共享 |
+| 最低 | `global` | `~/.agents/skills/<name>/SKILL.md` | `npx skills add <source> -g -y` 的安装位置(`Path.home()`,Windows 读 `USERPROFILE`,Linux/macOS 读 `HOME`,所以三个系统都是这一个相对路径) |
+| 低 | `project` | `<project_root>/.agents/skills/<name>/SKILL.md`、`<project_root>/skills/<name>/SKILL.md` | 人写、随仓库提交、所有会话共享;同一 scope 内 `skills/` 覆盖 `.agents/skills/` |
+| 高 | `session` | `<workspace_dir>/.agents/skills/…`、`<workspace_dir>/skills/…` | 会话私有;天然可被 `write_file`/`edit_file` 写入,为后续"自主创建"铺路,但本次不加任何鼓励模型去写的 prompt 文案 |
 
-不引入用户级(`~`)、bundled、插件级目录——conic 是单一部署的 Discord bot,不是多租户 CLI,这些目录在五家调研里对应的是"多用户/插件市场"场景,与 conic 现状不符(YAGNI)。
+原先"不引入用户级(`~`)目录"的取舍被推翻了:`npx skills` 生态默认把 skill 装进 `.agents/skills`(项目级)或 `~/.agents/skills`(`-g` 全局),不扫这两处就等于装了用不上。bundled、插件级目录仍不引入(YAGNI)。**约定**:不在项目目录里跑不带 `-g` 的 `npx skills add`(会在仓库里生成 `.agents/`、`.claude/skills` 和 `skills-lock.json`),统一用 `-g`,见 `CONTRIB.md`。测试里 `Path.home()` 被 `tests/conftest.py` 的自动 fixture 指向临时目录,避免读到开发者真实的全局 skill。
 
-两个目录都不存在或都为空时,`list_skills` 返回"没有可用 skill"的提示,`load_skill` 对任何名字返回未找到错误,system prompt 不出现 `skills` 章节——不需要任何开关配置。
+**`description` 的写法**(`CONTRIB.md` 也有):一到两句话、100 到 250 个字符,说明做什么(动词开头)和什么时候用,带上用户真会说的触发说法;用法细节放正文。原因:system prompt 的 `skills` 章节把每个可见 skill 的 `name (scope): description` **原样**放进去、不截断,每个会话都要付这笔 token;而模型在 `load_skill` 之前只看得到它。含 `: ` 的描述必须用引号括起来,否则 frontmatter 的 YAML 解析失败、skill 被静默跳过(`playwright-edge-windows` 踩过)。
+
+**项目自带 skill 示例 `find-model`**(`skills/find-model/`):`scripts/find_model.py`(只用标准库)读引擎每次目录同步生成的 `data/openrouter_models.json`,提供 `find`(模糊匹配、按厂商/价格/上下文/模态/工具/参数过滤、按价格或能力排序)、`options`(从目录现算所有选项支持的值)、`show`。目录里没有评测数据,所以"能力"只有上下文长度、参数个数、模态个数和工具支持这几个替代指标,skill 正文明确禁止据此断言谁更聪明。
+
+所有目录都不存在或都为空时,`list_skills` 返回"没有可用 skill"的提示,`load_skill` 对任何名字返回未找到错误,system prompt 不出现 `skills` 章节——不需要任何开关配置。
 
 ## 5. 架构:三个新模块
 
@@ -80,7 +85,7 @@ class SkillEntry:
     name: str
     description: str
     disable_model_invocation: bool
-    scope: str          # "project" | "session"
+    scope: str          # "global" | "project" | "session"
     dir: Path           # SKILL.md 所在目录
 
 
@@ -222,7 +227,7 @@ class ConfiguredLoadSkillToolPlugin(LoadSkillToolPlugin):
 
 追加进 `tool_classes` 列表(无条件注册,不像 web tools 那样依赖 API key 开关——没有 skill 时两个工具只是返回空结果,不需要开关)。`context_plugins` 里的 `SystemPromptPlugin([...])` 列表里,在 `ToolingSectionPlugin(schemas)` 之后插入 `SkillsSectionPlugin(ws, config.project_root)`。
 
-不新增任何 `Config` 字段——发现目录完全由已有的 `config.project_root` 和 per-session `workspace_dir` 推导得出。
+不新增任何 `Config` 字段——发现目录完全由已有的 `config.project_root`、per-session `workspace_dir` 和 `Path.home()` 推导得出。
 
 ## 9. v1 范围外(留给两份调研文档的"中长期"结论)
 
@@ -250,6 +255,6 @@ class ConfiguredLoadSkillToolPlugin(LoadSkillToolPlugin):
 | 清单常驻位置 | system prompt(启动时) | developer message(每轮) | system prompt(XML) | system prompt(每轮,高压措辞) | catalog 消息(存疑) | system prompt(启动时快照,不逐轮重算) |
 | 加载工具数量 | 0(自动触发) | 2(`skills.list`/`skills.read`) | 0(用通用 `read`) | 3(`skills_list`/`skill_view`/`skill_manage`) | 1(`skill`) | 2(`list_skills`/`load_skill`),但 `list_skills` 实时重扫,与静态快照分工明确 |
 | 自主创建 | 否 | 否 | 草稿队列 | 是(`skill_manage`+`/learn`) | 未知 | 否(但会话级目录已可写,留作后续) |
-| 发现目录数 | 5+ | 3 域 | 7 级 | 多目录 | 6 级(存疑) | 2 级(project/session) |
+| 发现目录数 | 5+ | 3 域 | 7 级 | 多目录 | 6 级(存疑) | 3 级(global/project/session,每级再含 `.agents/skills` 和 `skills`) |
 
 DeepSeek Harness 一行的调研结果曾被内容安全层标记为"疑似指令注入内容"(见对话历史,`deepseek-ai/deepseek-harness` 的自动调研返回了刻意模仿 Claude Code 内部 `<system-reminder>` 标签、且巧合地点名了本次五方对比对象的"设计笔记"),本设计对它的引用仅作为背景参考,未作为任何决策依据。
