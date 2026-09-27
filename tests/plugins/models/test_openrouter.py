@@ -12,6 +12,7 @@ from conic.plugins.models.openrouter import (
     OpenRouterModelPlugin,
 )
 from conic.services.models import ModelCatalogEntry
+from conic.services.storage import DEFAULT_MODEL_CONTEXT_LENGTH
 from conic.types.messages import (
     BuildSystemPrompt,
     MessageDeltaUpdate,
@@ -509,6 +510,52 @@ async def test_switch_model_resolves_an_alias_to_its_real_model():
 
     assert result == SwitchModelResult(model="deepseek/deepseek-v4.1-flash")
     assert plugin.model == "deepseek/deepseek-v4.1-flash"
+
+
+async def test_construction_seeds_model_context_length_from_the_catalog():
+    known = {"old/model": ModelCatalogEntry(slug="old/model", real_model="old/model", context_length=128000)}
+    global_variables: dict = {}
+    make_switchable_plugin(known, global_variables=global_variables)
+
+    assert global_variables["model_context_length"] == 128000
+
+
+async def test_construction_falls_back_to_the_default_when_model_is_unknown():
+    global_variables: dict = {}
+    make_switchable_plugin({}, global_variables=global_variables)
+
+    assert global_variables["model_context_length"] == DEFAULT_MODEL_CONTEXT_LENGTH
+
+
+async def test_construction_without_global_variables_does_not_raise():
+    make_switchable_plugin({"old/model": ModelCatalogEntry(slug="old/model", real_model="old/model")})
+
+
+async def test_switch_model_reloads_the_context_length_for_the_new_model():
+    known = {
+        "old/model": ModelCatalogEntry(slug="old/model", real_model="old/model", context_length=32000),
+        "new/model": ModelCatalogEntry(slug="new/model", real_model="new/model", context_length=1000000),
+    }
+    global_variables: dict = {}
+    plugin = make_switchable_plugin(known, global_variables=global_variables)
+    bus = MessageBus()
+    plugin.register(bus)
+
+    await bus.request(meta.SwitchModelRequestEvent, SwitchModelRequest(model_id="new/model"))
+
+    assert global_variables["model_context_length"] == 1000000
+
+
+async def test_switch_model_leaves_the_context_length_untouched_on_error():
+    known = {"old/model": ModelCatalogEntry(slug="old/model", real_model="old/model", context_length=32000)}
+    global_variables: dict = {}
+    plugin = make_switchable_plugin(known, global_variables=global_variables)
+    bus = MessageBus()
+    plugin.register(bus)
+
+    await bus.request(meta.SwitchModelRequestEvent, SwitchModelRequest(model_id="missing/model"))
+
+    assert global_variables["model_context_length"] == 32000
 
 
 async def test_switch_model_with_ambiguous_match_returns_an_error_listing_candidates():

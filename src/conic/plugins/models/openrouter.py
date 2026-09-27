@@ -6,6 +6,7 @@ from openai import AsyncOpenAI
 
 from conic.plugins import meta
 from conic.services.models import ModelCatalogEntry
+from conic.services.storage import DEFAULT_MODEL_CONTEXT_LENGTH
 from conic.types.messages import (
     BuildSystemPrompt,
     MessageDeltaUpdate,
@@ -35,6 +36,7 @@ class OpenRouterModelPlugin:
         session_id: str | None = None,
         app_name: str | None = None,
         catalog_lookup: Callable[[str], list[ModelCatalogEntry]] | None = None,
+        global_variables: dict | None = None,
     ):
         self.model = model
         self._client = client or AsyncOpenAI(base_url="https://openrouter.ai/api/v1", api_key=api_key)
@@ -43,6 +45,8 @@ class OpenRouterModelPlugin:
         self._session_id = session_id
         self._app_name = app_name
         self._catalog_lookup = catalog_lookup
+        self._global_variables = global_variables
+        self._reload_model_context_length()
 
     def register(self, bus) -> None:
         self._bus = bus
@@ -50,21 +54,35 @@ class OpenRouterModelPlugin:
         bus.on_request(meta.SwitchModelRequestEvent, self.switch_model)
         bus.on_chain(meta.BuildSystemPromptEvent, self.contribute_model_catalog_info)
 
-    async def switch_model(self, msg: SwitchModelRequest) -> SwitchModelResult:
+    def _resolve_catalog_entry(self, model_id: str) -> tuple[ModelCatalogEntry | None, str | None]:
         if self._catalog_lookup is None:
-            return SwitchModelResult(error="model catalog is not available")
-        matches = self._catalog_lookup(msg.model_id)
+            return None, "model catalog is not available"
+        matches = self._catalog_lookup(model_id)
         if not matches:
-            return SwitchModelResult(error=f"model not found: {msg.model_id}")
-        exact = [m for m in matches if m.slug.lower() == msg.model_id.strip().lower()]
+            return None, f"model not found: {model_id}"
+        exact = [m for m in matches if m.slug.lower() == model_id.strip().lower()]
         candidates = exact or matches
         if len(candidates) > 1:
             names = ", ".join(m.slug for m in candidates)
-            return SwitchModelResult(error=f"ambiguous model: {msg.model_id} matches {names}")
-        entry = candidates[0]
+            return None, f"ambiguous model: {model_id} matches {names}"
+        return candidates[0], None
+
+    def _reload_model_context_length(self, entry: ModelCatalogEntry | None = None) -> None:
+        if self._global_variables is None:
+            return
+        if entry is None:
+            entry, _ = self._resolve_catalog_entry(self.model)
+        length = entry.context_length if entry and entry.context_length else DEFAULT_MODEL_CONTEXT_LENGTH
+        self._global_variables["model_context_length"] = length
+
+    async def switch_model(self, msg: SwitchModelRequest) -> SwitchModelResult:
+        entry, error = self._resolve_catalog_entry(msg.model_id)
+        if error:
+            return SwitchModelResult(error=error)
         real_model = entry.real_model or entry.slug
         logger.info("switching model {} -> {}", self.model, real_model)
         self.model = real_model
+        self._reload_model_context_length(entry)
         return SwitchModelResult(model=real_model)
 
     async def contribute_model_catalog_info(self, msg: BuildSystemPrompt) -> BuildSystemPrompt:

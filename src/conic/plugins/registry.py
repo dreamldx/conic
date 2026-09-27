@@ -103,7 +103,7 @@ def _build_one_plugin_set(
     context_plugins = _build_context_plugins(set_cfg.context, config, ctx)
     policy_plugins = _build_policy_plugins(set_cfg.policy, config)
     summarizer = _build_summarizer(set_cfg.summarizer)
-    backend = _build_backend(set_cfg.backend, config, ctx, provider_blacklist)
+    backend = _build_backend(set_cfg.backend, config, ctx, provider_blacklist, resolved_global_variables)
     loop_cls = _build_loop(set_cfg.loop)
 
     def loop_factory(handle, schemas, payload_map, ws, persisted_session_variables):
@@ -337,28 +337,28 @@ def _build_summarizer(name: str) -> Callable[[], object]:
     return builder()
 
 
-def _build_openrouter_backend(config: Config, ctx: BuildContext, provider_blacklist: list[str]):
+def _build_openrouter_backend(config: Config, ctx: BuildContext, provider_blacklist: list[str], global_variables: dict):
     def factory(session_key: str):
         return OpenRouterModelPlugin(
             api_key=config.openrouter_api_key, model=config.openrouter_model, client=ctx.shared_client,
             provider_blacklist=provider_blacklist, session_id=session_key, app_name=config.project_name,
-            catalog_lookup=ctx.catalog_lookup,
+            catalog_lookup=ctx.catalog_lookup, global_variables=global_variables,
         )
     return factory
 
 
-BACKEND_BUILDERS: dict[str, Callable[[Config, BuildContext, list[str]], Callable[[str], object]]] = {
+BACKEND_BUILDERS: dict[str, Callable[[Config, BuildContext, list[str], dict], Callable[[str], object]]] = {
     "openrouter": _build_openrouter_backend,
 }
 
 
 def _build_backend(
-    name: str, config: Config, ctx: BuildContext, provider_blacklist: list[str]
+    name: str, config: Config, ctx: BuildContext, provider_blacklist: list[str], global_variables: dict
 ) -> Callable[[str], object]:
     builder = BACKEND_BUILDERS.get(name)
     if builder is None:
         raise PluginConfigError(f"unknown backend: {name}")
-    return builder(config, ctx, provider_blacklist)
+    return builder(config, ctx, provider_blacklist, global_variables)
 
 
 LOOP_BUILDERS: dict[str, Callable[[], type]] = {

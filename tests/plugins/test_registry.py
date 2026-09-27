@@ -350,7 +350,7 @@ def test_build_summarizer_unknown_name_raises():
 def test_build_backend_openrouter_wires_model_and_blacklist(tmp_path):
     config = make_config(tmp_path)
     ctx = make_build_context(config)
-    backend = _build_backend("openrouter", config, ctx, ["novita"])
+    backend = _build_backend("openrouter", config, ctx, ["novita"], {})
     instance = backend("discord:1")
     assert isinstance(instance, OpenRouterModelPlugin)
     assert instance.model == "test-model"
@@ -362,7 +362,7 @@ def test_build_backend_unknown_name_raises(tmp_path):
     config = make_config(tmp_path)
     ctx = make_build_context(config)
     with pytest.raises(PluginConfigError, match="unknown backend"):
-        _build_backend("not_real", config, ctx, [])
+        _build_backend("not_real", config, ctx, [], {})
 
 
 def test_build_loop_react_produces_react_loop_plugin():
