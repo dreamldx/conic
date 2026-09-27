@@ -148,6 +148,10 @@ class StorageService:
             return DEFAULT_MODEL_CONTEXT_LENGTH
         return row[0]
 
+    def model_catalog_is_empty(self) -> bool:
+        sql, params = queries.model_catalog_is_empty_sql()
+        return self._conn.execute(sql, params).fetchone() is None
+
     @staticmethod
     def _session_from_row(r) -> Session:
         return Session(

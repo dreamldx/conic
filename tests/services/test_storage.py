@@ -224,6 +224,19 @@ def test_get_model_context_length_defaults_to_65535_when_model_not_in_catalog(tm
     storage.shutdown()
 
 
+def test_model_catalog_is_empty_before_any_sync(tmp_path):
+    storage = make_storage(tmp_path)
+    assert storage.model_catalog_is_empty() is True
+    storage.shutdown()
+
+
+def test_model_catalog_is_empty_returns_false_after_a_sync(tmp_path):
+    storage = make_storage(tmp_path)
+    storage.save_model_catalog([ModelCatalogEntry(slug="openai/gpt-audio")])
+    assert storage.model_catalog_is_empty() is False
+    storage.shutdown()
+
+
 def test_startup_drops_legacy_model_catalog_table_with_id_column(tmp_path):
     import duckdb
 

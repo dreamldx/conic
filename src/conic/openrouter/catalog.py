@@ -93,10 +93,12 @@ async def run_periodic_sync(
     sleep=asyncio.sleep,
     json_path: Path | None = None,
 ) -> None:
-    """Sync the model catalog immediately, then again every interval_seconds
-    -- runs forever until the enclosing task is cancelled (e.g. on shutdown).
+    """Sync the model catalog every interval_seconds, starting after the first
+    sleep -- runs forever until the enclosing task is cancelled (e.g. on
+    shutdown). The caller is expected to have synced once already (see
+    entry.py::build_app()) so this doesn't duplicate that sync on startup.
     A failed sync is logged and skipped rather than killing the loop, so one
     bad request doesn't stop future retries."""
     while True:
-        await sync_catalog_once(storage, api_key, session_factory=session_factory, json_path=json_path)
         await sleep(interval_seconds)
+        await sync_catalog_once(storage, api_key, session_factory=session_factory, json_path=json_path)

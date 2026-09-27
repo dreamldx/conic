@@ -185,3 +185,7 @@ def find_model_catalog_entries_sql(query: str) -> tuple[str, list]:
 
 def get_model_context_length_sql(slug: str) -> tuple[str, list]:
     return "SELECT context_length FROM model_catalog WHERE slug = ?", [slug]
+
+
+def model_catalog_is_empty_sql() -> tuple[str, list]:
+    return "SELECT 1 FROM model_catalog LIMIT 1", []

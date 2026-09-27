@@ -157,7 +157,7 @@ def sleep_n_times_then_cancel(n):
     return fake_sleep, calls
 
 
-async def test_run_periodic_sync_syncs_immediately_before_the_first_sleep():
+async def test_run_periodic_sync_does_not_sync_before_the_first_sleep():
     storage = FakeStorage()
     payload = {"data": [{"id": "a/b", "context_length": 1000, "supported_parameters": ["tools"]}]}
     fake_sleep, calls = sleep_n_times_then_cancel(1)
@@ -165,16 +165,28 @@ async def test_run_periodic_sync_syncs_immediately_before_the_first_sleep():
     with pytest.raises(asyncio.CancelledError):
         await run_periodic_sync(storage, "key", session_factory=session_factory(payload), sleep=fake_sleep)
 
+    assert storage.saved == []
+    assert calls == [3600]
+
+
+async def test_run_periodic_sync_syncs_after_each_sleep():
+    storage = FakeStorage()
+    payload = {"data": [{"id": "a/b", "context_length": 1000, "supported_parameters": ["tools"]}]}
+    fake_sleep, calls = sleep_n_times_then_cancel(2)
+
+    with pytest.raises(asyncio.CancelledError):
+        await run_periodic_sync(storage, "key", session_factory=session_factory(payload), sleep=fake_sleep)
+
     assert len(storage.saved) == 1
     assert storage.saved[0][0].slug == "a/b"
     assert storage.saved[0][0].context_length == 1000
-    assert calls == [3600]
+    assert calls == [3600, 3600]
 
 
 async def test_run_periodic_sync_resyncs_on_every_interval():
     storage = FakeStorage()
     payload = {"data": [{"id": "a/b"}]}
-    fake_sleep, calls = sleep_n_times_then_cancel(3)
+    fake_sleep, calls = sleep_n_times_then_cancel(4)
 
     with pytest.raises(asyncio.CancelledError):
         await run_periodic_sync(
@@ -182,7 +194,7 @@ async def test_run_periodic_sync_resyncs_on_every_interval():
         )
 
     assert len(storage.saved) == 3
-    assert calls == [1, 1, 1]
+    assert calls == [1, 1, 1, 1]
 
 
 async def test_run_periodic_sync_keeps_looping_after_a_failed_sync():

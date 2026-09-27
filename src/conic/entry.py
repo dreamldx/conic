@@ -34,10 +34,12 @@ async def build_app(
     storage = StorageService(config.duckdb_path, config.workspace_root, config.openrouter_model)
     storage.startup()
     logger.info("storage started (db={})", config.duckdb_path)
-    # Populate the model catalog before any session is built, otherwise
-    # OpenRouterModelPlugin's context-length lookup falls back to
-    # DEFAULT_MODEL_CONTEXT_LENGTH for the first session.
-    await sync_once(storage, config.openrouter_api_key, json_path=_catalog_json_path(config.project_root))
+    # If the catalog is empty (first-ever run, or a fresh db), sync it before
+    # any session is built, otherwise OpenRouterModelPlugin's context-length
+    # lookup falls back to DEFAULT_MODEL_CONTEXT_LENGTH for sessions resumed
+    # or created before the background sync task gets a chance to run.
+    if storage.model_catalog_is_empty():
+        await sync_once(storage, config.openrouter_api_key, json_path=_catalog_json_path(config.project_root))
     plugin_sets = build_plugin_set(config, catalog_lookup=storage.find_model_catalog_entries)
     if "main" not in plugin_sets:
         raise PluginConfigError(f"plugins config at {config.plugins_config_path} must define a 'main' plugin set")
