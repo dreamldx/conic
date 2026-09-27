@@ -2,8 +2,9 @@
 
 Conic is a small, pluggable agentic engine that connects an LLM (via
 OpenRouter) to a Discord bot, giving it real local tool access — `bash`,
-`read_file`, `write_file`, `edit_file`, `web_search` (Tavily), and
-`web_fetch` (Firecrawl) — scoped to a per-session workspace directory.
+`read_file`, `write_file`, `edit_file`, `list_skills`/`load_skill`,
+`web_search` (Tavily), and `web_fetch` (Firecrawl) — scoped to a
+per-session workspace directory.
 Every session (one per Discord thread) gets its own isolated `MessageBus`
 and set of plugin instances, with conversation history persisted to DuckDB
 so sessions survive a bot restart. It's intended for small, trusted teams
@@ -11,8 +12,9 @@ who want a coding-agent-in-a-thread, not for exposing tool execution to
 untrusted public users.
 
 See `docs/superpowers/specs/2026-09-13-conic-agentic-engine-design.md` for
-the full architecture. See `docs/superpowers/specs/2026-09-18-web-tools-design.md`
-for web tools design.
+the full architecture, `docs/superpowers/specs/2026-09-18-web-tools-design.md`
+for web tools design, and `docs/superpowers/specs/2026-09-19-conic-skill-system-design.md`
+for the skill system.
 
 ## Environment variables
 
@@ -56,19 +58,66 @@ manual verification checklist.
 
 ## Model catalog
 
-On every startup (and then hourly via a background task), the catalog of
-available OpenRouter models is fetched from the
-[OpenRouter models API](https://openrouter.ai/docs/api-reference/list-available-models)
-and stored in DuckDB. The model running the bot
-(`OPENROUTER_MODEL`) is looked up in that catalog to resolve its advertised
-`context_length`, which is exposed to sessions as the
-`model_context_length` global (used by the context/truncation pipeline).
+The catalog of available OpenRouter models is fetched from the
+[OpenRouter models API](https://openrouter.ai/docs/api-reference/list-available-models),
+stored in DuckDB (`model_catalog` table: `slug`, `vendor`, `real_model`,
+name, description, context length, pricing, modalities, supported
+parameters), and snapshotted to `{PROJECT_ROOT}/data/openrouter_models.json`
+on every successful sync. It's synced once at startup if the table is
+empty (a fresh database, or the very first run), and every hour after that
+via a background task — a non-empty table at startup is assumed fresh
+enough and is *not* re-synced immediately, to avoid hitting the OpenRouter
+API twice a few seconds apart on every restart.
 
-Because the catalog is fetched before the bot connects, this value is
-correct from the first session — it does not rely on a pre-seeded database.
-If the catalog fetch fails at startup (e.g. no network), the lookup falls
-back to a default of 65535 tokens, so the bot still starts; the hourly sync
-keeps retrying in the background.
+`OpenRouterModelPlugin` looks up its own model's `context_length` in this
+catalog — at construction (covering both new sessions and sessions
+resumed after a restart) and again whenever the model is switched — and
+exposes it to the prompt as the `model_context_length` global (used by
+the context/truncation pipeline). If the catalog can't be queried (e.g.
+first-ever startup with no network), it falls back to a default of 65535
+tokens; the hourly sync keeps retrying in the background, but note that an
+already-running session won't pick up a value corrected by a later sync
+except by switching models again.
+
+A session's model can be changed at runtime via the `SwitchModelRequestEvent`
+bus request (`SwitchModelRequest(model_id) -> SwitchModelResult(model, error)`).
+Matching is case-insensitive against either the full slug or the model
+name after the vendor prefix, so `deepseek-v4-flash`,
+`deepseek/deepseek-v4-flash-0731` and `~deepseek/deepseek-flash-latest`
+all resolve; an alias resolves to the real model it points at. There is
+currently no Discord command or tool wired up to send this request.
+
+Use the `find-model` skill (`skills/find-model/`) to search, filter and
+sort this catalog — fuzzy name matching, filtering by vendor/price/context/
+modality/tools, and listing every value an option accepts.
+
+## Discord behavior
+
+Besides `/agent_start` and `/agent_stop`, @-mentioning the bot in a regular
+server channel starts a new session in a fresh public thread, titled from
+the first line of the message (truncated to 90 characters, or
+`agent-session` if empty); the mention itself is stripped before it's
+handed to the model. Mentioning the bot with no other text gets an error
+reply in the channel instead of an empty thread. Mentioning the bot inside
+an existing session thread just strips the mention and forwards the rest
+of the message as usual.
+
+A session whose thread has had no activity (no user or assistant message)
+for 30 days is automatically archived, locked, and marked ended by an
+hourly sweep — this applies even if the bot was offline when the thread
+went quiet.
+
+## Skills
+
+Skills are reusable, task-specific instructions loaded on demand via the
+`list_skills`/`load_skill` tools. Discovery scans, lowest to highest
+priority, `~/.agents/skills`, `{PROJECT_ROOT}/.agents/skills` and
+`{PROJECT_ROOT}/skills`, then the same two paths under the session
+workspace directory — matching where
+[`npx skills add`](https://github.com/vercel-labs/skills) installs skills
+(project-local by default, `~/.agents/skills` with `-g`). See `CONTRIB.md`
+for the `description` frontmatter conventions and the project's own
+`skills/find-model/` for an example.
 
 ## Plugin configuration
 
