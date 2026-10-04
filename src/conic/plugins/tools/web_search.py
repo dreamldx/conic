@@ -4,7 +4,7 @@ from typing import ClassVar
 import aiohttp
 from loguru import logger
 
-from conic.plugins import meta
+from conic.plugins import Plugin, meta
 from conic.plugins.tools.base import strip_special_tokens, wrap_untrusted
 from conic.types.messages import BuildSystemPrompt, ToolCallResult
 from conic.utils.net import ProviderResponseError, http_post_json
@@ -45,7 +45,8 @@ class WebSearchCall:
     include_answer: str = ""
 
 
-class WebSearchToolPlugin:
+class WebSearchToolPlugin(Plugin):
+    Name = "web_search"
     llm_name = "web_search"
     schema: ClassVar[dict] = {
         "type": "function",

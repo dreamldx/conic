@@ -1,8 +1,9 @@
-from conic.plugins import meta
+from conic.plugins import Plugin, meta
 from conic.types.messages import BuildSystemPrompt
 
 
-class ToolingSectionPlugin:
+class ToolingSectionPlugin(Plugin):
+    Name = "tooling"
     def __init__(self, tool_schemas: list[dict]):
         self._tool_schemas = tool_schemas
 

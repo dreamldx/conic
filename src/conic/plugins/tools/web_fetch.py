@@ -6,7 +6,7 @@ from typing import ClassVar
 import aiohttp
 from loguru import logger
 
-from conic.plugins import meta
+from conic.plugins import Plugin, meta
 from conic.plugins.tools.base import strip_special_tokens, wrap_untrusted
 from conic.types.messages import BuildSystemPrompt, ToolCallResult
 from conic.utils.net import ProviderResponseError, http_post_json, validate_web_url
@@ -56,7 +56,8 @@ class WebFetchCall:
     prompt: str = ""
 
 
-class WebFetchToolPlugin:
+class WebFetchToolPlugin(Plugin):
+    Name = "web_fetch"
     llm_name = "web_fetch"
     schema: ClassVar[dict] = build_web_fetch_schema(include_prompt=False)
 

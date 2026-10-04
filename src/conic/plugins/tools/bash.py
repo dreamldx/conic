@@ -4,7 +4,7 @@ from typing import ClassVar
 
 from loguru import logger
 
-from conic.plugins import meta
+from conic.plugins import Plugin, meta
 from conic.types.messages import BuildSystemPrompt, ToolCallResult
 
 
@@ -13,7 +13,8 @@ class BashCall:
     command: str
 
 
-class BashToolPlugin:
+class BashToolPlugin(Plugin):
+    Name = "bash"
     llm_name = "bash"
     schema: ClassVar[dict] = {
         "type": "function",

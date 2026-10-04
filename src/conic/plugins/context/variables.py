@@ -1,10 +1,11 @@
 from datetime import UTC, datetime
 
-from conic.plugins import meta
+from conic.plugins import Plugin, meta
 from conic.types.messages import TurnStart
 
 
-class TurnVariableUpdaterPlugin:
+class TurnVariableUpdaterPlugin(Plugin):
+    Name = "turn_variables"
     def register(self, bus) -> None:
         bus.on_chain(meta.TurnStartEvent, self.contribute)
 

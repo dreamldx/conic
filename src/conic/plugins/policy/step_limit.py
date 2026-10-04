@@ -1,9 +1,10 @@
-from conic.plugins import meta
+from conic.plugins import Plugin, meta
 from conic.types.errors import AbortTurn
 from conic.types.messages import StepStart
 
 
-class StepLimitPlugin:
+class StepLimitPlugin(Plugin):
+    Name = "step_limit"
     def __init__(self, max_steps: int):
         self._max_steps = max_steps
 

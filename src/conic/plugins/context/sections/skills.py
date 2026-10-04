@@ -1,6 +1,6 @@
 from loguru import logger
 
-from conic.plugins import meta
+from conic.plugins import Plugin, meta
 from conic.plugins.skills import discover_skills, visible_to_model
 from conic.types.messages import BuildSystemPrompt
 
@@ -16,7 +16,8 @@ SKILLS_OUTRO = (
 )
 
 
-class SkillsSectionPlugin:
+class SkillsSectionPlugin(Plugin):
+    Name = "skills"
     def __init__(self, workspace_dir: str, project_root: str):
         entries = visible_to_model(discover_skills(workspace_dir, project_root))
         logger.debug("system prompt: loaded {} skill(s): {}", len(entries), [e.name for e in entries])

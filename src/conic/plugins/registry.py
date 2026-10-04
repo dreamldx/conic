@@ -154,6 +154,7 @@ def _build_bash_tool(config: Config, params: dict, ctx: BuildContext) -> type:
     timeout = params.get("timeout", 60.0)
 
     class ConfiguredBashToolPlugin(BashToolPlugin):
+        Name = BashToolPlugin.Name
         def __init__(self, workspace_dir: str):
             super().__init__(workspace_dir=workspace_dir, timeout=timeout)
 
@@ -162,6 +163,7 @@ def _build_bash_tool(config: Config, params: dict, ctx: BuildContext) -> type:
 
 def _build_list_skills_tool(config: Config, params: dict, ctx: BuildContext) -> type:
     class ConfiguredListSkillsToolPlugin(ListSkillsToolPlugin):
+        Name = ListSkillsToolPlugin.Name
         def __init__(self, workspace_dir: str):
             super().__init__(workspace_dir=workspace_dir, project_root=config.project_root)
 
@@ -170,6 +172,7 @@ def _build_list_skills_tool(config: Config, params: dict, ctx: BuildContext) -> 
 
 def _build_load_skill_tool(config: Config, params: dict, ctx: BuildContext) -> type:
     class ConfiguredLoadSkillToolPlugin(LoadSkillToolPlugin):
+        Name = LoadSkillToolPlugin.Name
         def __init__(self, workspace_dir: str):
             super().__init__(workspace_dir=workspace_dir, project_root=config.project_root)
 
@@ -182,6 +185,7 @@ def _build_web_search_tool(config: Config, params: dict, ctx: BuildContext) -> t
     timeout = params.get("timeout", 30.0)
 
     class ConfiguredWebSearchToolPlugin(WebSearchToolPlugin):
+        Name = WebSearchToolPlugin.Name
         def __init__(self, workspace_dir: str):
             super().__init__(workspace_dir=workspace_dir, api_key=config.tavily_api_key, timeout=timeout)
 
@@ -196,6 +200,7 @@ def _build_web_fetch_tool(config: Config, params: dict, ctx: BuildContext) -> ty
     summary_model = params.get("summary_model", "")
 
     class ConfiguredWebFetchToolPlugin(WebFetchToolPlugin):
+        Name = WebFetchToolPlugin.Name
         schema = build_web_fetch_schema(include_prompt=bool(summary_model))
 
         def __init__(self, workspace_dir: str):

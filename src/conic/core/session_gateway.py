@@ -1,6 +1,6 @@
 import asyncio
 
-from conic.plugins import meta
+from conic.plugins import Plugin, meta
 from conic.types.messages import Input
 from conic.types.session import SessionScope
 from conic.types.steering import SteeringUserMessage
@@ -8,7 +8,8 @@ from conic.types.steering import SteeringUserMessage
 DEFAULT_POLL_INTERVAL = 0.5
 
 
-class SessionGatewayPlugin:
+class SessionGatewayPlugin(Plugin):
+    Name = "session_gateway"
     """Channel-agnostic per-session coroutine: drains scope.queue (fed by the
     channel-specific process-singleton gateway's on_message), runs the
     InputEvent interception chain, and posts unhandled text as a

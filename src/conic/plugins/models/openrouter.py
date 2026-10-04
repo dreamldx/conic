@@ -4,7 +4,7 @@ from collections.abc import Callable
 from loguru import logger
 from openai import AsyncOpenAI
 
-from conic.plugins import meta
+from conic.plugins import Plugin, meta
 from conic.services.models import ModelCatalogEntry
 from conic.services.storage import DEFAULT_MODEL_CONTEXT_LENGTH
 from conic.types.messages import (
@@ -26,7 +26,8 @@ MODEL_CATALOG_SECTION = (
 )
 
 
-class OpenRouterModelPlugin:
+class OpenRouterModelPlugin(Plugin):
+    Name = "openrouter"
     def __init__(
         self,
         api_key: str,

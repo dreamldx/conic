@@ -1,8 +1,9 @@
-from conic.plugins import meta
+from conic.plugins import Plugin, meta
 from conic.types.messages import BuildSystemPrompt
 
 
-class RuntimeSectionPlugin:
+class RuntimeSectionPlugin(Plugin):
+    Name = "runtime"
     def register(self, bus) -> None:
         bus.on_chain(meta.BuildSystemPromptEvent, self.contribute)
 

@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from typing import ClassVar
 
-from conic.plugins import meta
+from conic.plugins import Plugin, meta
 from conic.plugins.skills import (
     discover_skills,
     parse_skill_file,
@@ -23,7 +23,8 @@ class LoadSkillCall:
     file_path: str = ""
 
 
-class ListSkillsToolPlugin:
+class ListSkillsToolPlugin(Plugin):
+    Name = "list_skills"
     llm_name = "list_skills"
     schema: ClassVar[dict] = {
         "type": "function",
@@ -55,7 +56,8 @@ class ListSkillsToolPlugin:
         return ToolCallResult(output="\n".join(lines))
 
 
-class LoadSkillToolPlugin:
+class LoadSkillToolPlugin(Plugin):
+    Name = "load_skill"
     llm_name = "load_skill"
     schema: ClassVar[dict] = {
         "type": "function",

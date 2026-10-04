@@ -1,8 +1,9 @@
-from conic.plugins import meta
+from conic.plugins import Plugin, meta
 from conic.types.messages import BuildSystemPrompt
 
 
-class ExecutionBiasSectionPlugin:
+class ExecutionBiasSectionPlugin(Plugin):
+    Name = "execution"
     def __init__(self, content: str):
         self._content = content
 

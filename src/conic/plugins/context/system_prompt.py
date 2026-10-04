@@ -1,12 +1,13 @@
 from jinja2 import Template
 
-from conic.plugins import meta
+from conic.plugins import Plugin, meta
 from conic.types.messages import BeforeModelCall, BuildSystemPrompt
 
 SECTION_ORDER = ["identity", "tooling", "skills", "workspace", "runtime", "execution"]
 
 
-class SystemPromptPlugin:
+class SystemPromptPlugin(Plugin):
+    Name = "system_prompt"
     def __init__(self, section_plugins: list):
         self._section_plugins = section_plugins
         self._bus = None

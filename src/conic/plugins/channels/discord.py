@@ -5,7 +5,7 @@ from collections.abc import Callable
 
 from loguru import logger
 
-from conic.plugins import meta
+from conic.plugins import Plugin, meta
 from conic.types.messages import (
     AssistantMessage,
     BuildSystemPrompt,
@@ -97,7 +97,8 @@ THINKING_TEXTS = (
 )
 
 
-class DiscordThreadPlugin:
+class DiscordThreadPlugin(Plugin):
+    Name = "discord"
     def __init__(self, thread, clock: Callable[[], float] = time.monotonic):
         self._thread = thread
         self._clock = clock

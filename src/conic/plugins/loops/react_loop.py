@@ -2,7 +2,7 @@ import asyncio
 
 from loguru import logger
 
-from conic.plugins import meta
+from conic.plugins import Plugin, meta
 from conic.types.errors import AbortReason, AbortTurn
 from conic.types.messages import (
     AssistantMessage,
@@ -25,7 +25,8 @@ from conic.types.messages import (
 from conic.types.steering import SteeringItem
 
 
-class ReactLoopPlugin:
+class ReactLoopPlugin(Plugin):
+    Name = "react"
     def __init__(
         self,
         storage_handle,

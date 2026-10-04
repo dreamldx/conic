@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from typing import ClassVar
 
-from conic.plugins import meta
+from conic.plugins import Plugin, meta
 from conic.plugins.tools.base import WorkspaceEscapeError, resolve_within_workspace
 from conic.types.messages import BuildSystemPrompt, ToolCallResult
 
@@ -12,7 +12,8 @@ class WriteFileCall:
     content: str
 
 
-class WriteFileToolPlugin:
+class WriteFileToolPlugin(Plugin):
+    Name = "write_file"
     llm_name = "write_file"
     schema: ClassVar[dict] = {
         "type": "function",

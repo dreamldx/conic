@@ -1,8 +1,9 @@
-from conic.plugins import meta
+from conic.plugins import Plugin, meta
 from conic.types.messages import BuildSystemPrompt
 
 
-class WorkspaceSectionPlugin:
+class WorkspaceSectionPlugin(Plugin):
+    Name = "workspace"
     def __init__(self, workspace_dir: str):
         self._workspace_dir = workspace_dir
 

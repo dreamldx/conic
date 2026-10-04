@@ -1,5 +1,5 @@
 from conic.core.tokencount import estimate_tokens
-from conic.plugins import meta
+from conic.plugins import Plugin, meta
 from conic.types.messages import (
     BeforeModelCall,
     BeforeSummarize,
@@ -9,7 +9,8 @@ from conic.types.messages import (
 )
 
 
-class TokenBudgetPlugin:
+class TokenBudgetPlugin(Plugin):
+    Name = "token_budget"
     def __init__(self, budget_tokens: int):
         self._budget_tokens = budget_tokens
         self._bus = None

@@ -1,9 +1,10 @@
 from conic.core.messagealign import align_cut
-from conic.plugins import meta
+from conic.plugins import Plugin, meta
 from conic.types.messages import ModelRequest, SummarizeRequest, SummarizeResult
 
 
-class SummarizerPlugin:
+class SummarizerPlugin(Plugin):
+    Name = "default"
     def __init__(self, keep_recent: int = 5):
         self._keep_recent = keep_recent
         self._bus = None

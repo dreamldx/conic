@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from typing import ClassVar
 
-from conic.plugins import meta
+from conic.plugins import Plugin, meta
 from conic.plugins.tools.base import WorkspaceEscapeError, resolve_within_workspace
 from conic.types.messages import BuildSystemPrompt, ToolCallResult
 
@@ -13,7 +13,8 @@ class EditFileCall:
     new_text: str
 
 
-class EditFileToolPlugin:
+class EditFileToolPlugin(Plugin):
+    Name = "edit_file"
     llm_name = "edit_file"
     schema: ClassVar[dict] = {
         "type": "function",

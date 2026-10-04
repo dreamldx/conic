@@ -1,9 +1,10 @@
 from conic.core.messagealign import align_cut
-from conic.plugins import meta
+from conic.plugins import Plugin, meta
 from conic.types.messages import BeforeModelCall
 
 
-class TruncatorPlugin:
+class TruncatorPlugin(Plugin):
+    Name = "truncator"
     def __init__(self, keep_last_n: int):
         self._keep_last_n = keep_last_n
 
