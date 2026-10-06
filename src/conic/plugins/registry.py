@@ -9,6 +9,7 @@ from openai import AsyncOpenAI
 from conic.config import Config
 from conic.core.bus import infer_payload_type
 from conic.core.manager import PluginSet
+from conic.plugins import Plugin
 from conic.plugins.context.extra_prompt import ExtraPromptPlugin
 from conic.plugins.context.sections.dynamic_state import DynamicStateSectionPlugin
 from conic.plugins.context.sections.execution import ExecutionBiasSectionPlugin
@@ -213,38 +214,38 @@ def _build_web_fetch_tool(config: Config, params: dict, ctx: BuildContext) -> ty
     return ConfiguredWebFetchToolPlugin
 
 
-TOOL_BUILDERS: dict[str, Callable[[Config, dict, BuildContext], type]] = {
-    "bash": _build_bash_tool,
-    "read_file": lambda config, params, ctx: ReadFileToolPlugin,
-    "write_file": lambda config, params, ctx: WriteFileToolPlugin,
-    "edit_file": lambda config, params, ctx: EditFileToolPlugin,
-    "list_skills": _build_list_skills_tool,
-    "load_skill": _build_load_skill_tool,
-    "web_search": _build_web_search_tool,
-    "web_fetch": _build_web_fetch_tool,
-}
-
-
 def _build_tool_classes(specs: list[PluginSpec], config: Config, ctx: BuildContext) -> tuple[type, ...]:
     classes = []
     for spec in specs:
-        builder = TOOL_BUILDERS.get(spec.name)
-        if builder is None:
+        cls = Plugin.find(spec.name)
+        if cls is None:
             raise PluginConfigError(f"unknown tool: {spec.name}")
-        classes.append(builder(config, spec.params, ctx))
+        classes.append(TOOL_BUILDERS[cls](config, spec.params, ctx))
     return tuple(classes)
+
+
+TOOL_BUILDERS: dict[type, Callable[[Config, dict, BuildContext], type]] = {
+    BashToolPlugin: _build_bash_tool,
+    ReadFileToolPlugin: lambda c, p, ctx: ReadFileToolPlugin,
+    WriteFileToolPlugin: lambda c, p, ctx: WriteFileToolPlugin,
+    EditFileToolPlugin: lambda c, p, ctx: EditFileToolPlugin,
+    ListSkillsToolPlugin: _build_list_skills_tool,
+    LoadSkillToolPlugin: _build_load_skill_tool,
+    WebSearchToolPlugin: _build_web_search_tool,
+    WebFetchToolPlugin: _build_web_fetch_tool,
+}
 
 
 SectionBuilder = Callable[[Config, dict, BuildContext, str, list[dict]], object]
 
-SECTION_BUILDERS: dict[str, SectionBuilder] = {
-    "identity": lambda config, params, ctx, ws, schemas: IdentitySectionPlugin(ctx.prompts.get("identity", "")),
-    "tooling": lambda config, params, ctx, ws, schemas: ToolingSectionPlugin(schemas),
-    "skills": lambda config, params, ctx, ws, schemas: SkillsSectionPlugin(ws, config.project_root),
-    "workspace": lambda config, params, ctx, ws, schemas: WorkspaceSectionPlugin(ws),
-    "runtime": lambda config, params, ctx, ws, schemas: RuntimeSectionPlugin(),
-    "execution": lambda config, params, ctx, ws, schemas: ExecutionBiasSectionPlugin(ctx.prompts.get("execution", "")),
-    "dynamic_state": lambda config, params, ctx, ws, schemas: DynamicStateSectionPlugin(),
+SECTION_BUILDERS: dict[type, SectionBuilder] = {
+    IdentitySectionPlugin: lambda c, p, ctx, ws, schemas: IdentitySectionPlugin(ctx.prompts.get("identity", "")),
+    ToolingSectionPlugin: lambda c, p, ctx, ws, schemas: ToolingSectionPlugin(schemas),
+    SkillsSectionPlugin: lambda c, p, ctx, ws, schemas: SkillsSectionPlugin(ws, c.project_root),
+    WorkspaceSectionPlugin: lambda c, p, ctx, ws, schemas: WorkspaceSectionPlugin(ws),
+    RuntimeSectionPlugin: lambda c, p, ctx, ws, schemas: RuntimeSectionPlugin(),
+    ExecutionBiasSectionPlugin: lambda c, p, ctx, ws, schemas: ExecutionBiasSectionPlugin(ctx.prompts.get("execution", "")),
+    DynamicStateSectionPlugin: lambda c, p, ctx, ws, schemas: DynamicStateSectionPlugin(),
 }
 
 
@@ -253,10 +254,10 @@ def _build_sections(
 ) -> list:
     sections = []
     for name in names:
-        builder = SECTION_BUILDERS.get(name)
-        if builder is None:
+        cls = Plugin.find(name)
+        if cls is None:
             raise PluginConfigError(f"unknown section: {name}")
-        sections.append(builder(config, {}, ctx, ws, schemas))
+        sections.append(SECTION_BUILDERS[cls](config, {}, ctx, ws, schemas))
     return sections
 
 
@@ -284,12 +285,14 @@ def _build_extra_prompt_context(config: Config, params: dict, ctx: BuildContext)
     return lambda ws, schemas: ExtraPromptPlugin(_build_sections(section_names, config, ctx, ws, schemas))
 
 
-CONTEXT_BUILDERS: dict[str, Callable[[Config, dict, BuildContext], Callable[[str, list[dict]], object]]] = {
-    "turn_variables": _build_turn_variables_context,
-    "system_prompt": _build_system_prompt_context,
-    "truncator": _build_truncator_context,
-    "token_budget": _build_token_budget_context,
-    "extra_prompt": _build_extra_prompt_context,
+ContextBuilder = Callable[[Config, dict, BuildContext], Callable[[str, list[dict]], object]]
+
+CONTEXT_BUILDERS: dict[type, ContextBuilder] = {
+    TurnVariableUpdaterPlugin: _build_turn_variables_context,
+    SystemPromptPlugin: _build_system_prompt_context,
+    TruncatorPlugin: _build_truncator_context,
+    TokenBudgetPlugin: _build_token_budget_context,
+    ExtraPromptPlugin: _build_extra_prompt_context,
 }
 
 
@@ -298,10 +301,10 @@ def _build_context_plugins(
 ) -> tuple[Callable[[str, list[dict]], object], ...]:
     factories = []
     for spec in specs:
-        builder = CONTEXT_BUILDERS.get(spec.name)
-        if builder is None:
+        cls = Plugin.find(spec.name)
+        if cls is None:
             raise PluginConfigError(f"unknown context plugin: {spec.name}")
-        factories.append(builder(config, spec.params, ctx))
+        factories.append(CONTEXT_BUILDERS[cls](config, spec.params, ctx))
     return tuple(factories)
 
 
@@ -314,32 +317,34 @@ def _build_step_limit_policy(config: Config, params: dict):
     return lambda: StepLimitPlugin(max_steps=max_steps)
 
 
-POLICY_BUILDERS: dict[str, Callable[[Config, dict], Callable[[], object]]] = {
-    "permission": _build_permission_policy,
-    "step_limit": _build_step_limit_policy,
+PolicyBuilder = Callable[[Config, dict], Callable[[], object]]
+
+POLICY_BUILDERS: dict[type, PolicyBuilder] = {
+    PermissionPolicyPlugin: _build_permission_policy,
+    StepLimitPlugin: _build_step_limit_policy,
 }
 
 
 def _build_policy_plugins(specs: list[PluginSpec], config: Config) -> tuple[Callable[[], object], ...]:
     factories = []
     for spec in specs:
-        builder = POLICY_BUILDERS.get(spec.name)
-        if builder is None:
+        cls = Plugin.find(spec.name)
+        if cls is None:
             raise PluginConfigError(f"unknown policy plugin: {spec.name}")
-        factories.append(builder(config, spec.params))
+        factories.append(POLICY_BUILDERS[cls](config, spec.params))
     return tuple(factories)
 
 
-SUMMARIZER_BUILDERS: dict[str, Callable[[], Callable[[], object]]] = {
-    "default": lambda: (lambda: SummarizerPlugin()),
+SUMMARIZER_BUILDERS: dict[type, Callable[[], Callable[[], object]]] = {
+    SummarizerPlugin: lambda: (lambda: SummarizerPlugin()),
 }
 
 
 def _build_summarizer(name: str) -> Callable[[], object]:
-    builder = SUMMARIZER_BUILDERS.get(name)
-    if builder is None:
+    cls = Plugin.find(name)
+    if cls is None:
         raise PluginConfigError(f"unknown summarizer: {name}")
-    return builder()
+    return SUMMARIZER_BUILDERS[cls]()
 
 
 def _build_openrouter_backend(config: Config, ctx: BuildContext, provider_blacklist: list[str], global_variables: dict):
@@ -352,27 +357,29 @@ def _build_openrouter_backend(config: Config, ctx: BuildContext, provider_blackl
     return factory
 
 
-BACKEND_BUILDERS: dict[str, Callable[[Config, BuildContext, list[str], dict], Callable[[str], object]]] = {
-    "openrouter": _build_openrouter_backend,
+BackendBuilder = Callable[[Config, BuildContext, list[str], dict], Callable[[str], object]]
+
+BACKEND_BUILDERS: dict[type, BackendBuilder] = {
+    OpenRouterModelPlugin: _build_openrouter_backend,
 }
 
 
 def _build_backend(
     name: str, config: Config, ctx: BuildContext, provider_blacklist: list[str], global_variables: dict
 ) -> Callable[[str], object]:
-    builder = BACKEND_BUILDERS.get(name)
-    if builder is None:
+    cls = Plugin.find(name)
+    if cls is None:
         raise PluginConfigError(f"unknown backend: {name}")
-    return builder(config, ctx, provider_blacklist, global_variables)
+    return BACKEND_BUILDERS[cls](config, ctx, provider_blacklist, global_variables)
 
 
-LOOP_BUILDERS: dict[str, Callable[[], type]] = {
-    "react": lambda: ReactLoopPlugin,
+LOOP_BUILDERS: dict[type, Callable[[], type]] = {
+    ReactLoopPlugin: lambda: ReactLoopPlugin,
 }
 
 
 def _build_loop(name: str) -> type:
-    builder = LOOP_BUILDERS.get(name)
-    if builder is None:
+    cls = Plugin.find(name)
+    if cls is None:
         raise PluginConfigError(f"unknown loop: {name}")
-    return builder()
+    return LOOP_BUILDERS[cls]()
