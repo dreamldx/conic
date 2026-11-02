@@ -1,3 +1,4 @@
+import asyncio
 import json
 from types import SimpleNamespace
 
@@ -8,7 +9,9 @@ from conic.core.bus import MessageBus
 from conic.plugins import meta
 from conic.plugins.models.openrouter import (
     APP_HTTP_REFERER,
+    BLOCKING_TIMEOUT,
     MODEL_CATALOG_SECTION,
+    STREAM_ATTEMPT_TIMEOUTS,
     OpenRouterModelPlugin,
 )
 from conic.services.models import ModelCatalogEntry
@@ -417,6 +420,100 @@ async def test_complete_streaming_logs_debug_and_reraises_on_failure():
         logger.remove(sink_id)
 
     assert any("stream blew up" in m for m in logged)
+
+
+class HangThenStreamCompletions:
+    def __init__(self, hangs, chunks):
+        self._hangs = hangs
+        self._chunks = chunks
+        self.calls = 0
+
+    async def create(self, **kwargs):
+        self.calls += 1
+        if self.calls <= self._hangs:
+            await asyncio.sleep(10)
+
+        async def _iter():
+            for chunk in self._chunks:
+                yield chunk
+
+        return _iter()
+
+
+def make_timeout_backend(completions, timeouts=(0.01, 0.02, 0.03)):
+    backend = OpenRouterModelPlugin(
+        api_key="k", model="m", client=FakeClient(completions), stream_timeouts=timeouts
+    )
+    backend.register(MessageBus())
+    return backend
+
+
+def test_default_stream_timeouts_are_10_15_30_seconds():
+    assert STREAM_ATTEMPT_TIMEOUTS == (10.0, 15.0, 30.0)
+    backend = OpenRouterModelPlugin(api_key="k", model="m", client=object())
+    assert backend._stream_timeouts == (10.0, 15.0, 30.0)
+
+
+def test_default_blocking_timeout_is_30_seconds():
+    assert BLOCKING_TIMEOUT == 30.0
+    backend = OpenRouterModelPlugin(api_key="k", model="m", client=object())
+    assert backend._blocking_timeout == 30.0
+
+
+async def test_blocking_complete_times_out_once_without_retry():
+    completions = HangThenStreamCompletions(hangs=99, chunks=[])
+    backend = OpenRouterModelPlugin(
+        api_key="k", model="m", client=FakeClient(completions), blocking_timeout=0.01
+    )
+    backend.register(MessageBus())
+
+    with pytest.raises(TimeoutError):
+        await backend.complete(ModelRequest(messages=[], tools=[], stream_updates=False))
+
+    assert completions.calls == 1
+
+
+async def test_streaming_retries_after_timeout_and_succeeds():
+    completions = HangThenStreamCompletions(hangs=2, chunks=[make_chunk(make_delta(content="ok"))])
+    backend = make_timeout_backend(completions)
+
+    result = await backend.complete(ModelRequest(messages=[], tools=[], stream_updates=True))
+
+    assert result.text == "ok"
+    assert completions.calls == 3
+
+
+async def test_streaming_raises_timeout_after_all_attempts_exhausted():
+    completions = HangThenStreamCompletions(hangs=99, chunks=[])
+    backend = make_timeout_backend(completions)
+
+    with pytest.raises(TimeoutError, match="3 attempts"):
+        await backend.complete(ModelRequest(messages=[], tools=[], stream_updates=True))
+
+    assert completions.calls == 3
+
+
+async def test_streaming_does_not_retry_after_content_was_already_streamed():
+    class StallAfterFirstChunk:
+        def __init__(self):
+            self.calls = 0
+
+        async def create(self, **kwargs):
+            self.calls += 1
+
+            async def _iter():
+                yield make_chunk(make_delta(content="partial"))
+                await asyncio.sleep(10)
+
+            return _iter()
+
+    completions = StallAfterFirstChunk()
+    backend = make_timeout_backend(completions)
+
+    with pytest.raises(TimeoutError):
+        await backend.complete(ModelRequest(messages=[], tools=[], stream_updates=True))
+
+    assert completions.calls == 1
 
 
 async def test_streaming_deltas_only_reach_the_registering_bus_not_other_sessions():

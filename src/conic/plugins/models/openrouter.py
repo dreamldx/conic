@@ -1,3 +1,4 @@
+import asyncio
 import json
 from collections.abc import Callable
 
@@ -24,6 +25,8 @@ MODEL_CATALOG_SECTION = (
     "context length, pricing, modalities, supported parameters) is stored as JSON at "
     f"{MODEL_CATALOG_PATH}."
 )
+STREAM_ATTEMPT_TIMEOUTS = (10.0, 15.0, 30.0)
+BLOCKING_TIMEOUT = 30.0
 
 
 class OpenRouterModelPlugin(Plugin):
@@ -38,8 +41,12 @@ class OpenRouterModelPlugin(Plugin):
         app_name: str | None = None,
         catalog_lookup: Callable[[str], list[ModelCatalogEntry]] | None = None,
         global_variables: dict | None = None,
+        stream_timeouts: tuple[float, ...] = STREAM_ATTEMPT_TIMEOUTS,
+        blocking_timeout: float = BLOCKING_TIMEOUT,
     ):
         self.model = model
+        self._stream_timeouts = stream_timeouts
+        self._blocking_timeout = blocking_timeout
         self._client = client or AsyncOpenAI(base_url="https://openrouter.ai/api/v1", api_key=api_key)
         self._bus = None
         self._provider_blacklist = provider_blacklist or []
@@ -131,12 +138,15 @@ class OpenRouterModelPlugin(Plugin):
             "calling openrouter model={} messages={} tools={}",
             self.model, len(msg.messages), len(msg.tools or []),
         )
-        response = await self._client.chat.completions.create(
-            model=self.model,
-            messages=msg.messages,
-            tools=msg.tools or None,
-            extra_body=self._extra_body(),
-            extra_headers=self._extra_headers(),
+        response = await asyncio.wait_for(
+            self._client.chat.completions.create(
+                model=self.model,
+                messages=msg.messages,
+                tools=msg.tools or None,
+                extra_body=self._extra_body(),
+                extra_headers=self._extra_headers(),
+            ),
+            self._blocking_timeout,
         )
         self._record_usage(msg, getattr(response, "usage", None))
         message = response.choices[0].message
@@ -152,23 +162,50 @@ class OpenRouterModelPlugin(Plugin):
         return ModelResponse(text=message.content, tool_calls=tool_calls, raw_message=raw_message)
 
     async def _complete_streaming(self, msg: ModelRequest) -> ModelResponse:
+        last_exc: TimeoutError | None = None
+        for attempt, timeout in enumerate(self._stream_timeouts, start=1):
+            content_parts: list[str] = []
+            try:
+                return await self._stream_once(msg, timeout, content_parts)
+            except TimeoutError as exc:
+                if content_parts:
+                    raise
+                logger.warning(
+                    "openrouter stream timed out model={} attempt={}/{} timeout={}s",
+                    self.model, attempt, len(self._stream_timeouts), timeout,
+                )
+                last_exc = exc
+        raise TimeoutError(
+            f"openrouter stream timed out after {len(self._stream_timeouts)} attempts"
+        ) from last_exc
+
+    async def _stream_once(
+        self, msg: ModelRequest, timeout: float, content_parts: list[str]
+    ) -> ModelResponse:
         logger.debug(
-            "calling openrouter (streaming) model={} messages={} tools={}",
-            self.model, len(msg.messages), len(msg.tools or []),
+            "calling openrouter (streaming) model={} messages={} tools={} timeout={}s",
+            self.model, len(msg.messages), len(msg.tools or []), timeout,
         )
-        stream = await self._client.chat.completions.create(
-            model=self.model,
-            messages=msg.messages,
-            tools=msg.tools or None,
-            stream=True,
-            stream_options={"include_usage": True},
-            extra_body=self._extra_body(),
-            extra_headers=self._extra_headers(),
+        stream = await asyncio.wait_for(
+            self._client.chat.completions.create(
+                model=self.model,
+                messages=msg.messages,
+                tools=msg.tools or None,
+                stream=True,
+                stream_options={"include_usage": True},
+                extra_body=self._extra_body(),
+                extra_headers=self._extra_headers(),
+            ),
+            timeout,
         )
-        content_parts: list[str] = []
         tool_call_acc: dict[int, dict] = {}
         usage = None
-        async for chunk in stream:
+        chunks = stream.__aiter__()
+        while True:
+            try:
+                chunk = await asyncio.wait_for(chunks.__anext__(), timeout)
+            except StopAsyncIteration:
+                break
             if getattr(chunk, "usage", None):
                 usage = chunk.usage
             if not chunk.choices:
