@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS messages (
     content VARCHAR,
     created_at VARCHAR,
     turn_id INTEGER DEFAULT 0,
+    duration_ms INTEGER,
     PRIMARY KEY (session_key, seq)
 )""", [])
 
@@ -39,10 +40,14 @@ def add_messages_turn_id_column_sql() -> tuple[str, list]:
     return ("ALTER TABLE messages ADD COLUMN IF NOT EXISTS turn_id INTEGER DEFAULT 0", [])
 
 
+def add_messages_duration_ms_column_sql() -> tuple[str, list]:
+    return ("ALTER TABLE messages ADD COLUMN IF NOT EXISTS duration_ms INTEGER", [])
+
+
 def insert_message_sql(msg: Message) -> tuple[str, list]:
     return (
-        "INSERT INTO messages (session_key, seq, role, content, created_at, turn_id) VALUES (?, ?, ?, ?, ?, ?)",
-        [msg.session_key, msg.seq, msg.role, msg.content, msg.created_at.isoformat(), msg.turn_id],
+        "INSERT INTO messages (session_key, seq, role, content, created_at, turn_id, duration_ms) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        [msg.session_key, msg.seq, msg.role, msg.content, msg.created_at.isoformat(), msg.turn_id, msg.duration_ms],
     )
 
 

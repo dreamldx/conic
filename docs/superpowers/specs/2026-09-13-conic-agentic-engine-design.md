@@ -457,6 +457,7 @@ CREATE TABLE messages (
     role VARCHAR, content VARCHAR,     -- content 是整条消息序列化后的 JSON（含 tool_calls/tool_call_id 等原始字段，不是纯文本）
     created_at VARCHAR,
     turn_id INTEGER DEFAULT 0,         -- 该消息产生于第几轮 Turn，独立列，不进 content 这份 JSON
+    duration_ms INTEGER,               -- assistant/tool 消息的耗时（毫秒）；user 与 steering 消息为 NULL，独立列，不进 content 这份 JSON
     PRIMARY KEY (session_key, seq)
 )
 CREATE TABLE model_catalog (
@@ -474,7 +475,12 @@ CREATE TABLE model_catalog (
 )
 ```
 
-SQL 语句集中在 `src/conic/services/queries.py` 中，每句包装为返回 `(sql, params)` 的函数。数据模型使用 pydantic `Session`/`Message`/`ModelCatalogEntry` 类型（`src/conic/services/models.py`）。`startup()` 会执行 `ALTER TABLE sessions ADD COLUMN IF NOT EXISTS variables VARCHAR DEFAULT '{}'`、`ALTER TABLE messages ADD COLUMN IF NOT EXISTS turn_id INTEGER DEFAULT 0`，以及 `model_catalog` 每个非主键列各一条 `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`（`queries.add_model_catalog_extra_columns_sql()` 返回一组 `(sql, params)`，`startup()` 里循环执行），兼容旧库。
+SQL 语句集中在 `src/conic/services/queries.py` 中，每句包装为返回 `(sql, params)` 的函数。数据模型使用 pydantic `Session`/`Message`/`ModelCatalogEntry` 类型（`src/conic/services/models.py`）。`startup()` 会执行 `ALTER TABLE sessions ADD COLUMN IF NOT EXISTS variables VARCHAR DEFAULT '{}'`、`ALTER TABLE messages ADD COLUMN IF NOT EXISTS turn_id INTEGER DEFAULT 0`、`ALTER TABLE messages ADD COLUMN IF NOT EXISTS duration_ms INTEGER`，以及 `model_catalog` 每个非主键列各一条 `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`（`queries.add_model_catalog_extra_columns_sql()` 返回一组 `(sql, params)`，`startup()` 里循环执行），兼容旧库。
+
+**`duration_ms` 记录 assistant 与 tool 消息各自花了多久**：`SessionHandle.append_message(message, turn_id, duration_ms=None)` 把它存进独立的表列，和 `turn_id` 一样不进 `content` JSON，`load_history_sql` 也不选它，所以不会出现在发给模型的 `messages` 里。计时由 `ReactLoopPlugin._run_turn()` 用 `time.monotonic()` 完成：
+- **assistant 消息**（带 `tool_calls` 的 `raw_message` 和最终回答）：从发起 `ModelRequestEvent` 到拿到响应的耗时，包含流式路径的超时重试，不包含 `ModelResponseEvent`/`AssistantMessageEvent` 等 chain 的时间；同一次模型调用产生的消息共用同一个值。
+- **tool 消息**：从该工具调用的 `ToolCallEvent` 开始，到结果写回为止的整条链路耗时；工具报错时记的是出错前花的时间。
+- **user、steering 注入的消息**不计时，存为 `NULL`；迁移前的历史消息同样为 `NULL`，不回填。
 
 **`turn_id` 只为将来"按 Turn 分组裁剪/压缩"做准备，当前没有任何压缩逻辑读它**：`SessionHandle.append_message(message, turn_id)` 把 `turn_id` 存进独立的表列，而不是塞进 `content` 这份 JSON——`ReactLoopPlugin._run_turn()` 在方法开头 `turn_count` 自增后立即取值（`turn_id = self._session_variables["turn_count"]`），本 Turn 内所有 `append_message`/`_inject` 调用（steering 注入、assistant 消息、模型 `raw_message`、tool 结果）都带上这同一个 `turn_id`，因此同一轮里 `assistant(tool_calls) → tool(reply)` 这种必须成对出现的消息永远同属一个 turn_id，不会被裁剪逻辑从中间切开。`load_history_sql` 只 `SELECT content`，不选 `turn_id` 这一列，所以发给模型的 `messages` 列表里永远不会出现这个字段——不需要在 `OpenRouterModelPlugin` 或别处额外过滤。**迁移前的历史消息全部回填成 `turn_id = 0`**（DuckDB `ALTER TABLE ... ADD COLUMN ... DEFAULT` 对已有行的行为）：无法从 role 序列可靠反推原始轮次边界，所以不做回填脚本，这批老消息在未来的按 turn 分组逻辑里会被当作同属一组处理，等价于回退到当前的整体粒度。
 

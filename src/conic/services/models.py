@@ -21,6 +21,7 @@ class Message(BaseModel):
     content: str = ""
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     turn_id: int = 0
+    duration_ms: int | None = None
 
 
 class ModelCatalogEntry(BaseModel):

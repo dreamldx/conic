@@ -16,7 +16,7 @@ class SessionHandle:
         self._conn = conn
         self._session_key = session_key
 
-    def append_message(self, message: dict, turn_id: int) -> None:
+    def append_message(self, message: dict, turn_id: int, duration_ms: int | None = None) -> None:
         seq = self._next_seq()
         msg = Message(
             session_key=self._session_key,
@@ -25,6 +25,7 @@ class SessionHandle:
             content=json.dumps(message),
             created_at=datetime.now(UTC),
             turn_id=turn_id,
+            duration_ms=duration_ms,
         )
         sql, params = queries.insert_message_sql(msg)
         self._conn.execute(sql, params)
@@ -63,6 +64,7 @@ class StorageService:
         self._conn.execute(*queries.create_messages_table_sql())
         self._conn.execute(*queries.add_sessions_variables_column_sql())
         self._conn.execute(*queries.add_messages_turn_id_column_sql())
+        self._conn.execute(*queries.add_messages_duration_ms_column_sql())
         if self._conn.execute(*queries.model_catalog_has_legacy_id_column_sql()).fetchone():
             self._conn.execute(*queries.drop_model_catalog_sql())
         self._conn.execute(*queries.create_model_catalog_table_sql())

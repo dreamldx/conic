@@ -1,4 +1,5 @@
 import asyncio
+import time
 
 from loguru import logger
 
@@ -23,6 +24,10 @@ from conic.types.messages import (
     TurnStart,
 )
 from conic.types.steering import SteeringItem
+
+
+def _elapsed_ms(started: float) -> int:
+    return round((time.monotonic() - started) * 1000)
 
 
 class ReactLoopPlugin(Plugin):
@@ -114,6 +119,7 @@ class ReactLoopPlugin(Plugin):
                     meta.BeforeModelCallEvent,
                     BeforeModelCall(messages=history, tools=self._tool_schemas, variables=variables),
                 )
+                model_started = time.monotonic()
                 try:
                     response: ModelResponse = await asyncio.wait_for(
                         bus.request(
@@ -128,6 +134,7 @@ class ReactLoopPlugin(Plugin):
                 except TimeoutError:
                     raise AbortTurn("model call timed out", reason=AbortReason.MODEL_TIMEOUT)
 
+                model_ms = _elapsed_ms(model_started)
                 response = await bus.chain(meta.ModelResponseEvent, response)
 
                 if not response.tool_calls:
@@ -135,7 +142,9 @@ class ReactLoopPlugin(Plugin):
                         meta.AssistantMessageEvent,
                         AssistantMessage(text=response.text or "", variables=variables),
                     )
-                    self._storage.append_message({"role": "assistant", "content": out.text}, turn_id)
+                    self._storage.append_message(
+                        {"role": "assistant", "content": out.text}, turn_id, duration_ms=model_ms
+                    )
 
                     # checkpoint: drain high once the answer is already in
                     # history, so a stop that lands right as the model
@@ -151,9 +160,10 @@ class ReactLoopPlugin(Plugin):
                     await bus.chain(meta.StepEndEvent, StepEnd(step_index=this_step, variables=variables))
                     break
 
-                self._storage.append_message(response.raw_message, turn_id)
+                self._storage.append_message(response.raw_message, turn_id, duration_ms=model_ms)
                 for call in response.tool_calls:
                     original_id = call.id
+                    tool_started = time.monotonic()
                     try:
                         call_ctx = await bus.chain(
                             meta.ToolCallEvent, ToolCall(call=call, variables=variables)
@@ -181,7 +191,9 @@ class ReactLoopPlugin(Plugin):
                         logger.warning("tool call failed name={} error={}", call.name, exc)
                         content = f"Error: {exc}"
                     self._storage.append_message(
-                        {"role": "tool", "tool_call_id": original_id, "content": content}, turn_id
+                        {"role": "tool", "tool_call_id": original_id, "content": content},
+                        turn_id,
+                        duration_ms=_elapsed_ms(tool_started),
                     )
 
                 # checkpoint: drain high once every tool_call in this step has

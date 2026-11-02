@@ -100,6 +100,36 @@ def test_load_history_does_not_leak_turn_id_into_message_content(tmp_path):
     storage.shutdown()
 
 
+def test_append_message_persists_duration_ms_and_defaults_to_null(tmp_path):
+    storage = make_storage(tmp_path)
+    row = storage.get_or_create(channel="discord", native_id="123")
+    handle = storage.handle_for(row)
+    handle.append_message({"role": "user", "content": "hi"}, turn_id=1)
+    handle.append_message({"role": "assistant", "content": "hello"}, turn_id=1, duration_ms=1234)
+    durations = storage._conn.execute(
+        "select duration_ms from messages where session_key = ? order by seq", [row.session_key]
+    ).fetchall()
+    assert durations == [(None,), (1234,)]
+    assert "duration_ms" not in handle.load_history()[1]
+    storage.shutdown()
+
+
+def test_startup_adds_duration_ms_column_to_an_existing_messages_table(tmp_path):
+    import duckdb
+
+    db_path = str(tmp_path / "conic.duckdb")
+    conn = duckdb.connect(db_path)
+    conn.execute(
+        "CREATE TABLE messages (session_key VARCHAR, seq INTEGER, role VARCHAR, content VARCHAR, "
+        "created_at VARCHAR, turn_id INTEGER DEFAULT 0, PRIMARY KEY (session_key, seq))"
+    )
+    conn.close()
+    storage = make_storage(tmp_path)
+    columns = [r[0] for r in storage._conn.execute("describe messages").fetchall()]
+    assert "duration_ms" in columns
+    storage.shutdown()
+
+
 def test_set_status_updates_row(tmp_path):
     storage = make_storage(tmp_path)
     row = storage.get_or_create(channel="discord", native_id="123")

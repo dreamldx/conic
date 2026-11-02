@@ -35,11 +35,13 @@ class FakeStorageHandle:
     def __init__(self):
         self.messages: list[dict] = []
         self.turn_ids: list[int] = []
+        self.durations: list[int | None] = []
         self.saved_variables: list[dict] = []
 
-    def append_message(self, message: dict, turn_id: int) -> None:
+    def append_message(self, message: dict, turn_id: int, duration_ms: int | None = None) -> None:
         self.messages.append(message)
         self.turn_ids.append(turn_id)
+        self.durations.append(duration_ms)
 
     def load_history(self) -> list[dict]:
         return list(self.messages)
@@ -56,7 +58,7 @@ class FakeToolCall:
     command: str
 
 
-def make_loop(handle, responses, model_timeout=120):
+def make_loop(handle, responses, model_timeout=120, tool_delay=0.0):
     bus = MessageBus()
     responses_iter = iter(responses)
 
@@ -66,6 +68,7 @@ def make_loop(handle, responses, model_timeout=120):
     bus.on_request("model_request", fake_model_request)
 
     async def fake_tool_call(call: FakeToolCall) -> ToolCallResult:
+        await asyncio.sleep(tool_delay)
         return ToolCallResult(output=f"ran {call.command}")
 
     bus.on_request("tool_call", fake_tool_call)
@@ -97,6 +100,26 @@ async def test_single_step_turn_with_no_tool_calls_emits_assistant_message():
     assert received == ["hi there"]
     assert handle.messages[0] == {"role": "user", "content": "hello"}
     assert handle.messages[-1] == {"role": "assistant", "content": "hi there"}
+
+
+async def test_assistant_and_tool_messages_record_duration_but_user_messages_do_not():
+    handle = FakeStorageHandle()
+    tool_call = ToolCallSpec(id="call_1", name="bash", args={"command": "ls"})
+    responses = [
+        ModelResponse(text=None, tool_calls=[tool_call], raw_message={"role": "assistant", "tool_calls": [1]}),
+        ModelResponse(text="done", tool_calls=[], raw_message={"role": "assistant"}),
+    ]
+    _, loop = make_loop(handle, responses, tool_delay=0.05)
+
+    await loop._run_turn([SteeringUserMessage("run ls")], [])
+
+    by_role = {}
+    for message, duration in zip(handle.messages, handle.durations):
+        by_role.setdefault(message["role"], []).append(duration)
+    assert by_role["user"] == [None]
+    assert all(isinstance(d, int) and d >= 0 for d in by_role["assistant"])
+    assert len(by_role["assistant"]) == 2
+    assert by_role["tool"][0] >= 40
 
 
 async def test_multi_step_turn_executes_tool_then_returns_final_answer():
