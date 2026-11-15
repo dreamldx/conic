@@ -101,6 +101,12 @@ def build_plugin_set(
     }
 
 
+def backend_model(backend: str, config: Config) -> str:
+    if backend == ExperientialModelPlugin.Name:
+        return config.experiential_model
+    return config.openrouter_model
+
+
 def _build_one_plugin_set(
     set_cfg: PluginSetConfig,
     config: Config,
@@ -109,10 +115,9 @@ def _build_one_plugin_set(
     provider_blacklist: list[str],
     caller_global_variables: dict,
 ) -> PluginSet:
-    backend_model = (
-        config.experiential_model if set_cfg.backend == ExperientialModelPlugin.Name else config.openrouter_model
-    )
-    resolved_global_variables = {**shared_global_variables, "model": backend_model, **caller_global_variables}
+    resolved_global_variables = {
+        **shared_global_variables, "model": backend_model(set_cfg.backend, config), **caller_global_variables
+    }
     tool_classes = _build_tool_classes(set_cfg.tools, config, ctx)
     context_plugins = _build_context_plugins(set_cfg.context, config, ctx)
     policy_plugins = _build_policy_plugins(set_cfg.policy, config)

@@ -76,3 +76,33 @@ def test_build_app_boots_when_a_provider_sync_raises(tmp_path):
         assert gateway.name == "discord"
     finally:
         storage.shutdown()
+
+
+def test_build_app_uses_the_main_backends_model_for_new_sessions(tmp_path):
+    env = make_env(tmp_path)
+    (tmp_path / "config" / "plugins.yaml").write_text("main: {backend: experiential}\n", encoding="utf-8")
+    env["EXPERIENTIAL_LABS_API_KEY"] = "xpl-key"
+    env["EXPERIENTIAL_LABS_MODEL"] = "claude-opus-5.5"
+
+    async def _build():
+        return await build_app(env, providers=())
+
+    storage, _gateway = asyncio.run(_build())
+    try:
+        assert storage.get_or_create(channel="discord", native_id="m").model == "claude-opus-5.5"
+    finally:
+        storage.shutdown()
+
+
+def test_build_app_uses_openrouter_model_for_new_sessions_with_openrouter_main(tmp_path):
+    env = make_env(tmp_path)
+    env["OPENROUTER_MODEL"] = "vendor/or-model"
+
+    async def _build():
+        return await build_app(env, providers=())
+
+    storage, _gateway = asyncio.run(_build())
+    try:
+        assert storage.get_or_create(channel="discord", native_id="m").model == "vendor/or-model"
+    finally:
+        storage.shutdown()

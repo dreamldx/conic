@@ -513,3 +513,15 @@ def test_build_plugin_set_caller_model_override_wins_over_per_set_model(tmp_path
     for plugin_set in plugin_sets.values():
         loop = plugin_set.loop_factory(None, [], {}, None, {})
         assert loop._global_variables["model"] == "caller-model"
+
+
+def test_backend_model_picks_the_model_of_the_named_backend():
+    from conic.config import load_config
+    from conic.plugins.registry import backend_model
+
+    config = load_config({
+        "PROJECT_ROOT": ".", "DISCORD_BOT_TOKEN": "d", "OPENROUTER_API_KEY": "k",
+        "OPENROUTER_MODEL": "vendor/or-model", "EXPERIENTIAL_LABS_MODEL": "exp-model",
+    })
+    assert backend_model("experiential", config) == "exp-model"
+    assert backend_model("openrouter", config) == "vendor/or-model"

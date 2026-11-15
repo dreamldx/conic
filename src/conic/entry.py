@@ -10,8 +10,8 @@ from conic.config import load_config
 from conic.core.manager import PluginManager
 from conic.discord.cleanup import run_periodic_cleanup
 from conic.discord.gateway import DiscordGateway
-from conic.plugins.plugin_config import PluginConfigError
-from conic.plugins.registry import build_plugin_set
+from conic.plugins.plugin_config import PluginConfigError, load_plugins_config
+from conic.plugins.registry import backend_model, build_plugin_set
 from conic.services.storage import StorageService
 
 
@@ -22,8 +22,10 @@ async def build_app(
     logger.remove()
     logger.add(sys.stderr, level=config.log_level)
 
-    logger.info("starting conic (model={})", config.openrouter_model)
-    storage = StorageService(config.duckdb_path, config.workspace_root, config.openrouter_model)
+    main_set = load_plugins_config(config.plugins_config_path).get("main")
+    default_model = backend_model(main_set.backend, config) if main_set else config.openrouter_model
+    logger.info("starting conic (model={})", default_model)
+    storage = StorageService(config.duckdb_path, config.workspace_root, default_model)
     storage.startup()
     logger.info("storage started (db={})", config.duckdb_path)
     for provider in providers:
