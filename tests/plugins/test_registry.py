@@ -16,6 +16,7 @@ from conic.plugins.context.token_budget import TokenBudgetPlugin
 from conic.plugins.context.truncator import TruncatorPlugin
 from conic.plugins.context.variables import TurnVariableUpdaterPlugin
 from conic.plugins.loops.react_loop import ReactLoopPlugin
+from conic.plugins.models.experiential import ExperientialModelPlugin
 from conic.plugins.models.openrouter import OpenRouterModelPlugin
 from conic.plugins.plugin_config import PluginConfigError, PluginSpec
 from conic.plugins.policy.permission import PermissionPolicyPlugin
@@ -104,6 +105,66 @@ def test_build_plugin_set_binds_the_openrouter_provider_into_the_catalog_lookup(
 
     assert ("openrouter", "some-model") in calls
     assert {provider for provider, _ in calls} == {"openrouter"}
+
+
+TWO_BACKENDS_YAML = DEFAULT_PLUGINS_YAML + """
+exp:
+  tools:
+    - read_file
+  context:
+    - turn_variables
+  policy:
+    - permission
+  summarizer: default
+  backend: experiential
+  loop: react
+"""
+
+
+@pytest.mark.parametrize(
+    ("extra", "missing"),
+    [
+        ({"EXPERIENTIAL_LABS_MODEL": "exp-model"}, "EXPERIENTIAL_LABS_API_KEY"),
+        ({"EXPERIENTIAL_LABS_API_KEY": "ek"}, "EXPERIENTIAL_LABS_MODEL"),
+    ],
+)
+def test_experiential_backend_requires_api_key_and_model(tmp_path, extra, missing):
+    config = make_config(tmp_path, TWO_BACKENDS_YAML, **extra)
+    with pytest.raises(PluginConfigError, match=missing):
+        build_plugin_set(config)
+
+
+def test_experiential_set_uses_its_own_model_in_global_variables(tmp_path):
+    config = make_config(
+        tmp_path, TWO_BACKENDS_YAML,
+        EXPERIENTIAL_LABS_API_KEY="ek", EXPERIENTIAL_LABS_MODEL="exp-model",
+    )
+    sets = build_plugin_set(config)
+
+    main_loop = sets["main"].loop_factory(object(), [], {}, "/tmp/ws", {})
+    exp_loop = sets["exp"].loop_factory(object(), [], {}, "/tmp/ws", {})
+    assert main_loop._global_variables["model"] == "test-model"
+    assert exp_loop._global_variables["model"] == "exp-model"
+    assert isinstance(sets["exp"].backend("discord:1"), ExperientialModelPlugin)
+
+
+def test_experiential_backend_binds_the_experiential_provider_into_the_catalog_lookup(tmp_path):
+    calls = []
+
+    def lookup(provider, query):
+        calls.append((provider, query))
+        return []
+
+    config = make_config(
+        tmp_path, TWO_BACKENDS_YAML,
+        EXPERIENTIAL_LABS_API_KEY="ek", EXPERIENTIAL_LABS_MODEL="exp-model",
+    )
+    sets = build_plugin_set(config, catalog_lookup=lookup)
+    backend = sets["exp"].backend("discord:1")
+    calls.clear()
+    backend._catalog_lookup("x")
+
+    assert calls == [("experiential", "x")]
 
 
 def test_build_plugin_set_context_and_policy_factories_produce_fresh_instances(tmp_path):

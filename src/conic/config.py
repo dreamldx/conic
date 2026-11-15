@@ -16,6 +16,8 @@ class Config(BaseSettings):
     openrouter_api_key: str = Field(alias="OPENROUTER_API_KEY")
     openrouter_model: str = Field(default="anthropic/claude-sonnet-4.5", alias="OPENROUTER_MODEL")
     openrouter_provider_blacklist: str = Field(default="", alias="OPENROUTER_PROVIDER_BLACKLIST")
+    experiential_api_key: str = Field(default="", alias="EXPERIENTIAL_LABS_API_KEY")
+    experiential_model: str = Field(default="", alias="EXPERIENTIAL_LABS_MODEL")
     workspace_root: str = Field(default="", alias="WORKSPACE_ROOT")
     duckdb_path: str = Field(default="", alias="DUCKDB_PATH")
     plugins_config_path: str = Field(default="", alias="PLUGINS_CONFIG_PATH")

@@ -67,6 +67,21 @@ def test_load_config_raises_when_openrouter_key_missing(monkeypatch):
         load_config({"PROJECT_ROOT": "/tmp/conic", "DISCORD_BOT_TOKEN": "d-token"})
 
 
+def test_experiential_fields_default_to_empty():
+    config = load_config({"PROJECT_ROOT": "/tmp", "DISCORD_BOT_TOKEN": "d", "OPENROUTER_API_KEY": "k"})
+    assert config.experiential_api_key == ""
+    assert config.experiential_model == ""
+
+
+def test_experiential_fields_read_from_aliases():
+    config = load_config({
+        "PROJECT_ROOT": "/tmp", "DISCORD_BOT_TOKEN": "d", "OPENROUTER_API_KEY": "k",
+        "EXPERIENTIAL_LABS_API_KEY": "ek", "EXPERIENTIAL_LABS_MODEL": "exp-model",
+    })
+    assert config.experiential_api_key == "ek"
+    assert config.experiential_model == "exp-model"
+
+
 def test_web_tool_api_keys_default_to_disabled():
     config = load_config(env={
         "PROJECT_ROOT": "/tmp", "DISCORD_BOT_TOKEN": "d", "OPENROUTER_API_KEY": "k",

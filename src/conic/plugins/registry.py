@@ -25,6 +25,10 @@ from conic.plugins.context.token_budget import TokenBudgetPlugin
 from conic.plugins.context.truncator import TruncatorPlugin
 from conic.plugins.context.variables import TurnVariableUpdaterPlugin
 from conic.plugins.loops.react_loop import ReactLoopPlugin
+from conic.plugins.models.experiential import (
+    EXPERIENTIAL_BASE_URL,
+    ExperientialModelPlugin,
+)
 from conic.plugins.models.openrouter import OpenRouterModelPlugin
 from conic.plugins.plugin_config import (
     PluginConfigError,
@@ -98,9 +102,11 @@ def _build_one_plugin_set(
     set_cfg: PluginSetConfig,
     config: Config,
     ctx: "BuildContext",
-    resolved_global_variables: dict,
+    shared_global_variables: dict,
     provider_blacklist: list[str],
 ) -> PluginSet:
+    backend_model = config.experiential_model if set_cfg.backend == "experiential" else config.openrouter_model
+    resolved_global_variables = {**shared_global_variables, "model": backend_model}
     tool_classes = _build_tool_classes(set_cfg.tools, config, ctx)
     context_plugins = _build_context_plugins(set_cfg.context, config, ctx)
     policy_plugins = _build_policy_plugins(set_cfg.policy, config)
@@ -360,10 +366,27 @@ def _build_openrouter_backend(config: Config, ctx: BuildContext, provider_blackl
     return factory
 
 
+def _build_experiential_backend(config: Config, ctx: BuildContext, provider_blacklist: list[str], global_variables: dict):
+    if not config.experiential_api_key:
+        raise PluginConfigError("experiential backend requires EXPERIENTIAL_LABS_API_KEY to be set")
+    if not config.experiential_model:
+        raise PluginConfigError("experiential backend requires EXPERIENTIAL_LABS_MODEL to be set")
+    experiential_lookup = partial(ctx.catalog_lookup, "experiential") if ctx.catalog_lookup is not None else None
+    client = AsyncOpenAI(base_url=EXPERIENTIAL_BASE_URL, api_key=config.experiential_api_key)
+
+    def factory(session_key: str):
+        return ExperientialModelPlugin(
+            api_key=config.experiential_api_key, model=config.experiential_model, client=client,
+            session_id=session_key, catalog_lookup=experiential_lookup, global_variables=global_variables,
+        )
+    return factory
+
+
 BackendBuilder = Callable[[Config, BuildContext, list[str], dict], Callable[[str], object]]
 
 BACKEND_BUILDERS: dict[type, BackendBuilder] = {
     OpenRouterModelPlugin: _build_openrouter_backend,
+    ExperientialModelPlugin: _build_experiential_backend,
 }
 
 
