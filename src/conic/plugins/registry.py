@@ -11,6 +11,7 @@ from conic.config import Config
 from conic.core.bus import infer_payload_type
 from conic.core.manager import PluginSet
 from conic.experiential.catalog import EXPERIENTIAL_PROVIDER
+from conic.nano_gpt.catalog import NANO_GPT_PROVIDER
 from conic.plugins import Plugin
 from conic.plugins.context.extra_prompt import ExtraPromptPlugin
 from conic.plugins.context.sections.dynamic_state import DynamicStateSectionPlugin
@@ -30,6 +31,7 @@ from conic.plugins.models.experiential import (
     EXPERIENTIAL_BASE_URL,
     ExperientialModelPlugin,
 )
+from conic.plugins.models.nano_gpt import NANO_GPT_BASE_URL, NanoGptModelPlugin
 from conic.plugins.models.openrouter import OpenRouterModelPlugin
 from conic.plugins.plugin_config import (
     PluginConfigError,
@@ -104,6 +106,8 @@ def build_plugin_set(
 def backend_model(backend: str, config: Config) -> str:
     if backend == ExperientialModelPlugin.Name:
         return config.experiential_model
+    if backend == NanoGptModelPlugin.Name:
+        return config.nano_gpt_model
     return config.openrouter_model
 
 
@@ -393,11 +397,28 @@ def _build_experiential_backend(config: Config, ctx: BuildContext, provider_blac
     return factory
 
 
+def _build_nano_gpt_backend(config: Config, ctx: BuildContext, provider_blacklist: list[str], global_variables: dict):
+    if not config.nano_gpt_api_key:
+        raise PluginConfigError("nano_gpt backend requires NANO_GPT_API_KEY to be set")
+    if not config.nano_gpt_model:
+        raise PluginConfigError("nano_gpt backend requires NANO_GPT_MODEL to be set")
+    nano_gpt_lookup = partial(ctx.catalog_lookup, NANO_GPT_PROVIDER) if ctx.catalog_lookup is not None else None
+    client = AsyncOpenAI(base_url=NANO_GPT_BASE_URL, api_key=config.nano_gpt_api_key)
+
+    def factory(session_key: str):
+        return NanoGptModelPlugin(
+            api_key=config.nano_gpt_api_key, model=config.nano_gpt_model, client=client,
+            session_id=session_key, catalog_lookup=nano_gpt_lookup, global_variables=global_variables,
+        )
+    return factory
+
+
 BackendBuilder = Callable[[Config, BuildContext, list[str], dict], Callable[[str], object]]
 
 BACKEND_BUILDERS: dict[type, BackendBuilder] = {
     OpenRouterModelPlugin: _build_openrouter_backend,
     ExperientialModelPlugin: _build_experiential_backend,
+    NanoGptModelPlugin: _build_nano_gpt_backend,
 }
 
 

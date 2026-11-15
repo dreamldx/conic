@@ -97,3 +97,18 @@ def test_web_tool_api_keys_parse_from_env():
     })
     assert config.tavily_api_key == "tv"
     assert config.firecrawl_api_key == "fc"
+
+
+def test_nano_gpt_fields_default_to_empty():
+    config = load_config({"PROJECT_ROOT": "/tmp", "DISCORD_BOT_TOKEN": "d", "OPENROUTER_API_KEY": "k"})
+    assert config.nano_gpt_api_key == ""
+    assert config.nano_gpt_model == ""
+
+
+def test_nano_gpt_fields_read_from_aliases():
+    config = load_config({
+        "PROJECT_ROOT": "/tmp", "DISCORD_BOT_TOKEN": "d", "OPENROUTER_API_KEY": "k",
+        "NANO_GPT_API_KEY": "nk", "NANO_GPT_MODEL": "nano-model",
+    })
+    assert config.nano_gpt_api_key == "nk"
+    assert config.nano_gpt_model == "nano-model"

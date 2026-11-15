@@ -3,7 +3,12 @@ import asyncio
 import pytest
 
 from conic import catalog
-from conic.catalog import CATALOG_PROVIDERS, run_periodic_sync, sync_experiential_once
+from conic.catalog import (
+    CATALOG_PROVIDERS,
+    run_periodic_sync,
+    sync_experiential_once,
+    sync_nano_gpt_once,
+)
 from conic.services.models import ModelCatalogEntry
 
 
@@ -110,8 +115,8 @@ async def test_sync_experiential_once_returns_false_and_saves_nothing_on_failure
     assert storage.saved == []
 
 
-def test_catalog_providers_are_openrouter_then_experiential():
-    assert [p.name for p in CATALOG_PROVIDERS] == ["openrouter", "experiential"]
+def test_catalog_providers_are_openrouter_experiential_then_nano_gpt():
+    assert [p.name for p in CATALOG_PROVIDERS] == ["openrouter", "experiential", "nano_gpt"]
 
 
 async def test_sync_experiential_once_returns_false_and_saves_nothing_on_empty_fetch(monkeypatch):
@@ -122,6 +127,47 @@ async def test_sync_experiential_once_returns_false_and_saves_nothing_on_empty_f
     storage = FakeStorage()
 
     ok = await sync_experiential_once(storage, object())
+
+    assert ok is False
+    assert storage.saved == []
+
+
+async def test_sync_nano_gpt_once_saves_entries_under_nano_gpt_provider(monkeypatch):
+    entries = [ModelCatalogEntry(slug="openai/gpt-x", provider="nano_gpt")]
+
+    async def fake_fetch():
+        return entries
+
+    monkeypatch.setattr(catalog, "fetch_nano_gpt_models", fake_fetch)
+    storage = FakeStorage()
+
+    ok = await sync_nano_gpt_once(storage, object())
+
+    assert ok is True
+    assert storage.saved == [("nano_gpt", entries)]
+
+
+async def test_sync_nano_gpt_once_returns_false_and_saves_nothing_on_failure(monkeypatch):
+    async def fake_fetch():
+        raise RuntimeError("down")
+
+    monkeypatch.setattr(catalog, "fetch_nano_gpt_models", fake_fetch)
+    storage = FakeStorage()
+
+    ok = await sync_nano_gpt_once(storage, object())
+
+    assert ok is False
+    assert storage.saved == []
+
+
+async def test_sync_nano_gpt_once_returns_false_and_saves_nothing_on_empty_fetch(monkeypatch):
+    async def fake_fetch():
+        return []
+
+    monkeypatch.setattr(catalog, "fetch_nano_gpt_models", fake_fetch)
+    storage = FakeStorage()
+
+    ok = await sync_nano_gpt_once(storage, object())
 
     assert ok is False
     assert storage.saved == []

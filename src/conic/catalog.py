@@ -7,7 +7,9 @@ from loguru import logger
 
 from conic.config import Config
 from conic.experiential.catalog import EXPERIENTIAL_PROVIDER, fetch_experiential_models
+from conic.nano_gpt.catalog import NANO_GPT_PROVIDER, fetch_nano_gpt_models
 from conic.openrouter.catalog import MODEL_CATALOG_FILENAME, sync_catalog_once
+from conic.services.models import ModelCatalogEntry
 from conic.services.storage import StorageService
 
 DEFAULT_SYNC_INTERVAL_SECONDS = 3600
@@ -24,23 +26,36 @@ async def sync_openrouter_once(storage: StorageService, config: Config) -> bool:
     return await sync_catalog_once(storage, config.openrouter_api_key, json_path=json_path)
 
 
-async def sync_experiential_once(storage: StorageService, config: Config) -> bool:
+async def _sync_provider(
+    storage: StorageService,
+    provider: str,
+    fetch: Callable[[], Awaitable[list[ModelCatalogEntry]]],
+) -> bool:
     try:
-        entries = await fetch_experiential_models()
+        entries = await fetch()
         if not entries:
-            logger.warning("experiential model catalog fetch returned no models; keeping existing catalog")
+            logger.warning("{} model catalog fetch returned no models; keeping existing catalog", provider)
             return False
-        storage.save_model_catalog(EXPERIENTIAL_PROVIDER, entries)
-        logger.info("synced {} models from experiential", len(entries))
+        storage.save_model_catalog(provider, entries)
+        logger.info("synced {} models from {}", len(entries), provider)
         return True
     except Exception as exc:
-        logger.warning("failed to sync experiential model catalog: {}", exc)
+        logger.warning("failed to sync {} model catalog: {}", provider, exc)
         return False
+
+
+async def sync_experiential_once(storage: StorageService, config: Config) -> bool:
+    return await _sync_provider(storage, EXPERIENTIAL_PROVIDER, lambda: fetch_experiential_models())
+
+
+async def sync_nano_gpt_once(storage: StorageService, config: Config) -> bool:
+    return await _sync_provider(storage, NANO_GPT_PROVIDER, lambda: fetch_nano_gpt_models())
 
 
 CATALOG_PROVIDERS: tuple[CatalogProvider, ...] = (
     CatalogProvider(name="openrouter", sync=sync_openrouter_once),
     CatalogProvider(name=EXPERIENTIAL_PROVIDER, sync=sync_experiential_once),
+    CatalogProvider(name=NANO_GPT_PROVIDER, sync=sync_nano_gpt_once),
 )
 
 

@@ -18,6 +18,8 @@ class Config(BaseSettings):
     openrouter_provider_blacklist: str = Field(default="", alias="OPENROUTER_PROVIDER_BLACKLIST")
     experiential_api_key: str = Field(default="", alias="EXPERIENTIAL_LABS_API_KEY")
     experiential_model: str = Field(default="", alias="EXPERIENTIAL_LABS_MODEL")
+    nano_gpt_api_key: str = Field(default="", alias="NANO_GPT_API_KEY")
+    nano_gpt_model: str = Field(default="", alias="NANO_GPT_MODEL")
     workspace_root: str = Field(default="", alias="WORKSPACE_ROOT")
     duckdb_path: str = Field(default="", alias="DUCKDB_PATH")
     plugins_config_path: str = Field(default="", alias="PLUGINS_CONFIG_PATH")
