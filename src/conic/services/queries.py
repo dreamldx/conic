@@ -106,7 +106,8 @@ def set_session_variables_sql(session_key: str, variables: dict) -> tuple[str, l
 def create_model_catalog_table_sql() -> tuple[str, list]:
     return ("""\
 CREATE TABLE IF NOT EXISTS model_catalog (
-    slug VARCHAR PRIMARY KEY,
+    provider VARCHAR,
+    slug VARCHAR,
     vendor VARCHAR,
     real_model VARCHAR,
     name VARCHAR,
@@ -118,19 +119,22 @@ CREATE TABLE IF NOT EXISTS model_catalog (
     input_modalities VARCHAR DEFAULT '[]',
     output_modalities VARCHAR DEFAULT '[]',
     supported_parameters VARCHAR DEFAULT '[]',
-    fetched_at VARCHAR
+    fetched_at VARCHAR,
+    PRIMARY KEY (provider, slug)
 )""", [])
 
 
-def model_catalog_has_legacy_id_column_sql() -> tuple[str, list]:
-    return (
-        "SELECT 1 FROM information_schema.columns WHERE table_name = 'model_catalog' AND column_name = 'id'",
-        [],
+def model_catalog_is_outdated_sql() -> tuple[str, list]:
+    sql = (
+        "SELECT 1 FROM information_schema.tables WHERE table_name = 'model_catalog' "
+        "AND NOT EXISTS (SELECT 1 FROM information_schema.columns "
+        "WHERE table_name = 'model_catalog' AND column_name = 'provider')"
     )
+    return sql, []
 
 
 def drop_model_catalog_sql() -> tuple[str, list]:
-    return ("DROP TABLE model_catalog", [])
+    return ("DROP TABLE IF EXISTS model_catalog", [])
 
 
 def add_model_catalog_extra_columns_sql() -> list[tuple[str, list]]:
@@ -145,21 +149,21 @@ def add_model_catalog_extra_columns_sql() -> list[tuple[str, list]]:
     ]
 
 
-def clear_model_catalog_sql() -> tuple[str, list]:
-    return ("DELETE FROM model_catalog", [])
+def clear_model_catalog_sql(provider: str) -> tuple[str, list]:
+    return ("DELETE FROM model_catalog WHERE provider = ?", [provider])
 
 
 def insert_model_catalog_entry_sql(entry: ModelCatalogEntry) -> tuple[str, list]:
     sql = (
         "INSERT INTO model_catalog "
-        "(slug, vendor, real_model, name, description, context_length, supports_tools, pricing_prompt, pricing_completion, "
+        "(provider, slug, vendor, real_model, name, description, context_length, supports_tools, pricing_prompt, pricing_completion, "
         "input_modalities, output_modalities, supported_parameters, fetched_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     )
     return (
         sql,
         [
-            entry.slug, entry.vendor, entry.real_model, entry.name, entry.description, entry.context_length, entry.supports_tools,
+            entry.provider, entry.slug, entry.vendor, entry.real_model, entry.name, entry.description, entry.context_length, entry.supports_tools,
             entry.pricing_prompt, entry.pricing_completion, json.dumps(entry.input_modalities),
             json.dumps(entry.output_modalities), json.dumps(entry.supported_parameters),
             entry.fetched_at.isoformat(),
@@ -167,30 +171,32 @@ def insert_model_catalog_entry_sql(entry: ModelCatalogEntry) -> tuple[str, list]
     )
 
 
-def list_model_catalog_sql() -> tuple[str, list]:
+def list_model_catalog_sql(provider: str | None = None) -> tuple[str, list]:
     sql = (
         "SELECT slug, vendor, real_model, name, description, context_length, supports_tools, pricing_prompt, pricing_completion, "
-        "input_modalities, output_modalities, supported_parameters, fetched_at "
-        "FROM model_catalog ORDER BY slug"
+        "input_modalities, output_modalities, supported_parameters, fetched_at, provider "
+        "FROM model_catalog"
     )
-    return sql, []
+    if provider is None:
+        return sql + " ORDER BY provider, slug", []
+    return sql + " WHERE provider = ? ORDER BY slug", [provider]
 
 
-def find_model_catalog_entries_sql(query: str) -> tuple[str, list]:
+def find_model_catalog_entries_sql(provider: str, query: str) -> tuple[str, list]:
     sql = (
         "SELECT slug, vendor, real_model, name, description, context_length, supports_tools, "
         "pricing_prompt, pricing_completion, input_modalities, output_modalities, "
-        "supported_parameters, fetched_at FROM model_catalog "
-        "WHERE lower(slug) = ? OR lower(regexp_replace(slug, '^~?[^/]*/', '')) = ? "
+        "supported_parameters, fetched_at, provider FROM model_catalog "
+        "WHERE provider = ? AND (lower(slug) = ? OR lower(regexp_replace(slug, '^~?[^/]*/', '')) = ?) "
         "ORDER BY slug"
     )
     needle = query.strip().lower()
-    return sql, [needle, needle]
+    return sql, [provider, needle, needle]
 
 
-def get_model_context_length_sql(slug: str) -> tuple[str, list]:
-    return "SELECT context_length FROM model_catalog WHERE slug = ?", [slug]
+def get_model_context_length_sql(provider: str, slug: str) -> tuple[str, list]:
+    return "SELECT context_length FROM model_catalog WHERE provider = ? AND slug = ?", [provider, slug]
 
 
-def model_catalog_is_empty_sql() -> tuple[str, list]:
-    return "SELECT 1 FROM model_catalog LIMIT 1", []
+def model_catalog_is_empty_sql(provider: str) -> tuple[str, list]:
+    return "SELECT 1 FROM model_catalog WHERE provider = ? LIMIT 1", [provider]

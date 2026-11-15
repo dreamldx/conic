@@ -26,6 +26,7 @@ class Message(BaseModel):
 
 class ModelCatalogEntry(BaseModel):
     slug: str
+    provider: str = "openrouter"
     vendor: str = ""
     real_model: str = ""
     name: str = ""

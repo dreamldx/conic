@@ -38,7 +38,7 @@ async def build_app(
     # any session is built, otherwise OpenRouterModelPlugin's context-length
     # lookup falls back to DEFAULT_MODEL_CONTEXT_LENGTH for sessions resumed
     # or created before the background sync task gets a chance to run.
-    if storage.model_catalog_is_empty():
+    if storage.model_catalog_is_empty("openrouter"):
         await sync_once(storage, config.openrouter_api_key, json_path=_catalog_json_path(config.project_root))
     plugin_sets = build_plugin_set(config, catalog_lookup=storage.find_model_catalog_entries)
     if "main" not in plugin_sets:

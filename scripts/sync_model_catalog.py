@@ -14,7 +14,7 @@ async def main() -> None:
     storage = StorageService(config.duckdb_path, config.workspace_root, config.openrouter_model)
     storage.startup()
     try:
-        storage.save_model_catalog(entries)
+        storage.save_model_catalog("openrouter", entries)
     finally:
         storage.shutdown()
 

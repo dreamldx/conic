@@ -72,7 +72,7 @@ async def sync_catalog_once(
     that need the catalog populated before querying model metadata."""
     try:
         raw_models = await fetch_openrouter_models(api_key, session_factory=session_factory)
-        storage.save_model_catalog([ModelCatalogEntry(**m) for m in raw_models])
+        storage.save_model_catalog("openrouter", [ModelCatalogEntry(**m) for m in raw_models])
         logger.info("synced {} models from openrouter", len(raw_models))
         if json_path is not None:
             try:

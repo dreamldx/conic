@@ -59,7 +59,7 @@ def test_build_app_skips_the_sync_when_the_catalog_already_has_entries(tmp_path)
     env = make_env(tmp_path)
     seed = StorageService(env["DUCKDB_PATH"], env["WORKSPACE_ROOT"], "test-model")
     seed.startup()
-    seed.save_model_catalog([ModelCatalogEntry(slug="openai/gpt-audio")])
+    seed.save_model_catalog("openrouter", [ModelCatalogEntry(slug="openai/gpt-audio")])
     seed.shutdown()
     calls = []
 

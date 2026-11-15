@@ -142,7 +142,7 @@ class FakeStorage:
     def __init__(self):
         self.saved: list[list] = []
 
-    def save_model_catalog(self, entries):
+    def save_model_catalog(self, provider, entries):
         self.saved.append(entries)
 
 

@@ -65,7 +65,7 @@ class StorageService:
         self._conn.execute(*queries.add_sessions_variables_column_sql())
         self._conn.execute(*queries.add_messages_turn_id_column_sql())
         self._conn.execute(*queries.add_messages_duration_ms_column_sql())
-        if self._conn.execute(*queries.model_catalog_has_legacy_id_column_sql()).fetchone():
+        if self._conn.execute(*queries.model_catalog_is_outdated_sql()).fetchone():
             self._conn.execute(*queries.drop_model_catalog_sql())
         self._conn.execute(*queries.create_model_catalog_table_sql())
         for sql, params in queries.add_model_catalog_extra_columns_sql():
@@ -115,19 +115,19 @@ class StorageService:
         rows = self._conn.execute(sql, params).fetchall()
         return [self._session_from_row(r) for r in rows]
 
-    def save_model_catalog(self, entries: list[ModelCatalogEntry]) -> None:
-        self._conn.execute(*queries.clear_model_catalog_sql())
+    def save_model_catalog(self, provider: str, entries: list[ModelCatalogEntry]) -> None:
+        self._conn.execute(*queries.clear_model_catalog_sql(provider))
         for entry in entries:
-            sql, params = queries.insert_model_catalog_entry_sql(entry)
+            sql, params = queries.insert_model_catalog_entry_sql(entry.model_copy(update={"provider": provider}))
             self._conn.execute(sql, params)
 
-    def list_model_catalog(self) -> list[ModelCatalogEntry]:
-        sql, params = queries.list_model_catalog_sql()
+    def list_model_catalog(self, provider: str | None = None) -> list[ModelCatalogEntry]:
+        sql, params = queries.list_model_catalog_sql(provider)
         rows = self._conn.execute(sql, params).fetchall()
         return [self._catalog_entry_from_row(r) for r in rows]
 
-    def find_model_catalog_entries(self, query: str) -> list[ModelCatalogEntry]:
-        sql, params = queries.find_model_catalog_entries_sql(query)
+    def find_model_catalog_entries(self, provider: str, query: str) -> list[ModelCatalogEntry]:
+        sql, params = queries.find_model_catalog_entries_sql(provider, query)
         rows = self._conn.execute(sql, params).fetchall()
         return [self._catalog_entry_from_row(r) for r in rows]
 
@@ -140,18 +140,18 @@ class StorageService:
             input_modalities=json.loads(r[9]) if r[9] else [],
             output_modalities=json.loads(r[10]) if r[10] else [],
             supported_parameters=json.loads(r[11]) if r[11] else [],
-            fetched_at=_parse_stored_datetime(r[12]),
+            fetched_at=_parse_stored_datetime(r[12]), provider=r[13],
         )
 
-    def get_model_context_length(self, slug: str) -> int:
-        sql, params = queries.get_model_context_length_sql(slug)
+    def get_model_context_length(self, provider: str, slug: str) -> int:
+        sql, params = queries.get_model_context_length_sql(provider, slug)
         row = self._conn.execute(sql, params).fetchone()
         if row is None or row[0] is None:
             return DEFAULT_MODEL_CONTEXT_LENGTH
         return row[0]
 
-    def model_catalog_is_empty(self) -> bool:
-        sql, params = queries.model_catalog_is_empty_sql()
+    def model_catalog_is_empty(self, provider: str) -> bool:
+        sql, params = queries.model_catalog_is_empty_sql(provider)
         return self._conn.execute(sql, params).fetchone() is None
 
     @staticmethod

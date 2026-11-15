@@ -2,6 +2,7 @@ import os
 import platform
 from collections.abc import Callable
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path, PureWindowsPath
 
 from openai import AsyncOpenAI
@@ -70,7 +71,7 @@ def _detect_shell() -> str:
 def build_plugin_set(
     config: Config,
     global_variables: dict | None = None,
-    catalog_lookup: Callable[[str], list[ModelCatalogEntry]] | None = None,
+    catalog_lookup: Callable[[str, str], list[ModelCatalogEntry]] | None = None,
 ) -> dict[str, PluginSet]:
     prompts = _load_prompts(Path(config.project_root) / "prompts")
     shared_client = AsyncOpenAI(base_url="https://openrouter.ai/api/v1", api_key=config.openrouter_api_key)
@@ -148,7 +149,7 @@ def _build_one_plugin_set(
 class BuildContext:
     shared_client: AsyncOpenAI
     prompts: dict[str, str]
-    catalog_lookup: Callable[[str], list[ModelCatalogEntry]] | None = None
+    catalog_lookup: Callable[[str, str], list[ModelCatalogEntry]] | None = None
 
 
 def _build_bash_tool(config: Config, params: dict, ctx: BuildContext) -> type:
@@ -348,11 +349,13 @@ def _build_summarizer(name: str) -> Callable[[], object]:
 
 
 def _build_openrouter_backend(config: Config, ctx: BuildContext, provider_blacklist: list[str], global_variables: dict):
+    openrouter_lookup = partial(ctx.catalog_lookup, "openrouter") if ctx.catalog_lookup is not None else None
+
     def factory(session_key: str):
         return OpenRouterModelPlugin(
             api_key=config.openrouter_api_key, model=config.openrouter_model, client=ctx.shared_client,
             provider_blacklist=provider_blacklist, session_id=session_key, app_name=config.project_name,
-            catalog_lookup=ctx.catalog_lookup, global_variables=global_variables,
+            catalog_lookup=openrouter_lookup, global_variables=global_variables,
         )
     return factory
 

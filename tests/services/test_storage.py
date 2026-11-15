@@ -172,7 +172,7 @@ def test_persists_across_reconnect(tmp_path):
 
 def test_save_and_list_model_catalog_round_trip(tmp_path):
     storage = make_storage(tmp_path)
-    storage.save_model_catalog([
+    storage.save_model_catalog("openrouter", [
         ModelCatalogEntry(
             slug="deepseek/deepseek-v4-flash-0731",
             vendor="deepseek",
@@ -211,8 +211,8 @@ def test_save_and_list_model_catalog_round_trip(tmp_path):
 
 def test_save_model_catalog_replaces_previous_entries(tmp_path):
     storage = make_storage(tmp_path)
-    storage.save_model_catalog([ModelCatalogEntry(slug="old/model", context_length=1000)])
-    storage.save_model_catalog([ModelCatalogEntry(slug="new/model", context_length=2000)])
+    storage.save_model_catalog("openrouter", [ModelCatalogEntry(slug="old/model", context_length=1000)])
+    storage.save_model_catalog("openrouter", [ModelCatalogEntry(slug="new/model", context_length=2000)])
 
     entries = storage.list_model_catalog()
 
@@ -222,7 +222,7 @@ def test_save_model_catalog_replaces_previous_entries(tmp_path):
 
 def test_model_catalog_persists_across_reconnect(tmp_path):
     storage = make_storage(tmp_path)
-    storage.save_model_catalog([ModelCatalogEntry(slug="deepseek/deepseek-v4-flash-0731", context_length=128000)])
+    storage.save_model_catalog("openrouter", [ModelCatalogEntry(slug="deepseek/deepseek-v4-flash-0731", context_length=128000)])
     storage.shutdown()
 
     reopened = StorageService(
@@ -238,32 +238,32 @@ def test_model_catalog_persists_across_reconnect(tmp_path):
 
 def test_get_model_context_length_returns_the_matching_entrys_value(tmp_path):
     storage = make_storage(tmp_path)
-    storage.save_model_catalog([
+    storage.save_model_catalog("openrouter", [
         ModelCatalogEntry(slug="deepseek/deepseek-v4-flash-0731", context_length=1310720),
         ModelCatalogEntry(slug="openai/gpt-audio", context_length=32000),
     ])
 
-    assert storage.get_model_context_length("deepseek/deepseek-v4-flash-0731") == 1310720
-    assert storage.get_model_context_length("openai/gpt-audio") == 32000
+    assert storage.get_model_context_length("openrouter", "deepseek/deepseek-v4-flash-0731") == 1310720
+    assert storage.get_model_context_length("openrouter", "openai/gpt-audio") == 32000
     storage.shutdown()
 
 
 def test_get_model_context_length_defaults_to_65535_when_model_not_in_catalog(tmp_path):
     storage = make_storage(tmp_path)
-    assert storage.get_model_context_length("some/unknown-model") == 65535
+    assert storage.get_model_context_length("openrouter", "some/unknown-model") == 65535
     storage.shutdown()
 
 
 def test_model_catalog_is_empty_before_any_sync(tmp_path):
     storage = make_storage(tmp_path)
-    assert storage.model_catalog_is_empty() is True
+    assert storage.model_catalog_is_empty("openrouter") is True
     storage.shutdown()
 
 
 def test_model_catalog_is_empty_returns_false_after_a_sync(tmp_path):
     storage = make_storage(tmp_path)
-    storage.save_model_catalog([ModelCatalogEntry(slug="openai/gpt-audio")])
-    assert storage.model_catalog_is_empty() is False
+    storage.save_model_catalog("openrouter", [ModelCatalogEntry(slug="openai/gpt-audio")])
+    assert storage.model_catalog_is_empty("openrouter") is False
     storage.shutdown()
 
 
@@ -277,7 +277,7 @@ def test_startup_drops_legacy_model_catalog_table_with_id_column(tmp_path):
     conn.close()
 
     storage = make_storage(tmp_path)
-    storage.save_model_catalog([ModelCatalogEntry(slug="new/model", vendor="new", real_model="new/model")])
+    storage.save_model_catalog("openrouter", [ModelCatalogEntry(slug="new/model", vendor="new", real_model="new/model")])
 
     assert [e.slug for e in storage.list_model_catalog()] == ["new/model"]
     storage.shutdown()
@@ -285,7 +285,7 @@ def test_startup_drops_legacy_model_catalog_table_with_id_column(tmp_path):
 
 def test_find_model_catalog_entries_matches_slug_or_model_name(tmp_path):
     storage = make_storage(tmp_path)
-    storage.save_model_catalog([
+    storage.save_model_catalog("openrouter", [
         ModelCatalogEntry(slug="deepseek/deepseek-v4-flash", vendor="deepseek"),
         ModelCatalogEntry(slug="deepseek/deepseek-v4-flash-0731", vendor="deepseek"),
         ModelCatalogEntry(slug="~deepseek/deepseek-v4-flash-latest", vendor="deepseek"),
@@ -295,7 +295,7 @@ def test_find_model_catalog_entries_matches_slug_or_model_name(tmp_path):
     ])
 
     def slugs(query):
-        return [e.slug for e in storage.find_model_catalog_entries(query)]
+        return [e.slug for e in storage.find_model_catalog_entries("openrouter", query)]
 
     assert slugs("deepseek-v4-flash") == ["deepseek/deepseek-v4-flash"]
     assert slugs("deepseek/deepseek-v4-flash-0731") == ["deepseek/deepseek-v4-flash-0731"]
@@ -306,4 +306,53 @@ def test_find_model_catalog_entries_matches_slug_or_model_name(tmp_path):
     assert slugs("deepseek-r1") == ["deepseek/deepseek-r1"]
     assert slugs("deepseek-r1:free") == ["deepseek/deepseek-r1:free"]
     assert slugs("nope") == []
+    storage.shutdown()
+
+
+def test_same_slug_under_two_providers_does_not_collide(tmp_path):
+    storage = make_storage(tmp_path)
+    storage.save_model_catalog("openrouter", [ModelCatalogEntry(slug="x", provider="openrouter", context_length=1)])
+    storage.save_model_catalog("experiential", [ModelCatalogEntry(slug="x", provider="experiential", context_length=2)])
+
+    found = storage.find_model_catalog_entries("experiential", "x")
+
+    assert len(found) == 1
+    assert found[0].context_length == 2
+    assert found[0].provider == "experiential"
+    storage.shutdown()
+
+
+def test_save_model_catalog_only_replaces_the_given_provider(tmp_path):
+    storage = make_storage(tmp_path)
+    storage.save_model_catalog("openrouter", [ModelCatalogEntry(slug="a")])
+    storage.save_model_catalog("experiential", [ModelCatalogEntry(slug="b", provider="experiential")])
+    storage.save_model_catalog("openrouter", [ModelCatalogEntry(slug="c")])
+
+    assert {e.slug for e in storage.list_model_catalog()} == {"b", "c"}
+    storage.shutdown()
+
+
+def test_model_catalog_is_empty_is_per_provider(tmp_path):
+    storage = make_storage(tmp_path)
+    storage.save_model_catalog("openrouter", [ModelCatalogEntry(slug="a")])
+
+    assert storage.model_catalog_is_empty("openrouter") is False
+    assert storage.model_catalog_is_empty("experiential") is True
+    storage.shutdown()
+
+
+def test_startup_rebuilds_model_catalog_table_without_provider_column(tmp_path):
+    import duckdb
+
+    db_path = tmp_path / "conic.duckdb"
+    conn = duckdb.connect(str(db_path))
+    conn.execute("CREATE TABLE model_catalog (slug VARCHAR PRIMARY KEY, vendor VARCHAR, context_length INTEGER)")
+    conn.execute("INSERT INTO model_catalog VALUES ('old/model', 'old', 1000)")
+    conn.close()
+
+    storage = make_storage(tmp_path)
+
+    assert storage.model_catalog_is_empty("openrouter") is True
+    storage.save_model_catalog("openrouter", [ModelCatalogEntry(slug="new/model")])
+    assert [e.slug for e in storage.find_model_catalog_entries("openrouter", "new/model")] == ["new/model"]
     storage.shutdown()

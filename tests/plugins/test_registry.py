@@ -92,6 +92,20 @@ def test_build_plugin_set_backend_factory_produces_fresh_instances_sharing_one_c
     assert backend1._client is backend2._client
 
 
+def test_build_plugin_set_binds_the_openrouter_provider_into_the_catalog_lookup(tmp_path):
+    calls = []
+
+    def lookup(provider, query):
+        calls.append((provider, query))
+        return []
+
+    plugin_set = build_plugin_set(make_config(tmp_path), catalog_lookup=lookup)["main"]
+    plugin_set.backend("discord:1")._catalog_lookup("some-model")
+
+    assert ("openrouter", "some-model") in calls
+    assert {provider for provider, _ in calls} == {"openrouter"}
+
+
 def test_build_plugin_set_context_and_policy_factories_produce_fresh_instances(tmp_path):
     plugin_set = build_plugin_set(make_config(tmp_path))["main"]
     for factory in plugin_set.context_plugins:
