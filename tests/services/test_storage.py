@@ -1,5 +1,8 @@
 from datetime import UTC
 
+import duckdb
+import pytest
+
 from conic.services.models import ModelCatalogEntry
 from conic.services.storage import StorageService
 
@@ -355,4 +358,45 @@ def test_startup_rebuilds_model_catalog_table_without_provider_column(tmp_path):
     assert storage.model_catalog_is_empty("openrouter") is True
     storage.save_model_catalog("openrouter", [ModelCatalogEntry(slug="new/model")])
     assert [e.slug for e in storage.find_model_catalog_entries("openrouter", "new/model")] == ["new/model"]
+    storage.shutdown()
+
+
+def test_save_model_catalog_keeps_last_of_duplicate_slugs(tmp_path):
+    storage = make_storage(tmp_path)
+
+    storage.save_model_catalog("experiential", [
+        ModelCatalogEntry(slug="dup", context_length=1),
+        ModelCatalogEntry(slug="other", context_length=3),
+        ModelCatalogEntry(slug="dup", context_length=2),
+    ])
+
+    entries = {e.slug: e for e in storage.list_model_catalog("experiential")}
+    assert set(entries) == {"dup", "other"}
+    assert entries["dup"].context_length == 2
+    storage.shutdown()
+
+
+def test_save_model_catalog_rolls_back_when_an_insert_fails(tmp_path, monkeypatch):
+    from conic.services import queries
+
+    storage = make_storage(tmp_path)
+    storage.save_model_catalog("experiential", [ModelCatalogEntry(slug="old/model", context_length=1000)])
+    real_insert = queries.insert_model_catalog_entry_sql
+    calls = []
+
+    def failing_insert(entry):
+        calls.append(entry.slug)
+        if len(calls) == 2:
+            return "INSERT INTO no_such_table VALUES (?)", [1]
+        return real_insert(entry)
+
+    monkeypatch.setattr(queries, "insert_model_catalog_entry_sql", failing_insert)
+
+    with pytest.raises(duckdb.Error):
+        storage.save_model_catalog("experiential", [ModelCatalogEntry(slug="a"), ModelCatalogEntry(slug="b")])
+
+    monkeypatch.undo()
+    assert [e.slug for e in storage.list_model_catalog("experiential")] == ["old/model"]
+    storage.save_model_catalog("experiential", [ModelCatalogEntry(slug="c")])
+    assert [e.slug for e in storage.list_model_catalog("experiential")] == ["c"]
     storage.shutdown()

@@ -166,3 +166,17 @@ async def test_fetch_skips_models_that_are_not_active():
 async def test_fetch_raises_on_http_error():
     with pytest.raises(RuntimeError, match="boom"):
         await fetch_experiential_models(session_factory=session_factory([{}], error=RuntimeError("boom")))
+
+
+async def test_fetch_keeps_paging_until_an_empty_page_when_total_is_missing():
+    capture = []
+    pages = [
+        {"models": [model_row("a"), model_row("b")]},
+        {"models": [model_row("c")]},
+        {"models": []},
+    ]
+
+    result = await fetch_experiential_models(session_factory=session_factory(pages, capture))
+
+    assert [e.slug for e in result] == ["a", "b", "c"]
+    assert [c["params"]["offset"] for c in capture] == [0, 2, 3]

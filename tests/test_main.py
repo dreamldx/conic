@@ -1,10 +1,18 @@
 import asyncio
 
+from conic.catalog import CatalogProvider
 from conic.entry import build_app
 
 
-async def _noop_sync_once(storage, api_key, session_factory=None, json_path=None):
-    return False
+def fake_provider(name, calls=None, fail=False):
+    async def sync(storage, config):
+        if calls is not None:
+            calls.append(name)
+        if fail:
+            raise RuntimeError("boom")
+        return True
+
+    return CatalogProvider(name=name, sync=sync)
 
 
 def make_env(tmp_path):
@@ -23,7 +31,7 @@ def test_build_app_wires_storage_and_gateway_without_connecting(tmp_path):
     env = make_env(tmp_path)
 
     async def _build():
-        return await build_app(env, sync_once=_noop_sync_once)
+        return await build_app(env, providers=(fake_provider("a"),))
 
     storage, gateway = asyncio.run(_build())
     try:
@@ -34,44 +42,37 @@ def test_build_app_wires_storage_and_gateway_without_connecting(tmp_path):
         storage.shutdown()
 
 
-def test_build_app_syncs_once_when_the_catalog_is_empty(tmp_path):
-    env = make_env(tmp_path)
-    calls = []
-
-    async def _tracking_sync_once(storage, api_key, session_factory=None, json_path=None):
-        calls.append(1)
-        return False
-
-    async def _build():
-        return await build_app(env, sync_once=_tracking_sync_once)
-
-    storage, _gateway = asyncio.run(_build())
-    try:
-        assert calls == [1]
-    finally:
-        storage.shutdown()
-
-
-def test_build_app_skips_the_sync_when_the_catalog_already_has_entries(tmp_path):
+def test_build_app_syncs_only_providers_whose_catalog_is_empty(tmp_path):
     from conic.services.models import ModelCatalogEntry
     from conic.services.storage import StorageService
 
     env = make_env(tmp_path)
     seed = StorageService(env["DUCKDB_PATH"], env["WORKSPACE_ROOT"], "test-model")
     seed.startup()
-    seed.save_model_catalog("openrouter", [ModelCatalogEntry(slug="openai/gpt-audio")])
+    seed.save_model_catalog("seeded", [ModelCatalogEntry(slug="x/y", provider="seeded")])
     seed.shutdown()
     calls = []
 
-    async def _tracking_sync_once(storage, api_key, session_factory=None, json_path=None):
-        calls.append(1)
-        return False
-
     async def _build():
-        return await build_app(env, sync_once=_tracking_sync_once)
+        return await build_app(env, providers=(fake_provider("seeded", calls), fake_provider("empty", calls)))
 
     storage, _gateway = asyncio.run(_build())
     try:
-        assert calls == []
+        assert calls == ["empty"]
+    finally:
+        storage.shutdown()
+
+
+def test_build_app_boots_when_a_provider_sync_raises(tmp_path):
+    env = make_env(tmp_path)
+    calls = []
+
+    async def _build():
+        return await build_app(env, providers=(fake_provider("bad", calls, fail=True), fake_provider("good", calls)))
+
+    storage, gateway = asyncio.run(_build())
+    try:
+        assert calls == ["bad", "good"]
+        assert gateway.name == "discord"
     finally:
         storage.shutdown()

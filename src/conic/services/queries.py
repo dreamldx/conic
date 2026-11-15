@@ -153,6 +153,18 @@ def clear_model_catalog_sql(provider: str) -> tuple[str, list]:
     return ("DELETE FROM model_catalog WHERE provider = ?", [provider])
 
 
+def begin_transaction_sql() -> tuple[str, list]:
+    return ("BEGIN TRANSACTION", [])
+
+
+def commit_transaction_sql() -> tuple[str, list]:
+    return ("COMMIT", [])
+
+
+def rollback_transaction_sql() -> tuple[str, list]:
+    return ("ROLLBACK", [])
+
+
 def insert_model_catalog_entry_sql(entry: ModelCatalogEntry) -> tuple[str, list]:
     sql = (
         "INSERT INTO model_catalog "

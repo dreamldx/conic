@@ -116,10 +116,17 @@ class StorageService:
         return [self._session_from_row(r) for r in rows]
 
     def save_model_catalog(self, provider: str, entries: list[ModelCatalogEntry]) -> None:
-        self._conn.execute(*queries.clear_model_catalog_sql(provider))
-        for entry in entries:
-            sql, params = queries.insert_model_catalog_entry_sql(entry.model_copy(update={"provider": provider}))
-            self._conn.execute(sql, params)
+        unique = list({entry.slug: entry for entry in entries}.values())
+        self._conn.execute(*queries.begin_transaction_sql())
+        try:
+            self._conn.execute(*queries.clear_model_catalog_sql(provider))
+            for entry in unique:
+                sql, params = queries.insert_model_catalog_entry_sql(entry.model_copy(update={"provider": provider}))
+                self._conn.execute(sql, params)
+            self._conn.execute(*queries.commit_transaction_sql())
+        except Exception:
+            self._conn.execute(*queries.rollback_transaction_sql())
+            raise
 
     def list_model_catalog(self, provider: str | None = None) -> list[ModelCatalogEntry]:
         sql, params = queries.list_model_catalog_sql(provider)

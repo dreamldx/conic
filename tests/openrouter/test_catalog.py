@@ -1,4 +1,3 @@
-import asyncio
 import json
 
 import pytest
@@ -6,7 +5,6 @@ import pytest
 from conic.openrouter.catalog import (
     OPENROUTER_MODELS_URL,
     fetch_openrouter_models,
-    run_periodic_sync,
     sync_catalog_once,
     vendor_of,
 )
@@ -144,72 +142,6 @@ class FakeStorage:
 
     def save_model_catalog(self, provider, entries):
         self.saved.append(entries)
-
-
-def sleep_n_times_then_cancel(n):
-    calls = []
-
-    async def fake_sleep(seconds):
-        calls.append(seconds)
-        if len(calls) >= n:
-            raise asyncio.CancelledError
-
-    return fake_sleep, calls
-
-
-async def test_run_periodic_sync_does_not_sync_before_the_first_sleep():
-    storage = FakeStorage()
-    payload = {"data": [{"id": "a/b", "context_length": 1000, "supported_parameters": ["tools"]}]}
-    fake_sleep, calls = sleep_n_times_then_cancel(1)
-
-    with pytest.raises(asyncio.CancelledError):
-        await run_periodic_sync(storage, "key", session_factory=session_factory(payload), sleep=fake_sleep)
-
-    assert storage.saved == []
-    assert calls == [3600]
-
-
-async def test_run_periodic_sync_syncs_after_each_sleep():
-    storage = FakeStorage()
-    payload = {"data": [{"id": "a/b", "context_length": 1000, "supported_parameters": ["tools"]}]}
-    fake_sleep, calls = sleep_n_times_then_cancel(2)
-
-    with pytest.raises(asyncio.CancelledError):
-        await run_periodic_sync(storage, "key", session_factory=session_factory(payload), sleep=fake_sleep)
-
-    assert len(storage.saved) == 1
-    assert storage.saved[0][0].slug == "a/b"
-    assert storage.saved[0][0].context_length == 1000
-    assert calls == [3600, 3600]
-
-
-async def test_run_periodic_sync_resyncs_on_every_interval():
-    storage = FakeStorage()
-    payload = {"data": [{"id": "a/b"}]}
-    fake_sleep, calls = sleep_n_times_then_cancel(4)
-
-    with pytest.raises(asyncio.CancelledError):
-        await run_periodic_sync(
-            storage, "key", interval_seconds=1, session_factory=session_factory(payload), sleep=fake_sleep
-        )
-
-    assert len(storage.saved) == 3
-    assert calls == [1, 1, 1, 1]
-
-
-async def test_run_periodic_sync_keeps_looping_after_a_failed_sync():
-    storage = FakeStorage()
-
-    def failing_session_factory(timeout):
-        raise RuntimeError("boom")
-
-    fake_sleep, calls = sleep_n_times_then_cancel(2)
-
-    with pytest.raises(asyncio.CancelledError):
-        await run_periodic_sync(storage, "key", session_factory=failing_session_factory, sleep=fake_sleep)
-
-    assert storage.saved == []
-    assert len(calls) == 2
 
 
 @pytest.mark.parametrize(

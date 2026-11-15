@@ -1,4 +1,3 @@
-import asyncio
 import json
 import os
 from pathlib import Path
@@ -9,7 +8,6 @@ from loguru import logger
 from conic.services.models import ModelCatalogEntry
 
 OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
-DEFAULT_SYNC_INTERVAL_SECONDS = 3600
 MODEL_CATALOG_FILENAME = "openrouter_models.json"
 
 
@@ -68,8 +66,7 @@ async def sync_catalog_once(
     """Perform a single sync of the model catalog from OpenRouter.
 
     Returns True on success, False if the fetch or save failed.
-    This is the primitive used by run_periodic_sync and by startup paths
-    that need the catalog populated before querying model metadata."""
+    This is the primitive used by the provider registry in conic.catalog."""
     try:
         raw_models = await fetch_openrouter_models(api_key, session_factory=session_factory)
         storage.save_model_catalog("openrouter", [ModelCatalogEntry(**m) for m in raw_models])
@@ -83,22 +80,3 @@ async def sync_catalog_once(
     except Exception as exc:
         logger.warning("failed to sync openrouter model catalog: {}", exc)
         return False
-
-
-async def run_periodic_sync(
-    storage,
-    api_key: str,
-    interval_seconds: float = DEFAULT_SYNC_INTERVAL_SECONDS,
-    session_factory=aiohttp.ClientSession,
-    sleep=asyncio.sleep,
-    json_path: Path | None = None,
-) -> None:
-    """Sync the model catalog every interval_seconds, starting after the first
-    sleep -- runs forever until the enclosing task is cancelled (e.g. on
-    shutdown). The caller is expected to have synced once already (see
-    entry.py::build_app()) so this doesn't duplicate that sync on startup.
-    A failed sync is logged and skipped rather than killing the loop, so one
-    bad request doesn't stop future retries."""
-    while True:
-        await sleep(interval_seconds)
-        await sync_catalog_once(storage, api_key, session_factory=session_factory, json_path=json_path)

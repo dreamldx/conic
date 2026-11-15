@@ -10,6 +10,7 @@ from openai import AsyncOpenAI
 from conic.config import Config
 from conic.core.bus import infer_payload_type
 from conic.core.manager import PluginSet
+from conic.experiential.catalog import EXPERIENTIAL_PROVIDER
 from conic.plugins import Plugin
 from conic.plugins.context.extra_prompt import ExtraPromptPlugin
 from conic.plugins.context.sections.dynamic_state import DynamicStateSectionPlugin
@@ -93,7 +94,9 @@ def build_plugin_set(
     plugins_cfg = load_plugins_config(config.plugins_config_path)
 
     return {
-        name: _build_one_plugin_set(set_cfg, config, ctx, resolved_global_variables, provider_blacklist)
+        name: _build_one_plugin_set(
+            set_cfg, config, ctx, resolved_global_variables, provider_blacklist, global_variables or {}
+        )
         for name, set_cfg in plugins_cfg.items()
     }
 
@@ -104,9 +107,12 @@ def _build_one_plugin_set(
     ctx: "BuildContext",
     shared_global_variables: dict,
     provider_blacklist: list[str],
+    caller_global_variables: dict,
 ) -> PluginSet:
-    backend_model = config.experiential_model if set_cfg.backend == "experiential" else config.openrouter_model
-    resolved_global_variables = {**shared_global_variables, "model": backend_model}
+    backend_model = (
+        config.experiential_model if set_cfg.backend == ExperientialModelPlugin.Name else config.openrouter_model
+    )
+    resolved_global_variables = {**shared_global_variables, "model": backend_model, **caller_global_variables}
     tool_classes = _build_tool_classes(set_cfg.tools, config, ctx)
     context_plugins = _build_context_plugins(set_cfg.context, config, ctx)
     policy_plugins = _build_policy_plugins(set_cfg.policy, config)
@@ -355,7 +361,7 @@ def _build_summarizer(name: str) -> Callable[[], object]:
 
 
 def _build_openrouter_backend(config: Config, ctx: BuildContext, provider_blacklist: list[str], global_variables: dict):
-    openrouter_lookup = partial(ctx.catalog_lookup, "openrouter") if ctx.catalog_lookup is not None else None
+    openrouter_lookup = partial(ctx.catalog_lookup, OpenRouterModelPlugin.Name) if ctx.catalog_lookup is not None else None
 
     def factory(session_key: str):
         return OpenRouterModelPlugin(
@@ -371,7 +377,7 @@ def _build_experiential_backend(config: Config, ctx: BuildContext, provider_blac
         raise PluginConfigError("experiential backend requires EXPERIENTIAL_LABS_API_KEY to be set")
     if not config.experiential_model:
         raise PluginConfigError("experiential backend requires EXPERIENTIAL_LABS_MODEL to be set")
-    experiential_lookup = partial(ctx.catalog_lookup, "experiential") if ctx.catalog_lookup is not None else None
+    experiential_lookup = partial(ctx.catalog_lookup, EXPERIENTIAL_PROVIDER) if ctx.catalog_lookup is not None else None
     client = AsyncOpenAI(base_url=EXPERIENTIAL_BASE_URL, api_key=config.experiential_api_key)
 
     def factory(session_key: str):

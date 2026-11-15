@@ -26,7 +26,8 @@ async def fetch_experiential_models(
                 break
             entries.extend(e for e in (_parse_row(r) for r in rows) if e is not None)
             offset += len(rows)
-            if offset >= (body.get("total") or 0):
+            total = body.get("total")
+            if total is not None and offset >= total:
                 break
     return entries
 

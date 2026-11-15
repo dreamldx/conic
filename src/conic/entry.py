@@ -1,30 +1,22 @@
 import asyncio
 import contextlib
 import sys
-from pathlib import Path
+from functools import partial
 
 from loguru import logger
 
+from conic.catalog import CATALOG_PROVIDERS, CatalogProvider, run_periodic_sync
 from conic.config import load_config
 from conic.core.manager import PluginManager
 from conic.discord.cleanup import run_periodic_cleanup
 from conic.discord.gateway import DiscordGateway
-from conic.openrouter.catalog import (
-    MODEL_CATALOG_FILENAME,
-    run_periodic_sync,
-    sync_catalog_once,
-)
 from conic.plugins.plugin_config import PluginConfigError
 from conic.plugins.registry import build_plugin_set
 from conic.services.storage import StorageService
 
 
-def _catalog_json_path(project_root: str) -> Path:
-    return Path(project_root) / "data" / MODEL_CATALOG_FILENAME
-
-
 async def build_app(
-    env: dict[str, str] | None = None, sync_once=sync_catalog_once
+    env: dict[str, str] | None = None, providers: tuple[CatalogProvider, ...] = CATALOG_PROVIDERS
 ) -> tuple[StorageService, DiscordGateway]:
     config = load_config(env)
     logger.remove()
@@ -34,12 +26,12 @@ async def build_app(
     storage = StorageService(config.duckdb_path, config.workspace_root, config.openrouter_model)
     storage.startup()
     logger.info("storage started (db={})", config.duckdb_path)
-    # If the catalog is empty (first-ever run, or a fresh db), sync it before
-    # any session is built, otherwise OpenRouterModelPlugin's context-length
-    # lookup falls back to DEFAULT_MODEL_CONTEXT_LENGTH for sessions resumed
-    # or created before the background sync task gets a chance to run.
-    if storage.model_catalog_is_empty("openrouter"):
-        await sync_once(storage, config.openrouter_api_key, json_path=_catalog_json_path(config.project_root))
+    for provider in providers:
+        if storage.model_catalog_is_empty(provider.name):
+            try:
+                await provider.sync(storage, config)
+            except Exception as exc:
+                logger.warning("startup catalog sync failed for {}: {}", provider.name, exc)
     plugin_sets = build_plugin_set(config, catalog_lookup=storage.find_model_catalog_entries)
     if "main" not in plugin_sets:
         raise PluginConfigError(f"plugins config at {config.plugins_config_path} must define a 'main' plugin set")
@@ -51,15 +43,16 @@ async def build_app(
 async def main() -> None:
     storage, gateway = await build_app()
     config = load_config()
-    catalog_sync_task = asyncio.create_task(
-        run_periodic_sync(storage, config.openrouter_api_key, json_path=_catalog_json_path(config.project_root))
-    )
+    catalog_sync_tasks = [
+        asyncio.create_task(run_periodic_sync(partial(provider.sync, storage, config)))
+        for provider in CATALOG_PROVIDERS
+    ]
     cleanup_task = asyncio.create_task(run_periodic_cleanup(gateway.sweep_stale_sessions))
     try:
         await gateway.start()
     finally:
         logger.info("shutting down storage")
-        for task in (catalog_sync_task, cleanup_task):
+        for task in (*catalog_sync_tasks, cleanup_task):
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await task

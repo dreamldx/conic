@@ -502,3 +502,14 @@ def test_build_plugin_set_instantiate_session_registers_every_plugin_and_returns
 
     assert isinstance(loop_plugin, ReactLoopPlugin)
     assert loop_plugin._session_variables["workspace_dir"] == "/tmp/ws"
+
+
+def test_build_plugin_set_caller_model_override_wins_over_per_set_model(tmp_path):
+    plugin_sets = build_plugin_set(
+        make_config(tmp_path, TWO_BACKENDS_YAML, EXPERIENTIAL_LABS_API_KEY="x", EXPERIENTIAL_LABS_MODEL="exp-model"),
+        global_variables={"model": "caller-model"},
+    )
+
+    for plugin_set in plugin_sets.values():
+        loop = plugin_set.loop_factory(None, [], {}, None, {})
+        assert loop._global_variables["model"] == "caller-model"
