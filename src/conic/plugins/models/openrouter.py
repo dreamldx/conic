@@ -1,21 +1,19 @@
-import asyncio
-import json
 from collections.abc import Callable
 
 from loguru import logger
 from openai import AsyncOpenAI
 
-from conic.plugins import Plugin, meta
+from conic.plugins import meta
+from conic.plugins.models.base import (
+    BLOCKING_TIMEOUT,
+    STREAM_ATTEMPT_TIMEOUTS,
+    ChatCompletionModelPlugin,
+)
 from conic.services.models import ModelCatalogEntry
-from conic.services.storage import DEFAULT_MODEL_CONTEXT_LENGTH
 from conic.types.messages import (
     BuildSystemPrompt,
-    MessageDeltaUpdate,
-    ModelRequest,
-    ModelResponse,
     SwitchModelRequest,
     SwitchModelResult,
-    ToolCallSpec,
 )
 
 APP_HTTP_REFERER = "https://github.com/dreamldx/conic"
@@ -25,12 +23,20 @@ MODEL_CATALOG_SECTION = (
     "context length, pricing, modalities, supported parameters) is stored as JSON at "
     f"{MODEL_CATALOG_PATH}."
 )
-STREAM_ATTEMPT_TIMEOUTS = (10.0, 15.0, 30.0)
-BLOCKING_TIMEOUT = 30.0
+
+__all__ = [
+    "APP_HTTP_REFERER",
+    "BLOCKING_TIMEOUT",
+    "MODEL_CATALOG_PATH",
+    "MODEL_CATALOG_SECTION",
+    "STREAM_ATTEMPT_TIMEOUTS",
+    "OpenRouterModelPlugin",
+]
 
 
-class OpenRouterModelPlugin(Plugin):
+class OpenRouterModelPlugin(ChatCompletionModelPlugin):
     Name = "openrouter"
+
     def __init__(
         self,
         api_key: str,
@@ -44,44 +50,22 @@ class OpenRouterModelPlugin(Plugin):
         stream_timeouts: tuple[float, ...] = STREAM_ATTEMPT_TIMEOUTS,
         blocking_timeout: float = BLOCKING_TIMEOUT,
     ):
-        self.model = model
-        self._stream_timeouts = stream_timeouts
-        self._blocking_timeout = blocking_timeout
-        self._client = client or AsyncOpenAI(base_url="https://openrouter.ai/api/v1", api_key=api_key)
-        self._bus = None
         self._provider_blacklist = provider_blacklist or []
-        self._session_id = session_id
         self._app_name = app_name
-        self._catalog_lookup = catalog_lookup
-        self._global_variables = global_variables
-        self._reload_model_context_length()
+        super().__init__(
+            model=model,
+            client=client or AsyncOpenAI(base_url="https://openrouter.ai/api/v1", api_key=api_key),
+            session_id=session_id,
+            catalog_lookup=catalog_lookup,
+            global_variables=global_variables,
+            stream_timeouts=stream_timeouts,
+            blocking_timeout=blocking_timeout,
+        )
 
     def register(self, bus) -> None:
-        self._bus = bus
-        bus.on_request(meta.ModelRequestEvent, self.complete)
+        super().register(bus)
         bus.on_request(meta.SwitchModelRequestEvent, self.switch_model)
         bus.on_chain(meta.BuildSystemPromptEvent, self.contribute_model_catalog_info)
-
-    def _resolve_catalog_entry(self, model_id: str) -> tuple[ModelCatalogEntry | None, str | None]:
-        if self._catalog_lookup is None:
-            return None, "model catalog is not available"
-        matches = self._catalog_lookup(model_id)
-        if not matches:
-            return None, f"model not found: {model_id}"
-        exact = [m for m in matches if m.slug.lower() == model_id.strip().lower()]
-        candidates = exact or matches
-        if len(candidates) > 1:
-            names = ", ".join(m.slug for m in candidates)
-            return None, f"ambiguous model: {model_id} matches {names}"
-        return candidates[0], None
-
-    def _reload_model_context_length(self, entry: ModelCatalogEntry | None = None) -> None:
-        if self._global_variables is None:
-            return
-        if entry is None:
-            entry, _ = self._resolve_catalog_entry(self.model)
-        length = entry.context_length if entry and entry.context_length else DEFAULT_MODEL_CONTEXT_LENGTH
-        self._global_variables["model_context_length"] = length
 
     async def switch_model(self, msg: SwitchModelRequest) -> SwitchModelResult:
         entry, error = self._resolve_catalog_entry(msg.model_id)
@@ -97,151 +81,15 @@ class OpenRouterModelPlugin(Plugin):
         msg.sections["openrouter_models"] = MODEL_CATALOG_SECTION
         return msg
 
-    async def complete(self, msg: ModelRequest) -> ModelResponse:
-        try:
-            if msg.stream_updates:
-                return await self._complete_streaming(msg)
-            return await self._complete_blocking(msg)
-        except Exception as exc:
-            logger.debug("openrouter request failed model={} error={}", self.model, exc)
-            raise
-
     def _extra_body(self) -> dict | None:
         if not self._provider_blacklist:
             return None
         return {"provider": {"ignore": self._provider_blacklist}}
 
-    def _extra_headers(self) -> dict:
+    def _extra_headers(self, idempotency_key: str) -> dict:
         headers: dict = {"HTTP-Referer": APP_HTTP_REFERER}
         if self._session_id:
             headers["x-session-id"] = self._session_id
         if self._app_name:
             headers["X-OpenRouter-Title"] = self._app_name
         return headers
-
-    def _record_usage(self, msg: ModelRequest, usage) -> None:
-        if usage is None:
-            return
-        session = msg.variables.get("session")
-        if session is None:
-            return
-        session["tokens_used"] = session.get("tokens_used", 0) + usage.total_tokens
-        # TODO: this tracks the session's all-time peak prompt size and never
-        # comes back down. Once TokenBudgetPlugin's summarization actually
-        # shrinks the history, decide whether context_usage should keep
-        # meaning "historical peak" (current behavior) or get an explicit
-        # reset/adjustment hook so it also reflects post-compression reality.
-        session["context_usage"] = max(session.get("context_usage", 0), usage.prompt_tokens)
-
-    async def _complete_blocking(self, msg: ModelRequest) -> ModelResponse:
-        logger.debug(
-            "calling openrouter model={} messages={} tools={}",
-            self.model, len(msg.messages), len(msg.tools or []),
-        )
-        response = await asyncio.wait_for(
-            self._client.chat.completions.create(
-                model=self.model,
-                messages=msg.messages,
-                tools=msg.tools or None,
-                extra_body=self._extra_body(),
-                extra_headers=self._extra_headers(),
-            ),
-            self._blocking_timeout,
-        )
-        self._record_usage(msg, getattr(response, "usage", None))
-        message = response.choices[0].message
-        raw_message = message.model_dump()
-        tool_calls = [
-            ToolCallSpec(id=tc.id, name=tc.function.name, args=json.loads(tc.function.arguments))
-            for tc in (message.tool_calls or [])
-        ]
-        logger.debug(
-            "openrouter response text_len={} tool_calls={}",
-            len(message.content or ""), len(tool_calls),
-        )
-        return ModelResponse(text=message.content, tool_calls=tool_calls, raw_message=raw_message)
-
-    async def _complete_streaming(self, msg: ModelRequest) -> ModelResponse:
-        last_exc: TimeoutError | None = None
-        for attempt, timeout in enumerate(self._stream_timeouts, start=1):
-            content_parts: list[str] = []
-            try:
-                return await self._stream_once(msg, timeout, content_parts)
-            except TimeoutError as exc:
-                if content_parts:
-                    raise
-                logger.warning(
-                    "openrouter stream timed out model={} attempt={}/{} timeout={}s",
-                    self.model, attempt, len(self._stream_timeouts), timeout,
-                )
-                last_exc = exc
-        raise TimeoutError(
-            f"openrouter stream timed out after {len(self._stream_timeouts)} attempts"
-        ) from last_exc
-
-    async def _stream_once(
-        self, msg: ModelRequest, timeout: float, content_parts: list[str]
-    ) -> ModelResponse:
-        logger.debug(
-            "calling openrouter (streaming) model={} messages={} tools={} timeout={}s",
-            self.model, len(msg.messages), len(msg.tools or []), timeout,
-        )
-        stream = await asyncio.wait_for(
-            self._client.chat.completions.create(
-                model=self.model,
-                messages=msg.messages,
-                tools=msg.tools or None,
-                stream=True,
-                stream_options={"include_usage": True},
-                extra_body=self._extra_body(),
-                extra_headers=self._extra_headers(),
-            ),
-            timeout,
-        )
-        tool_call_acc: dict[int, dict] = {}
-        usage = None
-        chunks = stream.__aiter__()
-        while True:
-            try:
-                chunk = await asyncio.wait_for(chunks.__anext__(), timeout)
-            except StopAsyncIteration:
-                break
-            if getattr(chunk, "usage", None):
-                usage = chunk.usage
-            if not chunk.choices:
-                continue
-            delta = chunk.choices[0].delta
-            if delta.content:
-                content_parts.append(delta.content)
-                await self._bus.chain(meta.MessageDeltaUpdateEvent, MessageDeltaUpdate(text_delta=delta.content))
-            for tc in (delta.tool_calls or []):
-                acc = tool_call_acc.setdefault(tc.index, {"id": None, "name": None, "arguments": ""})
-                if tc.id:
-                    acc["id"] = tc.id
-                if tc.function and tc.function.name:
-                    acc["name"] = tc.function.name
-                if tc.function and tc.function.arguments:
-                    acc["arguments"] += tc.function.arguments
-
-        self._record_usage(msg, usage)
-        text = "".join(content_parts) or None
-        tool_calls = [
-            ToolCallSpec(
-                id=acc["id"], name=acc["name"],
-                args=json.loads(acc["arguments"]) if acc["arguments"] else {},
-            )
-            for _, acc in sorted(tool_call_acc.items())
-        ]
-        raw_message = {
-            "role": "assistant",
-            "content": text,
-            "tool_calls": [
-                {"id": tc.id, "type": "function", "function": {"name": tc.name, "arguments": json.dumps(tc.args)}}
-                for tc in tool_calls
-            ] or None,
-        }
-        logger.debug(
-            "openrouter streaming response text_len={} tool_calls={}",
-            len(text or ""), len(tool_calls),
-        )
-        return ModelResponse(text=text, tool_calls=tool_calls, raw_message=raw_message)
