@@ -19,6 +19,7 @@ from conic.plugins.loops.react_loop import ReactLoopPlugin
 from conic.plugins.models.experiential import ExperientialModelPlugin
 from conic.plugins.models.nano_gpt import NanoGptModelPlugin
 from conic.plugins.models.openrouter import OpenRouterModelPlugin
+from conic.plugins.models.venice import VeniceModelPlugin
 from conic.plugins.plugin_config import PluginConfigError, PluginSpec
 from conic.plugins.policy.permission import PermissionPolicyPlugin
 from conic.plugins.policy.step_limit import StepLimitPlugin
@@ -523,10 +524,11 @@ def test_backend_model_picks_the_model_of_the_named_backend():
     config = load_config({
         "PROJECT_ROOT": ".", "DISCORD_BOT_TOKEN": "d", "OPENROUTER_API_KEY": "k",
         "OPENROUTER_MODEL": "vendor/or-model", "EXPERIENTIAL_LABS_MODEL": "exp-model",
-        "NANO_GPT_MODEL": "nano-model",
+        "NANO_GPT_MODEL": "nano-model", "VENICE_MODEL": "venice-model",
     })
     assert backend_model("experiential", config) == "exp-model"
     assert backend_model("nano_gpt", config) == "nano-model"
+    assert backend_model("venice", config) == "venice-model"
     assert backend_model("openrouter", config) == "vendor/or-model"
 
 
@@ -571,3 +573,46 @@ def test_nano_gpt_backend_binds_the_nano_gpt_provider_into_the_catalog_lookup(tm
     backend._catalog_lookup("x")
 
     assert calls == [("nano_gpt", "x")]
+
+
+VENICE_YAML = TWO_BACKENDS_YAML.replace("backend: experiential", "backend: venice")
+
+
+@pytest.mark.parametrize(
+    ("extra", "missing"),
+    [
+        ({"VENICE_MODEL": "venice-model"}, "VENICE_API_KEY"),
+        ({"VENICE_API_KEY": "vk"}, "VENICE_MODEL"),
+    ],
+)
+def test_venice_backend_requires_api_key_and_model(tmp_path, extra, missing):
+    config = make_config(tmp_path, VENICE_YAML, **extra)
+    with pytest.raises(PluginConfigError, match=missing):
+        build_plugin_set(config)
+
+
+def test_venice_set_builds_a_plugin_with_its_own_model(tmp_path):
+    config = make_config(tmp_path, VENICE_YAML, VENICE_API_KEY="vk", VENICE_MODEL="venice-model")
+    sets = build_plugin_set(config)
+
+    exp_loop = sets["exp"].loop_factory(object(), [], {}, "/tmp/ws", {})
+    assert exp_loop._global_variables["model"] == "venice-model"
+    backend = sets["exp"].backend("discord:1")
+    assert isinstance(backend, VeniceModelPlugin)
+    assert backend.model == "venice-model"
+
+
+def test_venice_backend_binds_the_venice_provider_into_the_catalog_lookup(tmp_path):
+    calls = []
+
+    def lookup(provider, query):
+        calls.append((provider, query))
+        return []
+
+    config = make_config(tmp_path, VENICE_YAML, VENICE_API_KEY="vk", VENICE_MODEL="venice-model")
+    sets = build_plugin_set(config, catalog_lookup=lookup)
+    backend = sets["exp"].backend("discord:1")
+    calls.clear()
+    backend._catalog_lookup("x")
+
+    assert calls == [("venice", "x")]

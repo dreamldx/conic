@@ -112,3 +112,18 @@ def test_nano_gpt_fields_read_from_aliases():
     })
     assert config.nano_gpt_api_key == "nk"
     assert config.nano_gpt_model == "nano-model"
+
+
+def test_venice_fields_default_to_empty():
+    config = load_config({"PROJECT_ROOT": "/tmp", "DISCORD_BOT_TOKEN": "d", "OPENROUTER_API_KEY": "k"})
+    assert config.venice_api_key == ""
+    assert config.venice_model == ""
+
+
+def test_venice_fields_read_from_aliases():
+    config = load_config({
+        "PROJECT_ROOT": "/tmp", "DISCORD_BOT_TOKEN": "d", "OPENROUTER_API_KEY": "k",
+        "VENICE_API_KEY": "vk", "VENICE_MODEL": "venice-model",
+    })
+    assert config.venice_api_key == "vk"
+    assert config.venice_model == "venice-model"

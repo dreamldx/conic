@@ -33,6 +33,7 @@ from conic.plugins.models.experiential import (
 )
 from conic.plugins.models.nano_gpt import NANO_GPT_BASE_URL, NanoGptModelPlugin
 from conic.plugins.models.openrouter import OpenRouterModelPlugin
+from conic.plugins.models.venice import VENICE_BASE_URL, VeniceModelPlugin
 from conic.plugins.plugin_config import (
     PluginConfigError,
     PluginSetConfig,
@@ -49,6 +50,7 @@ from conic.plugins.tools.web_fetch import WebFetchToolPlugin, build_web_fetch_sc
 from conic.plugins.tools.web_search import WebSearchToolPlugin
 from conic.plugins.tools.write_file import WriteFileToolPlugin
 from conic.services.models import ModelCatalogEntry
+from conic.venice.catalog import VENICE_PROVIDER
 
 
 def _load_prompts(prompts_dir: Path) -> dict[str, str]:
@@ -108,6 +110,8 @@ def backend_model(backend: str, config: Config) -> str:
         return config.experiential_model
     if backend == NanoGptModelPlugin.Name:
         return config.nano_gpt_model
+    if backend == VeniceModelPlugin.Name:
+        return config.venice_model
     return config.openrouter_model
 
 
@@ -413,12 +417,29 @@ def _build_nano_gpt_backend(config: Config, ctx: BuildContext, provider_blacklis
     return factory
 
 
+def _build_venice_backend(config: Config, ctx: BuildContext, provider_blacklist: list[str], global_variables: dict):
+    if not config.venice_api_key:
+        raise PluginConfigError("venice backend requires VENICE_API_KEY to be set")
+    if not config.venice_model:
+        raise PluginConfigError("venice backend requires VENICE_MODEL to be set")
+    venice_lookup = partial(ctx.catalog_lookup, VENICE_PROVIDER) if ctx.catalog_lookup is not None else None
+    client = AsyncOpenAI(base_url=VENICE_BASE_URL, api_key=config.venice_api_key)
+
+    def factory(session_key: str):
+        return VeniceModelPlugin(
+            api_key=config.venice_api_key, model=config.venice_model, client=client,
+            session_id=session_key, catalog_lookup=venice_lookup, global_variables=global_variables,
+        )
+    return factory
+
+
 BackendBuilder = Callable[[Config, BuildContext, list[str], dict], Callable[[str], object]]
 
 BACKEND_BUILDERS: dict[type, BackendBuilder] = {
     OpenRouterModelPlugin: _build_openrouter_backend,
     ExperientialModelPlugin: _build_experiential_backend,
     NanoGptModelPlugin: _build_nano_gpt_backend,
+    VeniceModelPlugin: _build_venice_backend,
 }
 
 

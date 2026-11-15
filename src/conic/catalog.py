@@ -11,6 +11,7 @@ from conic.nano_gpt.catalog import NANO_GPT_PROVIDER, fetch_nano_gpt_models
 from conic.openrouter.catalog import MODEL_CATALOG_FILENAME, sync_catalog_once
 from conic.services.models import ModelCatalogEntry
 from conic.services.storage import StorageService
+from conic.venice.catalog import VENICE_PROVIDER, fetch_venice_models
 
 DEFAULT_SYNC_INTERVAL_SECONDS = 3600
 
@@ -52,10 +53,15 @@ async def sync_nano_gpt_once(storage: StorageService, config: Config) -> bool:
     return await _sync_provider(storage, NANO_GPT_PROVIDER, lambda: fetch_nano_gpt_models())
 
 
+async def sync_venice_once(storage: StorageService, config: Config) -> bool:
+    return await _sync_provider(storage, VENICE_PROVIDER, lambda: fetch_venice_models())
+
+
 CATALOG_PROVIDERS: tuple[CatalogProvider, ...] = (
     CatalogProvider(name="openrouter", sync=sync_openrouter_once),
     CatalogProvider(name=EXPERIENTIAL_PROVIDER, sync=sync_experiential_once),
     CatalogProvider(name=NANO_GPT_PROVIDER, sync=sync_nano_gpt_once),
+    CatalogProvider(name=VENICE_PROVIDER, sync=sync_venice_once),
 )
 
 

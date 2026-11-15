@@ -8,6 +8,7 @@ from conic.catalog import (
     run_periodic_sync,
     sync_experiential_once,
     sync_nano_gpt_once,
+    sync_venice_once,
 )
 from conic.services.models import ModelCatalogEntry
 
@@ -115,8 +116,8 @@ async def test_sync_experiential_once_returns_false_and_saves_nothing_on_failure
     assert storage.saved == []
 
 
-def test_catalog_providers_are_openrouter_experiential_then_nano_gpt():
-    assert [p.name for p in CATALOG_PROVIDERS] == ["openrouter", "experiential", "nano_gpt"]
+def test_catalog_providers_are_openrouter_experiential_nano_gpt_then_venice():
+    assert [p.name for p in CATALOG_PROVIDERS] == ["openrouter", "experiential", "nano_gpt", "venice"]
 
 
 async def test_sync_experiential_once_returns_false_and_saves_nothing_on_empty_fetch(monkeypatch):
@@ -168,6 +169,47 @@ async def test_sync_nano_gpt_once_returns_false_and_saves_nothing_on_empty_fetch
     storage = FakeStorage()
 
     ok = await sync_nano_gpt_once(storage, object())
+
+    assert ok is False
+    assert storage.saved == []
+
+
+async def test_sync_venice_once_saves_entries_under_venice_provider(monkeypatch):
+    entries = [ModelCatalogEntry(slug="llama-x", provider="venice")]
+
+    async def fake_fetch():
+        return entries
+
+    monkeypatch.setattr(catalog, "fetch_venice_models", fake_fetch)
+    storage = FakeStorage()
+
+    ok = await sync_venice_once(storage, object())
+
+    assert ok is True
+    assert storage.saved == [("venice", entries)]
+
+
+async def test_sync_venice_once_returns_false_and_saves_nothing_on_failure(monkeypatch):
+    async def fake_fetch():
+        raise RuntimeError("down")
+
+    monkeypatch.setattr(catalog, "fetch_venice_models", fake_fetch)
+    storage = FakeStorage()
+
+    ok = await sync_venice_once(storage, object())
+
+    assert ok is False
+    assert storage.saved == []
+
+
+async def test_sync_venice_once_returns_false_and_saves_nothing_on_empty_fetch(monkeypatch):
+    async def fake_fetch():
+        return []
+
+    monkeypatch.setattr(catalog, "fetch_venice_models", fake_fetch)
+    storage = FakeStorage()
+
+    ok = await sync_venice_once(storage, object())
 
     assert ok is False
     assert storage.saved == []
