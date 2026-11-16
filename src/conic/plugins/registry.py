@@ -106,12 +106,9 @@ def build_plugin_set(
 
 
 def backend_model(backend: str, config: Config) -> str:
-    if backend == ExperientialModelPlugin.Name:
-        return config.experiential_model
-    if backend == NanoGptModelPlugin.Name:
-        return config.nano_gpt_model
-    if backend == VeniceModelPlugin.Name:
-        return config.venice_model
+    for spec in KEYED_BACKENDS:
+        if backend == spec.plugin.Name:
+            return getattr(config, spec.model_attr)
     return config.openrouter_model
 
 
@@ -385,50 +382,51 @@ def _build_openrouter_backend(config: Config, ctx: BuildContext, provider_blackl
     return factory
 
 
-def _build_experiential_backend(config: Config, ctx: BuildContext, provider_blacklist: list[str], global_variables: dict):
-    if not config.experiential_api_key:
-        raise PluginConfigError("experiential backend requires EXPERIENTIAL_LABS_API_KEY to be set")
-    if not config.experiential_model:
-        raise PluginConfigError("experiential backend requires EXPERIENTIAL_LABS_MODEL to be set")
-    experiential_lookup = partial(ctx.catalog_lookup, EXPERIENTIAL_PROVIDER) if ctx.catalog_lookup is not None else None
-    client = AsyncOpenAI(base_url=EXPERIENTIAL_BASE_URL, api_key=config.experiential_api_key)
+@dataclass(frozen=True)
+class KeyedBackend:
+    plugin: type
+    provider: str
+    base_url: str
+    key_attr: str
+    model_attr: str
+    key_env: str
+    model_env: str
+    label: str
+
+
+KEYED_BACKENDS = (
+    KeyedBackend(
+        ExperientialModelPlugin, EXPERIENTIAL_PROVIDER, EXPERIENTIAL_BASE_URL,
+        "experiential_api_key", "experiential_model",
+        "EXPERIENTIAL_LABS_API_KEY", "EXPERIENTIAL_LABS_MODEL", "experiential",
+    ),
+    KeyedBackend(
+        NanoGptModelPlugin, NANO_GPT_PROVIDER, NANO_GPT_BASE_URL,
+        "nano_gpt_api_key", "nano_gpt_model", "NANO_GPT_API_KEY", "NANO_GPT_MODEL", "nano_gpt",
+    ),
+    KeyedBackend(
+        VeniceModelPlugin, VENICE_PROVIDER, VENICE_BASE_URL,
+        "venice_api_key", "venice_model", "VENICE_API_KEY", "VENICE_MODEL", "venice",
+    ),
+)
+
+
+def _build_keyed_backend(
+    spec: KeyedBackend, config: Config, ctx: BuildContext, provider_blacklist: list[str], global_variables: dict
+):
+    api_key = getattr(config, spec.key_attr)
+    model = getattr(config, spec.model_attr)
+    if not api_key:
+        raise PluginConfigError(f"{spec.label} backend requires {spec.key_env} to be set")
+    if not model:
+        raise PluginConfigError(f"{spec.label} backend requires {spec.model_env} to be set")
+    lookup = partial(ctx.catalog_lookup, spec.provider) if ctx.catalog_lookup is not None else None
+    client = AsyncOpenAI(base_url=spec.base_url, api_key=api_key)
 
     def factory(session_key: str):
-        return ExperientialModelPlugin(
-            api_key=config.experiential_api_key, model=config.experiential_model, client=client,
-            session_id=session_key, catalog_lookup=experiential_lookup, global_variables=global_variables,
-        )
-    return factory
-
-
-def _build_nano_gpt_backend(config: Config, ctx: BuildContext, provider_blacklist: list[str], global_variables: dict):
-    if not config.nano_gpt_api_key:
-        raise PluginConfigError("nano_gpt backend requires NANO_GPT_API_KEY to be set")
-    if not config.nano_gpt_model:
-        raise PluginConfigError("nano_gpt backend requires NANO_GPT_MODEL to be set")
-    nano_gpt_lookup = partial(ctx.catalog_lookup, NANO_GPT_PROVIDER) if ctx.catalog_lookup is not None else None
-    client = AsyncOpenAI(base_url=NANO_GPT_BASE_URL, api_key=config.nano_gpt_api_key)
-
-    def factory(session_key: str):
-        return NanoGptModelPlugin(
-            api_key=config.nano_gpt_api_key, model=config.nano_gpt_model, client=client,
-            session_id=session_key, catalog_lookup=nano_gpt_lookup, global_variables=global_variables,
-        )
-    return factory
-
-
-def _build_venice_backend(config: Config, ctx: BuildContext, provider_blacklist: list[str], global_variables: dict):
-    if not config.venice_api_key:
-        raise PluginConfigError("venice backend requires VENICE_API_KEY to be set")
-    if not config.venice_model:
-        raise PluginConfigError("venice backend requires VENICE_MODEL to be set")
-    venice_lookup = partial(ctx.catalog_lookup, VENICE_PROVIDER) if ctx.catalog_lookup is not None else None
-    client = AsyncOpenAI(base_url=VENICE_BASE_URL, api_key=config.venice_api_key)
-
-    def factory(session_key: str):
-        return VeniceModelPlugin(
-            api_key=config.venice_api_key, model=config.venice_model, client=client,
-            session_id=session_key, catalog_lookup=venice_lookup, global_variables=global_variables,
+        return spec.plugin(
+            api_key=api_key, model=model, client=client,
+            session_id=session_key, catalog_lookup=lookup, global_variables=global_variables,
         )
     return factory
 
@@ -437,9 +435,7 @@ BackendBuilder = Callable[[Config, BuildContext, list[str], dict], Callable[[str
 
 BACKEND_BUILDERS: dict[type, BackendBuilder] = {
     OpenRouterModelPlugin: _build_openrouter_backend,
-    ExperientialModelPlugin: _build_experiential_backend,
-    NanoGptModelPlugin: _build_nano_gpt_backend,
-    VeniceModelPlugin: _build_venice_backend,
+    **{spec.plugin: partial(_build_keyed_backend, spec) for spec in KEYED_BACKENDS},
 }
 
 
