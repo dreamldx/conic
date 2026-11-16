@@ -106,3 +106,67 @@ def test_build_app_uses_openrouter_model_for_new_sessions_with_openrouter_main(t
         assert storage.get_or_create(channel="discord", native_id="m").model == "vendor/or-model"
     finally:
         storage.shutdown()
+
+
+def test_build_app_bounds_startup_sync_and_keeps_fast_results(tmp_path):
+    from conic.services.models import ModelCatalogEntry
+
+    env = make_env(tmp_path)
+
+    async def hang(storage, config):
+        await asyncio.Event().wait()
+
+    async def fast(storage, config):
+        storage.save_model_catalog("fast", [ModelCatalogEntry(slug="a/b", provider="fast")])
+        return True
+
+    providers = (CatalogProvider(name="hang", sync=hang), CatalogProvider(name="fast", sync=fast))
+
+    async def _build():
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        result = await build_app(env, providers=providers, startup_sync_timeout=0.05)
+        return result, loop.time() - started
+
+    (storage, _gateway), elapsed = asyncio.run(_build())
+    try:
+        assert elapsed < 2.0
+        assert not storage.model_catalog_is_empty("fast")
+        assert storage.model_catalog_is_empty("hang")
+    finally:
+        storage.shutdown()
+
+
+def test_build_app_runs_provider_syncs_concurrently(tmp_path):
+    env = make_env(tmp_path)
+    started = []
+    finished = []
+
+    async def _build():
+        gate = asyncio.Event()
+
+        def make(name):
+            async def sync(storage, config):
+                started.append(name)
+                if len(started) == 2:
+                    gate.set()
+                await asyncio.wait_for(gate.wait(), timeout=1.0)
+                finished.append(name)
+                return True
+
+            return CatalogProvider(name=name, sync=sync)
+
+        return await build_app(env, providers=(make("a"), make("b")))
+
+    storage, _gateway = asyncio.run(_build())
+    try:
+        assert sorted(started) == ["a", "b"]
+        assert sorted(finished) == ["a", "b"]
+    finally:
+        storage.shutdown()
+
+
+def test_startup_sync_timeout_is_fifteen_seconds():
+    from conic.entry import STARTUP_SYNC_TIMEOUT
+
+    assert STARTUP_SYNC_TIMEOUT == 15.0
