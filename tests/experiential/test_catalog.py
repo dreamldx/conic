@@ -180,3 +180,14 @@ async def test_fetch_keeps_paging_until_an_empty_page_when_total_is_missing():
 
     assert [e.slug for e in result] == ["a", "b", "c"]
     assert [c["params"]["offset"] for c in capture] == [0, 2, 3]
+
+
+async def test_fetch_defaults_non_numeric_price_to_zero():
+    row = model_row("a")
+    row["providers"] = [{"input_nano_usd_per_million": "N/A", "output_nano_usd_per_million": 2000000000}]
+
+    result = await fetch_experiential_models(session_factory=session_factory([{"models": [row], "total": 1}]))
+
+    assert [e.slug for e in result] == ["a"]
+    assert result[0].pricing_prompt == 0.0
+    assert result[0].pricing_completion == pytest.approx(2e-6)

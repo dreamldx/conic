@@ -1,10 +1,10 @@
 import aiohttp
 
-from conic.services.models import ModelCatalogEntry
+from conic.services.models import ModelCatalogEntry, safe_float
 
 VENICE_CATALOG_URL = "https://api.venice.ai/api/v1/models"
 VENICE_PROVIDER = "venice"
-USD_PER_MILLION_TO_USD_PER_TOKEN = 1e6
+TOKENS_PER_MILLION = 1e6
 
 
 async def fetch_venice_models(
@@ -22,7 +22,7 @@ async def fetch_venice_models(
 
 
 def _usd_per_token(price: dict | None) -> float:
-    return float((price or {}).get("usd") or 0) / USD_PER_MILLION_TO_USD_PER_TOKEN
+    return safe_float((price or {}).get("usd")) / TOKENS_PER_MILLION
 
 
 def _parse_row(row: dict) -> ModelCatalogEntry | None:

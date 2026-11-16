@@ -1,6 +1,6 @@
 import aiohttp
 
-from conic.services.models import ModelCatalogEntry
+from conic.services.models import ModelCatalogEntry, safe_float
 
 EXPERIENTIAL_CATALOG_URL = "https://api.experientiallabs.ai/api/models"
 EXPERIENTIAL_PROVIDER = "experiential"
@@ -62,7 +62,7 @@ def _pricing(providers: list[dict]) -> tuple[float, float]:
         completion = p.get("output_nano_usd_per_million")
         if prompt is not None or completion is not None:
             return (
-                float(prompt or 0) / NANO_USD_PER_MILLION_TO_USD_PER_TOKEN,
-                float(completion or 0) / NANO_USD_PER_MILLION_TO_USD_PER_TOKEN,
+                safe_float(prompt) / NANO_USD_PER_MILLION_TO_USD_PER_TOKEN,
+                safe_float(completion) / NANO_USD_PER_MILLION_TO_USD_PER_TOKEN,
             )
     return 0.0, 0.0

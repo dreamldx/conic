@@ -1,10 +1,10 @@
 import aiohttp
 
-from conic.services.models import ModelCatalogEntry
+from conic.services.models import ModelCatalogEntry, safe_float
 
 NANO_GPT_CATALOG_URL = "https://api.nano-gpt.com/api/v1/models"
 NANO_GPT_PROVIDER = "nano_gpt"
-USD_PER_MILLION_TO_USD_PER_TOKEN = 1e6
+TOKENS_PER_MILLION = 1e6
 
 
 async def fetch_nano_gpt_models(
@@ -42,8 +42,8 @@ def _parse_row(row: dict) -> ModelCatalogEntry | None:
         description=row.get("description") or "",
         context_length=row.get("context_length") or 0,
         supports_tools=supports_tools,
-        pricing_prompt=float(pricing.get("prompt") or 0) / USD_PER_MILLION_TO_USD_PER_TOKEN,
-        pricing_completion=float(pricing.get("completion") or 0) / USD_PER_MILLION_TO_USD_PER_TOKEN,
+        pricing_prompt=safe_float(pricing.get("prompt")) / TOKENS_PER_MILLION,
+        pricing_completion=safe_float(pricing.get("completion")) / TOKENS_PER_MILLION,
         input_modalities=modalities,
         output_modalities=["text"],
         supported_parameters=supported,

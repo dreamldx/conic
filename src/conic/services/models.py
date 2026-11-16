@@ -1,6 +1,15 @@
+import math
 from datetime import UTC, datetime
 
 from pydantic import BaseModel, Field
+
+
+def safe_float(value, default: float = 0.0) -> float:
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return default
+    return result if math.isfinite(result) else default
 
 
 class Session(BaseModel):

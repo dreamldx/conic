@@ -49,7 +49,6 @@ def session_factory(pages, capture=None, error=None):
     return factory
 
 
-
 def model_row(model_id, **overrides):
     row = {"id": model_id, "name": model_id.upper(), "description": "d", "context_length": 1000}
     row.update(overrides)
@@ -128,3 +127,13 @@ async def test_fetch_skips_rows_without_id():
 async def test_fetch_raises_on_http_error():
     with pytest.raises(RuntimeError, match="boom"):
         await fetch_nano_gpt_models(session_factory=session_factory([{}], error=RuntimeError("boom")))
+
+
+async def test_fetch_defaults_non_numeric_price_to_zero():
+    page = {"data": [model_row("a/b", pricing={"prompt": "N/A", "completion": 10})]}
+
+    result = await fetch_nano_gpt_models(session_factory=session_factory([page]))
+
+    assert [e.slug for e in result] == ["a/b"]
+    assert result[0].pricing_prompt == 0.0
+    assert result[0].pricing_completion == pytest.approx(1e-5)

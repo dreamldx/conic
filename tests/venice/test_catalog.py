@@ -49,7 +49,6 @@ def session_factory(pages, capture=None, error=None):
     return factory
 
 
-
 def model_row(model_id, **overrides):
     row = {"id": model_id, "type": "text", "owned_by": "venice.ai", "model_spec": {"name": model_id.upper()}}
     row.update(overrides)
@@ -153,3 +152,13 @@ async def test_fetch_requests_models_endpoint_without_params():
 async def test_fetch_raises_on_http_error():
     with pytest.raises(RuntimeError, match="boom"):
         await fetch_venice_models(session_factory=session_factory([{}], error=RuntimeError("boom")))
+
+
+async def test_fetch_defaults_non_numeric_price_to_zero():
+    row = model_row("a", model_spec={"pricing": {"input": {"usd": "N/A"}, "output": {"usd": 2.0}}})
+
+    result = await fetch_venice_models(session_factory=session_factory([{"data": [row]}]))
+
+    assert [e.slug for e in result] == ["a"]
+    assert result[0].pricing_prompt == 0.0
+    assert result[0].pricing_completion == pytest.approx(2e-6)
